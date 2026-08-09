@@ -10,6 +10,20 @@ from pydantic import Field, field_validator, model_validator
 from lean_constellation.domain.common import StrictModel
 
 
+def _normalized_non_empty_items(values: list[str], *, field_name: str) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        item = value.strip()
+        key = item.casefold()
+        if item and key not in seen:
+            seen.add(key)
+            normalized.append(item)
+    if not normalized:
+        raise ValueError(f"{field_name} must contain at least one non-empty item")
+    return normalized
+
+
 class SummarySubmitArgs(StrictModel):
     summary: str = Field(description="Concise summary of the submitted result.")
 
@@ -36,24 +50,19 @@ class ReasonSubmitArgs(StrictModel):
 
 class SubmitAdapterRepoChoiceArgs(StrictModel):
     git_url: str = Field(description="GitHub URL or owner/name slug for the existing Lean upstream repository.")
-    revision: str | None = Field(default=None, description="Optional upstream revision, tag, or commit.")
+    revision: str | None = Field(default=None, description="Optional immutable 40- or 64-character upstream commit; omit to resolve a compatible commit.")
     subdir: str | None = Field(default=None, description="Optional subdirectory containing the Lean project.")
-    package_name: str | None = Field(default=None, description="Optional upstream Lake package name.")
-    likely_import_module: str | None = Field(default=None, description="Optional likely Lean module to import from the upstream package.")
     evidence_summary: str = Field(description="Concrete remote evidence supporting the adapter route.")
     known_risks: list[str] = Field(default_factory=list, description="Known risks that later preparation must verify.")
 
 
-class RejectedUpstreamCandidateArgs(StrictModel):
-    git_url: str | None = Field(default=None, description="Rejected GitHub candidate URL or slug, if known.")
-    name: str | None = Field(default=None, description="Rejected candidate name or pattern, if no URL is known.")
-    reason: str = Field(description="Reason this candidate should not be used as adapter upstream.")
-    evidence_summary: str | None = Field(default=None, description="Optional evidence gathered for the rejection.")
-
-
 class SubmitNativeRepoChoiceArgs(SummarySubmitArgs):
-    searched_targets: list[str] = Field(default_factory=list, description="Search queries or target names checked before choosing native.")
-    rejected_candidates: list[RejectedUpstreamCandidateArgs] = Field(default_factory=list, description="Upstream candidates rejected before choosing native.")
+    searched_targets: list[str] = Field(description="Concrete search queries, repository locators, or target names checked before choosing native.")
+
+    @field_validator("searched_targets")
+    @classmethod
+    def _searched_targets_non_empty(cls, values: list[str]) -> list[str]:
+        return _normalized_non_empty_items(values, field_name="searched_targets")
 
 
 class SubmitSourceCorpusPreparedArgs(SummarySubmitArgs):
@@ -221,19 +230,11 @@ class SubmitAdapterRepoRequirementArgs(SubmitRepoRequirementArgs):
     )
     revision: str | None = Field(
         default=None,
-        description="Optional explicit immutable 40- or 64-character Git commit; when omitted the system resolves bounded latest-first exact-compatible candidates."
+        description="Optional immutable 40- or 64-character Git commit; omit to resolve bounded latest-first exact-compatible candidates."
     )
     subdir: str | None = Field(
         default=None,
         description="Optional repository-relative subdirectory containing the Lean project.",
-    )
-    package_name: str | None = Field(
-        default=None,
-        description="Optional verified Lake package name.",
-    )
-    likely_import_module: str | None = Field(
-        default=None,
-        description="Optional likely Lean module to import from the provider package.",
     )
     evidence_summary: str = Field(
         description="Concrete evidence confirming this exact adapter route."
@@ -251,10 +252,11 @@ class SubmitNativeRepoRequirementArgs(SubmitRepoRequirementArgs):
     searched_targets: list[str] = Field(
         description="Non-empty search queries or upstream targets checked before choosing native."
     )
-    rejected_candidates: list[RejectedUpstreamCandidateArgs] = Field(
-        default_factory=list,
-        description="Specific upstream candidates rejected before choosing native.",
-    )
+
+    @field_validator("searched_targets")
+    @classmethod
+    def _searched_targets_non_empty(cls, values: list[str]) -> list[str]:
+        return _normalized_non_empty_items(values, field_name="searched_targets")
 
 
 class SubmitRepoReadyArgs(SummarySubmitArgs):

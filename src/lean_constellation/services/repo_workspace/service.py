@@ -651,6 +651,13 @@ class RepoWorkspaceService:
     ) -> ServiceResult[VerifiedAdapterRouteReceipt]:
         return self.adapter_compatibility.verify_adapter_provider_route(route)
 
+    def validate_verified_adapter_provider_route(
+        self,
+        route: AdapterProviderRoute,
+        receipt: VerifiedAdapterRouteReceipt,
+    ) -> ServiceResult[VerifiedAdapterRouteReceipt]:
+        return self.adapter_compatibility.validate_verified_adapter_provider_route(route, receipt)
+
     def initialize_repo_as_native(
         self,
         repo_root: Path,

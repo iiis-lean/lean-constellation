@@ -251,15 +251,12 @@ def test_repo_format_discovery_instruction_spells_out_scoped_remote_workflow() -
     text = render_agent_instruction("RepoFormatDiscoveryAgent")
 
     assert "get_preparation_input" in text
-    assert "list_preparation_requirements" in text
-    assert "get_preparation_requirement" in text
-    assert "probe_github_lean_repo_candidate" in text
-    assert "list_github_repository_tree" in text
-    assert "read_github_repository_file" in text
-    assert "search_github_code" in text
-    assert "workspace-wide requirement tools" in text
-    assert "Do not clone upstream code" in text
+    assert "$repo-format-discovery" in text
+    assert "workspace-wide requirement state" in text
+    assert "clone upstream code" in text
     assert "change source corpus mode" in text
+    assert "package, import-module, toolchain, or resolved-revision" in text
+    assert "placeholder schema probes" in text
     assert "source_corpus_mode" not in text
     assert "adapter_repo_name" not in text
     assert "native_repo_name" not in text

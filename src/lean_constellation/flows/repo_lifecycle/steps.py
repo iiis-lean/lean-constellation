@@ -25,7 +25,6 @@ from lean_constellation.domain.preparation import (
     AutoProviderRoute,
     NativeProviderRoute,
     ProviderRoute,
-    RejectedUpstreamCandidate,
     RepoRequirementRef,
     SourceCorpusMode,
     UpstreamDependencyInput,
@@ -250,30 +249,42 @@ class ApplyRepoFormatChoiceStep(BaseStep):
         flow = _load_requirement_bootstrap_flow(ctx)
         input_model = _require_bootstrap_input(flow.input)
         route: ProviderRoute = input_model.resolved_provider_route
+        verified_route = input_model.verified_adapter_route
         if isinstance(route, AutoProviderRoute):
-            submission = _latest_repo_format_submission(ctx, flow)
-            if submission is None:
+            submission_record = _latest_repo_format_submission(ctx, flow)
+            if submission_record is None:
                 return ctx.complete_step(
                     _repair_result(
                         "repo_format_choice_missing",
                         "Repo format choice submission is missing.",
                     )
                 )
-            if isinstance(submission, RepoFormatAdapterChoiceSubmission):
-                if not submission.git_url.strip():
-                    return ctx.complete_step(
-                        _repair_result(
-                            "adapter_choice_missing_upstream",
-                            "Adapter choice must include git_url.",
-                        )
+            source_step, submission = submission_record
+            if source_step.flow_id != flow.flow_id or source_step.scope_id != flow.scope_id:
+                return ctx.complete_step(
+                    _repair_result(
+                        "repo_format_choice_ownership_mismatch",
+                        "Repo format choice submission does not belong to the current Flow scope.",
                     )
+                )
+            submitted_by = submission.submitted_by_agent_id
+            bound_agent_ids = set(source_step.agent_bindings.by_role.values())
+            if submitted_by is not None and submitted_by not in bound_agent_ids:
+                return ctx.complete_step(
+                    _repair_result(
+                        "repo_format_choice_ownership_mismatch",
+                        "Repo format choice submission does not belong to the Agent bound to the discovery Step.",
+                    )
+                )
+            if isinstance(submission, RepoFormatAdapterChoiceSubmission):
+                verified_route = submission.verified_route
                 try:
                     route = AdapterProviderRoute(
                         git_url=submission.git_url,
                         revision=submission.revision,
                         subdir=submission.subdir,
-                        package_name=submission.package_name,
-                        likely_import_module=submission.likely_import_module,
+                        package_name=verified_route.package_name,
+                        likely_import_module=verified_route.likely_import_module,
                         evidence_summary=submission.evidence_summary,
                         known_risks=submission.known_risks,
                     )
@@ -287,12 +298,7 @@ class ApplyRepoFormatChoiceStep(BaseStep):
                         evidence_summary=submission.summary
                         or "Repo format discovery selected a native provider.",
                         searched_targets=submission.searched_targets,
-                        rejected_candidates=[
-                            RejectedUpstreamCandidate.model_validate(
-                                candidate.model_dump(mode="json")
-                            )
-                            for candidate in submission.rejected_candidates
-                        ],
+                        rejected_candidates=[],
                     )
                 except ValueError as exc:
                     return ctx.complete_step(
@@ -309,18 +315,26 @@ class ApplyRepoFormatChoiceStep(BaseStep):
         repo_workspace = _repo_workspace(ctx)
         repo_root = Path(input_model.repo_root)
         if isinstance(route, AdapterProviderRoute):
-            verified_route = input_model.verified_adapter_route
             if verified_route is None:
-                verified = repo_workspace.verify_adapter_provider_route(route)
-                if not verified.ok or verified.value is None:
-                    return ctx.complete_step(
-                        _repair_result_from_issues(
-                            verified.issues,
-                            fallback_code="adapter_upstream_compatibility_failed",
-                            fallback_message="Adapter upstream compatibility verification failed.",
-                        )
+                return ctx.complete_step(
+                    _repair_result(
+                        "adapter_verified_route_missing",
+                        "Adapter route application requires a verified compatibility receipt.",
                     )
-                verified_route = verified.value
+                )
+            validated_receipt = repo_workspace.validate_verified_adapter_provider_route(
+                route,
+                verified_route,
+            )
+            if not validated_receipt.ok or validated_receipt.value is None:
+                return ctx.complete_step(
+                    _repair_result_from_issues(
+                        validated_receipt.issues,
+                        fallback_code="adapter_verified_route_invalid",
+                        fallback_message="Adapter route receipt validation failed.",
+                    )
+                )
+            verified_route = validated_receipt.value
             prepared_input = repo_workspace.preparation.get_preparation_input(repo_root)
             if not prepared_input.ok or prepared_input.value is None:
                 return ctx.complete_step(
@@ -368,14 +382,7 @@ class ApplyRepoFormatChoiceStep(BaseStep):
                     )
                 )
             value = initialized.value
-            package_name = verified_route.package_name or route.package_name
-            if package_name is None:
-                return ctx.complete_step(
-                    _repair_result(
-                        "adapter_upstream_package_missing",
-                        "Verified Adapter upstream package metadata is missing.",
-                    )
-                )
+            package_name = verified_route.package_name
             setup_summary = value.lake_check_summary or value.summary
             upstream_metadata = _adapter(ctx).write_adapter_upstream_metadata(
                 repo_root,
@@ -1543,8 +1550,11 @@ def _latest_repo_format_submission(ctx: StepRunContext, flow: object):
             continue
         step = flow_service.get_step(step_id)
         submission = step.submission
-        if isinstance(submission, (RepoFormatAdapterChoiceSubmission, RepoFormatNativeChoiceSubmission)):
-            return submission
+        if step.step_type == "repo_format_discovery_agent_step" and isinstance(
+            submission,
+            (RepoFormatAdapterChoiceSubmission, RepoFormatNativeChoiceSubmission),
+        ):
+            return step, submission
     return None
 
 

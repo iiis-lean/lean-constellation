@@ -147,7 +147,7 @@ async def _exercise_submit_http_mcp(app, tmp_path: Path) -> None:  # noqa: ANN00
                     await session.initialize()
                     result = await session.call_tool(
                         "submit_native_repo_choice",
-                        {"summary": "Use native."},
+                        {"summary": "Use native.", "searched_targets": ["provider theorem Lean"]},
                     )
 
     assert result.isError is False

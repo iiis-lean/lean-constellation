@@ -41,10 +41,21 @@ def test_skill_registry_builds_all_fixed_skills() -> None:
     assert "resource-material-acquisition" in specs
     assert "resource-request-submission" in specs
     assert "resource-result-closeout" in specs
+    assert "repo-format-discovery" in specs
     assert "resource-request-handling" not in specs
     assert "lean-proof-formalization" in specs
     assert specs["source-material-acquisition"].description
     assert "## Workflow" in specs["source-material-acquisition"].body
+
+
+def test_repo_format_discovery_skill_owns_route_workflow_and_current_submit_contract() -> None:
+    body = build_skill_specs()["repo-format-discovery"].body
+
+    assert "probe_github_lean_repo_candidate" in body
+    assert "submit package names" in body
+    assert "rejected-candidate dossiers" in body
+    assert "placeholder" in body
+    assert "deterministic Apply step" in body
 
 
 def test_skill_materialization_writes_skill_md_without_registry_references(tmp_path: Path) -> None:

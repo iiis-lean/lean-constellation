@@ -4,7 +4,7 @@ from pathlib import Path
 
 from agent_runtime_kit.flow.standard_steps import AgentStepState
 
-from lean_constellation.domain.preparation import AutoProviderRoute
+from lean_constellation.domain.preparation import AutoProviderRoute, VerifiedAdapterRouteReceipt
 from lean_constellation.flows.common.agent_steps import (
     AdapterDeclCatalogAgentStep,
     RepoFormatDiscoveryAgentStep,
@@ -71,6 +71,22 @@ def _run_step(runtime: FakeLeanFlowRuntime, step, submission=None):
     return runtime.flow_service.get_step(step_id)
 
 
+def _adapter_receipt() -> VerifiedAdapterRouteReceipt:
+    revision = "a" * 40
+    return VerifiedAdapterRouteReceipt(
+        git_url="https://github.com/example/upstream",
+        revision=revision,
+        package_name="upstream",
+        likely_import_module="upstream",
+        lean_toolchain="leanprover/lean4:v4.28.0",
+        expected_lean_toolchain="leanprover/lean4:v4.28.0",
+        expected_mathlib_revision="v4.28.0",
+        revision_resolution="explicit",
+        candidates_checked=[revision],
+        evidence_summary="Remote probe matched the exact route.",
+    )
+
+
 def test_repo_format_discovery_agent_step_business_results(tmp_path: Path) -> None:
     runtime = create_fake_lean_flow_runtime(tmp_path / "ark")
     flow_id = _start_host_flow(runtime, tmp_path)
@@ -87,8 +103,10 @@ def test_repo_format_discovery_agent_step_business_results(tmp_path: Path) -> No
             submission_id=new_submission_id("sub"),
             submission_type="repo_format_adapter_choice",
             tool_name="submit_adapter_repo_choice",
-            git_url="https://github.com/example/upstream.git",
+            git_url="https://github.com/example/upstream",
+            revision="a" * 40,
             evidence_summary="Remote probe found lakefile.lean.",
+            verified_route=_adapter_receipt(),
             summary="Use adapter.",
         ),
     )
@@ -108,6 +126,7 @@ def test_repo_format_discovery_agent_step_business_results(tmp_path: Path) -> No
             submission_type="repo_format_native_choice",
             tool_name="submit_native_repo_choice",
             summary="Use native.",
+            searched_targets=["upstream theorem"],
         ),
     )
     assert isinstance(native_step.result, RepoFormatDiscoveryStepResult)

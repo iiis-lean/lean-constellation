@@ -317,21 +317,35 @@ def submit_adapter_repo_choice(runtime: Any, ctx: ToolExecutionContext, args: Su
         git_url = runtime.external.github_repo.normalize_github_url(args.git_url)
     except ValueError as exc:
         return _fail(runtime, "git_url_invalid", str(exc), field="git_url")
-    evidence_summary = args.evidence_summary.strip()
-    if not evidence_summary:
-        return _fail(runtime, "evidence_summary_required", "Adapter repo choice requires non-empty evidence_summary.", field="evidence_summary")
+    try:
+        route = AdapterProviderRoute(
+            git_url=git_url,
+            revision=args.revision,
+            subdir=args.subdir,
+            evidence_summary=args.evidence_summary,
+            known_risks=args.known_risks,
+        )
+    except ValueError as exc:
+        return _fail(runtime, "adapter_provider_route_invalid", str(exc), field="provider_route")
+    verified = runtime.repo_workspace.verify_adapter_provider_route(route)
+    if not verified.ok or verified.value is None:
+        return runtime.foundation.fail(verified.issues)
+    receipt = verified.value
     return _prepared(
         runtime,
         RepoFormatAdapterChoiceSubmission(
-            **_base_kwargs(ctx, tool_name="submit_adapter_repo_choice", summary=evidence_summary),
-            git_url=git_url,
-            revision=args.revision.strip() if args.revision else None,
-            subdir=args.subdir.strip().strip("/") if args.subdir else None,
-            package_name=args.package_name.strip() if args.package_name else None,
-            likely_import_module=args.likely_import_module.strip() if args.likely_import_module else None,
-            evidence_summary=evidence_summary,
-            known_risks=[risk.strip() for risk in args.known_risks if risk.strip()],
+            **_base_kwargs(ctx, tool_name="submit_adapter_repo_choice", summary=route.evidence_summary),
+            git_url=receipt.git_url,
+            revision=receipt.revision,
+            subdir=receipt.subdir,
+            evidence_summary=route.evidence_summary,
+            known_risks=route.known_risks,
+            verified_route=receipt,
         ),
+        agent_view={
+            "verified_route": receipt.model_dump(mode="json"),
+            "summary": "Adapter route passed exact remote compatibility verification.",
+        },
     )
 
 
@@ -340,17 +354,7 @@ def submit_native_repo_choice(runtime: Any, ctx: ToolExecutionContext, args: Sub
         runtime,
         RepoFormatNativeChoiceSubmission(
             **_base_kwargs(ctx, tool_name="submit_native_repo_choice", summary=args.summary),
-            searched_targets=[target.strip() for target in args.searched_targets if target.strip()],
-            rejected_candidates=[
-                {
-                    "git_url": candidate.git_url.strip() if candidate.git_url else None,
-                    "name": candidate.name.strip() if candidate.name else None,
-                    "reason": candidate.reason.strip(),
-                    "evidence_summary": candidate.evidence_summary.strip() if candidate.evidence_summary else None,
-                }
-                for candidate in args.rejected_candidates
-                if candidate.reason.strip()
-            ],
+            searched_targets=args.searched_targets,
         ),
     )
 
@@ -1054,12 +1058,10 @@ def submit_adapter_repo_requirement(
     args: SubmitAdapterRepoRequirementArgs,
 ) -> ServiceResult[PreparedSubmissionView]:
     try:
-        route = AdapterProviderRoute(
+        requested_route = AdapterProviderRoute(
             git_url=runtime.external.github_repo.normalize_github_url(args.git_url),
             revision=args.revision,
             subdir=args.subdir,
-            package_name=args.package_name,
-            likely_import_module=args.likely_import_module,
             evidence_summary=args.evidence_summary,
             known_risks=args.known_risks,
         )
@@ -1070,6 +1072,19 @@ def submit_adapter_repo_requirement(
             str(exc),
             field="provider_route",
         )
+    verified = runtime.repo_workspace.verify_adapter_provider_route(requested_route)
+    if not verified.ok or verified.value is None:
+        return runtime.foundation.fail(verified.issues)
+    receipt = verified.value
+    route = AdapterProviderRoute(
+        git_url=receipt.git_url,
+        revision=receipt.revision,
+        subdir=receipt.subdir,
+        package_name=receipt.package_name,
+        likely_import_module=receipt.likely_import_module,
+        evidence_summary=args.evidence_summary,
+        known_risks=args.known_risks,
+    )
     return _submit_repo_requirement(
         runtime,
         ctx,
@@ -1088,15 +1103,7 @@ def submit_native_repo_requirement(
         route = NativeProviderRoute(
             evidence_summary=args.evidence_summary,
             searched_targets=args.searched_targets,
-            rejected_candidates=[
-                {
-                    "git_url": candidate.git_url,
-                    "name": candidate.name,
-                    "reason": candidate.reason,
-                    "evidence_summary": candidate.evidence_summary,
-                }
-                for candidate in args.rejected_candidates
-            ],
+            rejected_candidates=[],
         )
     except ValueError as exc:
         return _fail(

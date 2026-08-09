@@ -82,7 +82,7 @@ def build_submit_tool_specs() -> list[ToolSpec]:
     specs = [
         _submit_tool(
             name="submit_adapter_repo_choice",
-            description="Submit that the current requirement repo should be built as an adapter around an existing GitHub Lean repo.",
+            description="Verify and submit an existing GitHub Lean project as the Adapter route; package, module, and exact compatible revision are derived by the backend.",
             args_model=SubmitAdapterRepoChoiceArgs,
             groups={SubmitGroup.REPO_FORMAT_DISCOVERY_SUBMIT},
             roles={"coordinator", "admin"},
@@ -90,7 +90,7 @@ def build_submit_tool_specs() -> list[ToolSpec]:
         ),
         _submit_tool(
             name="submit_native_repo_choice",
-            description="Submit that the current requirement repo should be prepared as a native Lean repo.",
+            description="Submit a Native route after recording at least one concrete upstream search target that was checked.",
             args_model=SubmitNativeRepoChoiceArgs,
             groups={SubmitGroup.REPO_FORMAT_DISCOVERY_SUBMIT},
             roles={"coordinator", "admin"},
@@ -244,7 +244,7 @@ def build_submit_tool_specs() -> list[ToolSpec]:
         ),
         _submit_tool(
             name="submit_adapter_repo_requirement",
-            description="Submit a provider requirement for an exact, already verified GitHub Lean repository commit.",
+            description="Verify and submit a direct Adapter provider requirement; the backend derives the exact compatible revision, package, and import module.",
             args_model=SubmitAdapterRepoRequirementArgs,
             groups={SubmitGroup.COORDINATOR_SUBMIT},
             roles={"coordinator", "admin"},

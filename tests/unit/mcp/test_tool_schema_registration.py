@@ -17,15 +17,18 @@ def test_tool_spec_description_and_argument_schema_map_to_mcp_registration() -> 
     native = {tool.name: tool for tool in submit.value}["submit_native_repo_choice"]
     normalize = {tool.name: tool for tool in resource.value}["normalize_resource_target"]
 
-    assert "native Lean repo" in native.description
+    assert "Native route" in native.description
     assert native.capability == "submit"
     assert native.submit_behavior == "terminal"
     assert native.input_schema["properties"]["summary"]["description"] == "Concise summary of the submitted result."
     assert "source_corpus_mode" not in native.input_schema["properties"]
     assert "native_repo_name" not in native.input_schema["properties"]
+    assert "rejected_candidates" not in native.input_schema["properties"]
 
     adapter = {tool.name: tool for tool in submit.value}["submit_adapter_repo_choice"]
     assert {"git_url", "evidence_summary", "known_risks"} <= set(adapter.input_schema["properties"])
+    assert "package_name" not in adapter.input_schema["properties"]
+    assert "likely_import_module" not in adapter.input_schema["properties"]
     assert "upstream_github_url" not in adapter.input_schema["properties"]
     assert "adapter_repo_name" not in adapter.input_schema["properties"]
 

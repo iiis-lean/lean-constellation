@@ -176,8 +176,8 @@ class VerifiedAdapterRouteReceipt(StrictModel):
     git_url: str
     revision: str
     subdir: str | None = None
-    package_name: str | None = None
-    likely_import_module: str | None = None
+    package_name: str
+    likely_import_module: str
     lean_toolchain: str
     mathlib_source: str | None = None
     mathlib_revision: str | None = None
@@ -194,6 +194,29 @@ class VerifiedAdapterRouteReceipt(StrictModel):
         if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", normalized):
             raise ValueError("verified revision must be an immutable 40- or 64-character Git commit identity")
         return normalized
+
+    @field_validator(
+        "git_url",
+        "package_name",
+        "likely_import_module",
+        "lean_toolchain",
+        "expected_lean_toolchain",
+        "evidence_summary",
+    )
+    @classmethod
+    def _verified_required_text(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("verified adapter route fields must be non-empty")
+        return normalized
+
+    @model_validator(mode="after")
+    def _verified_candidate_contains_revision(self) -> "VerifiedAdapterRouteReceipt":
+        checked = [candidate.strip().lower() for candidate in self.candidates_checked if candidate.strip()]
+        if self.revision not in checked:
+            raise ValueError("verified adapter route candidates_checked must include the selected revision")
+        self.candidates_checked = checked
+        return self
 
 
 class RepoDependencyRequirement(StrictModel):

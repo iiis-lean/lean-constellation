@@ -118,6 +118,7 @@ def test_repo_format_discovery_has_native_and_adapter_context_fragments() -> Non
 
     assert "repo.native_repo_context" in spec.instruction_fragment_keys
     assert "repo.adapter_repo_context" in spec.instruction_fragment_keys
+    assert spec.skill_keys == ["repo-format-discovery"]
 
 
 def test_every_agent_uses_merged_common_fragments() -> None:

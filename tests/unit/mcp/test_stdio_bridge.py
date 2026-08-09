@@ -24,7 +24,7 @@ def test_stdio_bridge_exposes_tools_with_tool_spec_schema(tmp_path) -> None:
 
     assert "submit_native_repo_choice" in tools
     native = tools["submit_native_repo_choice"]
-    assert native.inputSchema["required"] == ["summary"]
+    assert native.inputSchema["required"] == ["summary", "searched_targets"]
     assert "source_corpus_mode" not in native.inputSchema["properties"]
     assert "native_repo_name" not in native.inputSchema["properties"]
 
@@ -86,7 +86,7 @@ def test_stdio_bridge_converts_tool_result_for_success_and_gate_failure(tmp_path
     submitted = mcp_protocol_call_tool(
         endpoint,
         "submit_native_repo_choice",
-        {"summary": "Use native.", "searched_targets": ["No repo found"], "rejected_candidates": []},
+        {"summary": "Use native.", "searched_targets": ["No repo found"]},
         env=env,
     )
     assert submitted.isError is False
@@ -119,7 +119,7 @@ def test_stdio_bridge_content_only_preserves_complete_success_and_error_payloads
     submitted = mcp_protocol_call_tool(
         endpoint,
         "submit_native_repo_choice",
-        {"summary": "Use native.", "searched_targets": [], "rejected_candidates": []},
+        {"summary": "Use native.", "searched_targets": ["provider theorem Lean"]},
         env=env,
     )
 

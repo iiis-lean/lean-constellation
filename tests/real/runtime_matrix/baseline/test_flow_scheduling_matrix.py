@@ -67,7 +67,7 @@ def test_repo_format_native_and_adapter_branches_restore_from_checkpoint(
         flow_id=started.flow_id,
         agent_step_id=agent_step_id,
         tool_name="submit_native_repo_choice",
-        arguments={"summary": "Use native branch.", "searched_targets": ["baseline matrix"], "rejected_candidates": []},
+        arguments={"summary": "Use native branch.", "searched_targets": ["baseline matrix"]},
         expected_outcome="native_bootstrap_ready",
         expected_submission="repo_format_native_choice",
     )
@@ -85,9 +85,6 @@ def test_repo_format_native_and_adapter_branches_restore_from_checkpoint(
         tool_name="submit_adapter_repo_choice",
         arguments={
             "git_url": "https://github.com/example/runtime-matrix-upstream.git",
-            "revision": "HEAD",
-            "package_name": "runtime_matrix_upstream",
-            "likely_import_module": "RuntimeMatrixUpstream",
             "evidence_summary": "Baseline matrix fixture uses a remote GitHub Lean candidate.",
             "known_risks": ["Fixture does not validate declaration coverage."],
         },

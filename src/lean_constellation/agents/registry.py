@@ -394,7 +394,7 @@ AGENT_TYPE_SPECS: tuple[AgentTypeSpec, ...] = (
             "repo.native_repo_context",
             "repo.adapter_repo_context",
         ],
-        skills=[],
+        skills=[SkillKey.REPO_FORMAT_DISCOVERY],
         app_view=AppView.REPO_FORMAT_DISCOVERY,
         submit_view=SubmitView.REPO_FORMAT_DISCOVERY_SUBMIT,
         aliases=["RepoFormatDiscovery", "repo_format_discovery"],

@@ -35,6 +35,24 @@ def test_business_agent_step_shells_register_and_parse_submissions() -> None:
                     continue
                 if key == "provider_route":
                     payload[key] = {"kind": "auto"}
+                elif key == "verified_route":
+                    payload[key] = {
+                        "git_url": "git_url_value",
+                        "revision": "a" * 40,
+                        "subdir": "subdir_value",
+                        "package_name": "package_value",
+                        "likely_import_module": "module_value",
+                        "lean_toolchain": "leanprover/lean4:v4.28.0",
+                        "expected_lean_toolchain": "leanprover/lean4:v4.28.0",
+                        "expected_mathlib_revision": "v4.28.0",
+                        "revision_resolution": "explicit",
+                        "candidates_checked": ["a" * 40],
+                        "evidence_summary": "Verified route.",
+                    }
+                elif key == "revision":
+                    payload[key] = "a" * 40
+                elif key == "searched_targets":
+                    payload[key] = ["provider theorem search"]
                 elif key == "explorations":
                     payload[key] = [{"kind": "mathlib", "objective": "Find imports."}]
                 elif key.endswith("_names") or key.endswith("_deps") or key.endswith("_refs") or key in {
@@ -58,7 +76,6 @@ def test_business_agent_step_shells_register_and_parse_submissions() -> None:
                         "unresolved_material_needs",
                         "blocked_needs",
                         "known_risks",
-                        "searched_targets",
                         "rejected_candidates",
                     }:
                         payload[key] = []

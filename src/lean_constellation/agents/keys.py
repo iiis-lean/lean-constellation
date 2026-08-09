@@ -6,6 +6,7 @@ from enum import StrEnum
 
 
 class SkillKey(StrEnum):
+    REPO_FORMAT_DISCOVERY = "repo-format-discovery"
     NODE_CONTRACT_DESIGN = "node-contract-design"
     CONTENT_CONTRACT_READING = "content-contract-reading"
     VISIBLE_NODE_DEPENDENCY_RECON = "visible-node-dependency-recon"

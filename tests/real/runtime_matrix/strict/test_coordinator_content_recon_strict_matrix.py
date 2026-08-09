@@ -62,12 +62,6 @@ pytestmark = [pytest.mark.real, pytest.mark.slow]
                 "reason": "The strict fixture needs an independent provider theorem.",
                 "evidence_summary": "No suitable existing Lean provider remained after bounded search.",
                 "searched_targets": ["strict fixture provider theorem Lean"],
-                "rejected_candidates": [
-                    {
-                        "name": "UnrelatedMath",
-                        "reason": "The candidate exposes a different theorem.",
-                    }
-                ],
             },
             "waiting_requirement",
         ),

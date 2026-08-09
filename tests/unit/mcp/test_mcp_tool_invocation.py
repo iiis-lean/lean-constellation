@@ -51,7 +51,7 @@ def test_mcp_submit_path_returns_gate_errors_and_records_successful_submit(tmp_p
     submitted = server.value.call_tool(
         "repo_format_discovery_submit",
         "submit_native_repo_choice",
-        {"summary": "Use native."},
+        {"summary": "Use native.", "searched_targets": ["provider theorem Lean"]},
         env=env,
     )
     assert submitted.ok

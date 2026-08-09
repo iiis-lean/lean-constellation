@@ -4,34 +4,44 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator, model_validator
 
-from lean_constellation.domain.common import StrictModel
+from lean_constellation.domain.preparation import VerifiedAdapterRouteReceipt
 from lean_constellation.flows.common.submissions import LeanBaseSubmission, LeanDispatchSubmission
 
 
 class RepoFormatAdapterChoiceSubmission(LeanBaseSubmission):
     submission_type: Literal["repo_format_adapter_choice"] = "repo_format_adapter_choice"
     git_url: str
-    revision: str | None = None
+    revision: str
     subdir: str | None = None
-    package_name: str | None = None
-    likely_import_module: str | None = None
     evidence_summary: str
     known_risks: list[str] = Field(default_factory=list)
+    verified_route: VerifiedAdapterRouteReceipt
 
-
-class RejectedUpstreamCandidateSubmission(StrictModel):
-    git_url: str | None = None
-    name: str | None = None
-    reason: str
-    evidence_summary: str | None = None
+    @model_validator(mode="after")
+    def _verified_route_matches_choice(self) -> "RepoFormatAdapterChoiceSubmission":
+        receipt = self.verified_route
+        if (self.git_url, self.revision, self.subdir) != (
+            receipt.git_url,
+            receipt.revision,
+            receipt.subdir,
+        ):
+            raise ValueError("verified adapter route does not match the submitted canonical choice")
+        return self
 
 
 class RepoFormatNativeChoiceSubmission(LeanBaseSubmission):
     submission_type: Literal["repo_format_native_choice"] = "repo_format_native_choice"
-    searched_targets: list[str] = Field(default_factory=list)
-    rejected_candidates: list[RejectedUpstreamCandidateSubmission] = Field(default_factory=list)
+    searched_targets: list[str]
+
+    @field_validator("searched_targets")
+    @classmethod
+    def _searched_targets_non_empty(cls, values: list[str]) -> list[str]:
+        normalized = [value.strip() for value in values if value.strip()]
+        if not normalized:
+            raise ValueError("searched_targets must contain at least one non-empty target")
+        return list(dict.fromkeys(normalized))
 
 
 class SourceCorpusPreparedSubmission(LeanBaseSubmission):

@@ -110,6 +110,39 @@ def test_explicit_immutable_revision_exact_match_is_preserved() -> None:
     assert fake.history_calls == 0
 
 
+def test_probe_derives_package_and_import_module_when_agent_omits_them() -> None:
+    fake = FakeGitHubRepo({COMPATIBLE: _probe(COMPATIBLE)})
+    runtime = _runtime(fake)
+    route = AdapterProviderRoute(
+        git_url="https://github.com/example/provider",
+        revision=COMPATIBLE,
+        evidence_summary="Exact provider candidate.",
+    )
+
+    result = runtime.repo_workspace.verify_adapter_provider_route(route)
+
+    assert result.ok and result.value is not None
+    assert result.value.package_name == "Provider"
+    assert result.value.likely_import_module == "Provider"
+
+
+def test_verified_receipt_validation_does_not_repeat_remote_probe() -> None:
+    fake = FakeGitHubRepo({COMPATIBLE: _probe(COMPATIBLE)})
+    runtime = _runtime(fake)
+    route = _route(revision=COMPATIBLE)
+    verified = runtime.repo_workspace.verify_adapter_provider_route(route)
+    assert verified.ok and verified.value is not None
+    fake.probe_calls.clear()
+
+    validated = runtime.repo_workspace.validate_verified_adapter_provider_route(
+        route,
+        verified.value,
+    )
+
+    assert validated.ok and validated.value == verified.value
+    assert fake.probe_calls == []
+
+
 def test_explicit_revision_mismatch_fails_without_history_fallback() -> None:
     fake = FakeGitHubRepo(
         {

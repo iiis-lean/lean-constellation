@@ -126,6 +126,79 @@ class AdapterCompatibilityComponent:
             )
         )
 
+    def validate_verified_adapter_provider_route(
+        self,
+        route: AdapterProviderRoute,
+        receipt: VerifiedAdapterRouteReceipt,
+    ) -> ServiceResult[VerifiedAdapterRouteReceipt]:
+        """Validate an immutable route receipt without repeating the remote probe."""
+
+        expected_toolchain = self.config.lean_toolchain or f"leanprover/lean4:v{self.config.lean_version}"
+        expected_mathlib_revision = self.config.mathlib_rev if self.config.mathlib_enabled else None
+        exact_fields = {
+            "git_url": (receipt.git_url, route.git_url),
+            "subdir": (receipt.subdir, route.subdir),
+        }
+        for field_name, (current, expected) in exact_fields.items():
+            if current != expected:
+                return self._receipt_fail(
+                    "adapter_verified_route_mismatch",
+                    "Verified Adapter receipt does not match the selected provider route.",
+                    route,
+                    field=field_name,
+                    current=current,
+                    expected=expected,
+                )
+        if route.revision is not None and receipt.revision != route.revision:
+            return self._receipt_fail(
+                "adapter_verified_revision_mismatch",
+                "Verified Adapter receipt changed the selected immutable revision.",
+                route,
+                field="revision",
+                current=receipt.revision,
+                expected=route.revision,
+            )
+        for field_name in ("package_name", "likely_import_module"):
+            expected = getattr(route, field_name)
+            current = getattr(receipt, field_name)
+            if expected is not None and current != expected:
+                return self._receipt_fail(
+                    "adapter_verified_route_mismatch",
+                    "Verified Adapter receipt does not match the selected provider route.",
+                    route,
+                    field=field_name,
+                    current=current,
+                    expected=expected,
+                )
+        if receipt.expected_lean_toolchain != expected_toolchain or receipt.lean_toolchain != expected_toolchain:
+            return self._receipt_fail(
+                "adapter_verified_baseline_changed",
+                "The workspace Lean baseline changed after Adapter route verification.",
+                route,
+                field="lean_toolchain",
+                current=f"{receipt.lean_toolchain} / expected {receipt.expected_lean_toolchain}",
+                expected=expected_toolchain,
+            )
+        if receipt.expected_mathlib_revision != expected_mathlib_revision:
+            return self._receipt_fail(
+                "adapter_verified_baseline_changed",
+                "The workspace Mathlib baseline changed after Adapter route verification.",
+                route,
+                field="mathlib_revision",
+                current=receipt.expected_mathlib_revision,
+                expected=expected_mathlib_revision,
+            )
+        if receipt.mathlib_revision is not None and receipt.mathlib_revision != expected_mathlib_revision:
+            return self._receipt_fail(
+                "adapter_verified_mathlib_mismatch",
+                "The verified upstream Mathlib pin no longer matches the workspace baseline.",
+                route,
+                field="mathlib_revision",
+                current=receipt.mathlib_revision,
+                expected=expected_mathlib_revision,
+            )
+        return self.runtime.foundation.ok(receipt)
+
     def _evaluate_probe(
         self,
         route: AdapterProviderRoute,
@@ -247,13 +320,28 @@ class AdapterCompatibilityComponent:
                     current=mathlib.revision,
                     expected=self.config.mathlib_rev,
                 )
+        package_name = (route.package_name or probe.package_name or "").strip()
+        if not package_name:
+            return self._fail(
+                "adapter_upstream_package_missing",
+                "The exact remote probe did not identify a Lake package.",
+                route,
+            )
+        likely_modules = [module.strip() for module in probe.likely_import_modules if module.strip()]
+        likely_import_module = route.likely_import_module or (likely_modules[0] if likely_modules else None)
+        if likely_import_module is None:
+            return self._fail(
+                "adapter_upstream_import_module_missing",
+                "The exact remote probe did not identify an importable Lean module.",
+                route,
+            )
         return self.runtime.foundation.ok(
             VerifiedAdapterRouteReceipt(
                 git_url=probe.normalized_git_url,
                 revision=resolved_revision,
                 subdir=selected_subdir,
-                package_name=route.package_name or probe.package_name,
-                likely_import_module=route.likely_import_module,
+                package_name=package_name,
+                likely_import_module=likely_import_module,
                 lean_toolchain=actual_toolchain,
                 mathlib_source=mathlib.source,
                 mathlib_revision=mathlib.revision,
@@ -365,6 +453,27 @@ class AdapterCompatibilityComponent:
                 current=current,
                 expected=expected,
                 details=details or {},
+            )
+        )
+
+    def _receipt_fail(
+        self,
+        kind: str,
+        message: str,
+        route: AdapterProviderRoute,
+        *,
+        field: str,
+        current: str | None,
+        expected: str | None,
+    ) -> ServiceResult[VerifiedAdapterRouteReceipt]:
+        return self.runtime.foundation.fail(
+            self.runtime.foundation.issue(
+                kind,
+                message,
+                object_ref=route.git_url,
+                field=field,
+                current=current,
+                expected=expected,
             )
         )
 

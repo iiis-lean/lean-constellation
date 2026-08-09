@@ -14,6 +14,7 @@ from lean_constellation.domain.preparation import (
 from lean_constellation.domain.repo import ProofAvailability, RepoCompletionMode
 from lean_constellation.domain.repo_run import SourceScope
 from lean_constellation.services import LeanProviderOverrides, create_test_runtime_services
+from lean_constellation.services.external_clients import GitHubCommitHistoryView, GitHubLeanRepoProbeView
 from lean_constellation.services.tool_facade import RawToolCallContext, RuntimeToolContext
 from lean_constellation.tools import register_submit_tooling
 from lean_constellation.tools.submit_args import RequirementInterfaceArg, SubmitRepoRequirementArgs
@@ -54,7 +55,67 @@ def _runtime_ctx(
 
 
 def _runtime(gateway: FakeSubmissionGateway):
-    return create_test_runtime_services(providers=LeanProviderOverrides(submission_gateway=gateway))
+    return create_test_runtime_services(
+        providers=LeanProviderOverrides(submission_gateway=gateway),
+        external_overrides={"github_repo": FakeGitHubRepo()},
+    )
+
+
+class FakeGitHubRepo:
+    revision = "a" * 40
+
+    def __init__(self) -> None:
+        self.probe_calls: list[tuple[str, str | None, str | None]] = []
+        self.lean_toolchain = "leanprover/lean4:v4.28.0"
+        self.mathlib_revision = "v4.28.0"
+
+    def normalize_github_url(self, value: str) -> str:
+        normalized = value.strip().removesuffix(".git").rstrip("/")
+        if normalized.startswith("git@github.com:"):
+            return "https://github.com/" + normalized.removeprefix("git@github.com:")
+        if normalized.startswith("https://github.com/"):
+            return normalized
+        if "/" in normalized and "://" not in normalized:
+            return f"https://github.com/{normalized}"
+        raise ValueError("Git URL must identify a GitHub repository.")
+
+    def probe_github_lean_repo_candidate(
+        self,
+        git_url: str,
+        revision: str | None = None,
+        subdir: str | None = None,
+    ) -> GitHubLeanRepoProbeView:
+        self.probe_calls.append((git_url, revision, subdir))
+        resolved = revision or self.revision
+        normalized = self.normalize_github_url(git_url)
+        return GitHubLeanRepoProbeView(
+            git_url=git_url,
+            normalized_git_url=normalized,
+            requested_revision=revision,
+            resolved_revision=resolved,
+            requested_subdir=subdir,
+            selected_subdir=subdir,
+            is_lean_project=True,
+            has_lakefile=True,
+            has_lean_toolchain=True,
+            package_name="Provider",
+            likely_import_modules=["Provider"],
+            lakefile_paths=["lakefile.toml"],
+            lakefile_excerpt=(
+                'name = "Provider"\n\n'
+                '[[require]]\nname = "mathlib"\n'
+                f'scope = "leanprover-community"\nrev = "{self.mathlib_revision}"\n'
+            ),
+            lean_toolchain=self.lean_toolchain,
+            evidence_summary="Exact compatible remote Lean project.",
+        )
+
+    def list_repository_commits(self, git_url: str, *, limit: int) -> GitHubCommitHistoryView:
+        return GitHubCommitHistoryView(
+            git_url=self.normalize_github_url(git_url),
+            commits=[self.revision][:limit],
+            summary="Fixture commit history.",
+        )
 
 
 def test_successful_submit_records_typed_submission(tmp_path: Path) -> None:
@@ -69,7 +130,7 @@ def test_successful_submit_records_typed_submission(tmp_path: Path) -> None:
     result = runtime.tool_facade.invoke_agent_tool(
         raw,
         tool_name="submit_native_repo_choice",
-        flat_args={"summary": "Use native repo.", "searched_targets": ["topology repo"], "rejected_candidates": []},
+        flat_args={"summary": "Use native repo.", "searched_targets": ["topology repo"]},
     )
 
     assert result.ok
@@ -207,7 +268,7 @@ def test_terminal_submit_summary_is_stripped_and_cannot_be_blank(tmp_path: Path)
     stripped = runtime.tool_facade.invoke_agent_tool(
         raw,
         tool_name="submit_native_repo_choice",
-        flat_args={"summary": "  Use native repo.  "},
+        flat_args={"summary": "  Use native repo.  ", "searched_targets": ["topology repo"]},
     )
 
     assert blank.ok
@@ -218,6 +279,37 @@ def test_terminal_submit_summary_is_stripped_and_cannot_be_blank(tmp_path: Path)
     assert stripped.value is not None
     assert stripped.value.ok is True
     assert gateway.accepted[0].summary == "Use native repo."
+
+
+def test_native_repo_choice_rejects_empty_or_legacy_search_evidence(tmp_path: Path) -> None:
+    gateway = FakeSubmissionGateway()
+    runtime = _runtime(gateway)
+    assert register_submit_tooling(runtime).ok
+    raw = RawToolCallContext(
+        endpoint_view_key="repo_format_discovery_submit",
+        runtime_context=_runtime_ctx(tmp_path, view="repo_format_discovery_submit"),
+    )
+
+    empty = runtime.tool_facade.invoke_agent_tool(
+        raw,
+        tool_name="submit_native_repo_choice",
+        flat_args={"summary": "Use native.", "searched_targets": ["  "]},
+    )
+    legacy = runtime.tool_facade.invoke_agent_tool(
+        raw,
+        tool_name="submit_native_repo_choice",
+        flat_args={
+            "summary": "Use native.",
+            "searched_targets": ["provider theorem Lean"],
+            "rejected_candidates": [],
+        },
+    )
+
+    assert empty.ok and empty.value is not None and not empty.value.ok
+    assert empty.value.issues[0].field == "searched_targets"
+    assert legacy.ok and legacy.value is not None and not legacy.value.ok
+    assert legacy.value.issues[0].field == "rejected_candidates"
+    assert gateway.accepted == []
 
 
 def test_lean_provider_submit_rejects_mathlib_after_url_normalization(tmp_path: Path) -> None:
@@ -369,10 +461,8 @@ def test_adapter_repo_choice_records_typed_remote_evidence(tmp_path: Path) -> No
         tool_name="submit_adapter_repo_choice",
         flat_args={
             "git_url": "owner/repo",
-            "revision": "main",
+            "revision": "a" * 40,
             "subdir": "lean",
-            "package_name": "Foo",
-            "likely_import_module": "Foo",
             "evidence_summary": "Remote probe found lakefile.lean.",
             "known_risks": ["Coverage not verified."],
         },
@@ -382,9 +472,69 @@ def test_adapter_repo_choice_records_typed_remote_evidence(tmp_path: Path) -> No
     assert result.value is not None
     assert result.value.ok is True
     assert gateway.accepted[0].git_url == "https://github.com/owner/repo"
-    assert gateway.accepted[0].package_name == "Foo"
-    assert gateway.accepted[0].likely_import_module == "Foo"
+    assert gateway.accepted[0].revision == "a" * 40
+    assert gateway.accepted[0].verified_route.package_name == "Provider"
+    assert gateway.accepted[0].verified_route.likely_import_module == "Provider"
     assert gateway.accepted[0].known_risks == ["Coverage not verified."]
+    assert runtime.external.github_repo.probe_calls == [
+        ("https://github.com/owner/repo", "a" * 40, "lean")
+    ]
+
+
+def test_adapter_repo_choice_rejects_agent_supplied_probe_facts(tmp_path: Path) -> None:
+    gateway = FakeSubmissionGateway()
+    runtime = _runtime(gateway)
+    assert register_submit_tooling(runtime).ok
+    raw = RawToolCallContext(
+        endpoint_view_key="repo_format_discovery_submit",
+        runtime_context=_runtime_ctx(tmp_path, view="repo_format_discovery_submit"),
+    )
+
+    result = runtime.tool_facade.invoke_agent_tool(
+        raw,
+        tool_name="submit_adapter_repo_choice",
+        flat_args={
+            "git_url": "owner/repo",
+            "revision": "a" * 40,
+            "package_name": "AgentGuess",
+            "likely_import_module": "AgentGuess",
+            "evidence_summary": "Remote project candidate.",
+        },
+    )
+
+    assert result.ok and result.value is not None and not result.value.ok
+    assert {issue.field for issue in result.value.issues} == {
+        "package_name",
+        "likely_import_module",
+    }
+    assert gateway.accepted == []
+
+
+def test_adapter_repo_choice_rejects_incompatible_probe_before_submission(tmp_path: Path) -> None:
+    gateway = FakeSubmissionGateway()
+    runtime = _runtime(gateway)
+    runtime.external.github_repo.lean_toolchain = "leanprover/lean4:v4.32.0"
+    runtime.external.github_repo.mathlib_revision = "v4.32.0"
+    assert register_submit_tooling(runtime).ok
+    raw = RawToolCallContext(
+        endpoint_view_key="repo_format_discovery_submit",
+        runtime_context=_runtime_ctx(tmp_path, view="repo_format_discovery_submit"),
+    )
+
+    result = runtime.tool_facade.invoke_agent_tool(
+        raw,
+        tool_name="submit_adapter_repo_choice",
+        flat_args={
+            "git_url": "owner/repo",
+            "revision": "a" * 40,
+            "evidence_summary": "Remote project candidate.",
+        },
+    )
+
+    assert result.ok and result.value is not None
+    assert result.value.ok is False
+    assert result.value.issues[0].kind == "adapter_upstream_toolchain_mismatch"
+    assert gateway.accepted == []
 
 
 def test_gate_failure_does_not_record_submission(tmp_path: Path) -> None:
@@ -819,12 +969,6 @@ def test_submit_repo_requirement_builds_submission_without_waiting_state(tmp_pat
             {
                 "evidence_summary": "No suitable Lean provider exists.",
                 "searched_targets": ["provider theorem Lean"],
-                "rejected_candidates": [
-                    {
-                        "name": "UnrelatedProvider",
-                        "reason": "It proves a different theorem.",
-                    }
-                ],
             },
             NativeProviderRoute,
         ),
@@ -866,6 +1010,11 @@ def test_submit_typed_repo_requirement_builds_one_authoritative_submission(
     submission = gateway.accepted[0]
     assert submission.submission_type == "coordinator_repo_requirement"
     assert isinstance(submission.provider_route, route_type)
+    if isinstance(submission.provider_route, AdapterProviderRoute):
+        assert submission.provider_route.package_name == "Provider"
+        assert submission.provider_route.likely_import_module == "Provider"
+    if isinstance(submission.provider_route, NativeProviderRoute):
+        assert submission.provider_route.rejected_candidates == []
 
 
 def test_submit_repo_requirement_schema_documents_business_field_contracts() -> None:

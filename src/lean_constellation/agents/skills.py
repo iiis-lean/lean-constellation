@@ -179,6 +179,38 @@ to proof completion merely because a stronger state is possible.
 
 
 SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
+    SkillKey.REPO_FORMAT_DISCOVERY.value: LeanSkillDefinition(
+        name="repo-format-discovery",
+        description="Choose a verified Adapter route or a searched Native route for one requirement repository.",
+        group="repo-lifecycle",
+        required_tool_groups=_groups(
+            AppGroup.REPO_PREPARATION_INPUT_READ,
+            AppGroup.REPO_PREPARATION_START_PREFLIGHT_READ,
+            AppGroup.REPO_PREPARATION_REQUIREMENT_READ,
+            AppGroup.WORKSPACE_OVERVIEW_READ,
+            AppGroup.UPSTREAM_REPO_SEARCH,
+            AppGroup.GITHUB_REPOSITORY_READ,
+            SubmitGroup.REPO_FORMAT_DISCOVERY_SUBMIT,
+        ),
+        source_design_doc="dev_docs/implementation/repo_discovery_agent_surface_hardening",
+        body=_body(
+            "repo-format-discovery",
+            "Choose exactly one repository format from concrete remote evidence while leaving deterministic compatibility facts to the backend.",
+            (
+                "Read `get_preparation_input`, then inspect only its allowed requirement refs with `list_preparation_requirements` or `get_preparation_requirement`; use the prompt refs only as navigation hints.",
+                "Search real GitHub candidates with `search_github_lean_repositories`; inspect promising repositories and use `probe_github_lean_repo_candidate` for Lean/Lake, toolchain, manifest, tree, and module evidence. Use the narrower repository tree/file/code tools only when the probe leaves a concrete question.",
+                "Choose Adapter only when one real upstream Lean/Lake project is mathematically relevant and plausible on the required boundary. Submit only git URL, optional immutable revision/subdir, evidence summary, and known risks. The terminal handler derives and verifies the exact commit, package, import module, Lean toolchain, and Mathlib pin.",
+                "Choose Native when the bounded search found no suitable upstream. Submit a concise summary and concrete non-empty searched targets; do not construct rejected-candidate dossiers.",
+                "If a submit returns typed field or compatibility issues, correct the actual target or route in the same AgentStep. Do not probe the schema with placeholders. Before retrying, recheck that the route still matches the inspected evidence.",
+                "After one route submit is accepted, stop immediately and let the deterministic Apply step consume the verified receipt.",
+            ),
+            (
+                "Official Mathlib is platform infrastructure, not an Adapter candidate.",
+                "Do not clone or check out upstream repositories, initialize Lake files, mutate SourceCorpus mode, prepare materials, or write repository truth.",
+                "Do not submit package names, import modules, resolved commits, toolchain facts, or other values owned by the backend probe.",
+            ),
+        ),
+    ),
     SkillKey.COORDINATOR_REPO_EXPLORATION.value: LeanSkillDefinition(
         name="coordinator-repo-exploration",
         description="Use when reconciling the fixed initial exploration batch or selecting a later repository-level exploration batch.",
