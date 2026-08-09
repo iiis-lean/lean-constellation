@@ -1203,12 +1203,8 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
         "record_mathlib_decl",
         {
             "decl_name": "Nat.add_assoc",
-            "module_name": "Mathlib.Data.Nat.Basic",
             "summary": "Strict ToolSweep associativity theorem.",
             "source": "Runtime Matrix checked declaration fixture.",
-            "kind": "theorem",
-            "signature": "Nat.add_assoc : (n m k : Nat) -> n + m + k = n + (m + k)",
-            "snippet": "theorem Nat.add_assoc (n m k : Nat) : n + m + k = n + (m + k) := by omega",
         },
         runtime_context=mathlib_ctx,
         recorder=evidence_recorder,

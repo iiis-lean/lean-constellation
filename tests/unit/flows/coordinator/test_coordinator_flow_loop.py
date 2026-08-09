@@ -573,7 +573,7 @@ def test_repo_exploration_ensures_agents_dispatches_atomic_batch_and_callbacks(
             tool_name="submit_repo_mathlib_recon_result",
             repo_key="Repo",
             outcome="completed",
-            created_modules=["Mathlib.Data.Finset.Card"],
+            relevant_modules=["Mathlib.Data.Finset.Card"],
             summary="Recorded checked support.",
         )
     )

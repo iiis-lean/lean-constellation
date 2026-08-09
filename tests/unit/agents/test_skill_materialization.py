@@ -178,8 +178,21 @@ def test_coordinator_exploration_skill_describes_only_current_workflow() -> None
     assert "retain useful findings even when another category was incomplete" in body
     assert "Do not submit another exploration batch" in body
     assert "During later work" in body
+    assert "resource_objective, lean_provider_objective, and mathlib_objective" in body
+    assert "one short shared context_summary" in body
     for migration_term in ("retroactive", "restored mature", "capability became available"):
         assert migration_term not in body
+
+
+def test_repo_mathlib_recon_skill_uses_index_truth_and_backend_derived_metadata() -> None:
+    body = build_skill_specs()["repo-mathlib-recon"].body
+
+    assert "Read the current MathlibIndex before searching" in body
+    assert "provide only the exact declaration name and optional summary/source" in body
+    assert "derive module, kind, signature, and snippet" in body
+    assert "canonical indexed names" in body
+    assert "does not report created/reused operation history" in body
+    assert "unindexed name" in body
 
 
 def test_repo_discovery_skills_assign_external_facts_to_terminal_handlers() -> None:

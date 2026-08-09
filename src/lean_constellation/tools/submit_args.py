@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, ValidationInfo, field_validator, model_validator
 
 from lean_constellation.domain.common import StrictModel
 
@@ -158,37 +158,46 @@ class SubmitContentNodeTasksArgs(SummarySubmitArgs):
     node_paths: list[str] = Field(description="Runnable content node paths to dispatch.")
 
 
-class RepoExplorationRequestArg(StrictModel):
-    kind: Literal["resource", "lean_provider", "mathlib"] = Field(
-        description="Distinct repository exploration category."
+class SubmitRepoExplorationArgs(SummarySubmitArgs):
+    resource_objective: str | None = Field(
+        default=None,
+        description="Focused objective for supporting-resource discovery, when that category is needed.",
     )
-    objective: str = Field(description="Focused, verifiable objective for this exploration category.")
+    lean_provider_objective: str | None = Field(
+        default=None,
+        description="Focused objective for existing Lean-provider discovery, when that category is needed.",
+    )
+    mathlib_objective: str | None = Field(
+        default=None,
+        description="Focused objective for repository-level Mathlib reconnaissance, when that category is needed.",
+    )
     context_summary: str | None = Field(
         default=None,
-        description="Optional direction that does not duplicate the SourceCorpus or SourceIndex.",
+        description="Optional shared direction for the selected categories; do not copy SourceCorpus or SourceIndex contents.",
     )
 
-    @field_validator("objective")
+    @field_validator(
+        "resource_objective",
+        "lean_provider_objective",
+        "mathlib_objective",
+        "context_summary",
+    )
     @classmethod
-    def _objective_non_empty(cls, value: str) -> str:
-        value = value.strip()
-        if not value:
-            raise ValueError("exploration objective must be non-empty")
-        return value
-
-
-class SubmitRepoExplorationArgs(SummarySubmitArgs):
-    explorations: list[RepoExplorationRequestArg] = Field(
-        min_length=1,
-        max_length=3,
-        description="One to three distinct focused repository exploration requests.",
-    )
+    def _optional_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return value.strip() or None
 
     @model_validator(mode="after")
-    def _unique_kinds(self):
-        kinds = [item.kind for item in self.explorations]
-        if len(kinds) != len(set(kinds)):
-            raise ValueError("repo exploration kinds must be unique within one batch")
+    def _at_least_one_objective(self):
+        if not any(
+            (
+                self.resource_objective,
+                self.lean_provider_objective,
+                self.mathlib_objective,
+            )
+        ):
+            raise ValueError("at least one repository exploration objective is required")
         return self
 
 
@@ -365,12 +374,35 @@ class SubmitRepoLeanProviderDiscoveryResultArgs(SummarySubmitArgs):
 
 class SubmitRepoMathlibReconResultArgs(SummarySubmitArgs):
     outcome: Literal["completed", "no_useful_findings", "incomplete"] = Field(description="Terminal repository Mathlib recon outcome.")
-    created_modules: list[str] = Field(default_factory=list, description="Checked Mathlib modules newly recorded in the repository index.")
-    reused_modules: list[str] = Field(default_factory=list, description="Existing checked Mathlib modules reused for the objective.")
-    created_declarations: list[str] = Field(default_factory=list, description="Checked Mathlib declarations newly recorded in the repository index.")
-    reused_declarations: list[str] = Field(default_factory=list, description="Existing checked Mathlib declarations reused for the objective.")
+    relevant_modules: list[str] = Field(default_factory=list, description="Objective-relevant module names already recorded in the current repository MathlibIndex.")
+    relevant_declarations: list[str] = Field(default_factory=list, description="Objective-relevant declaration names already recorded in the current repository MathlibIndex.")
     unresolved: list[str] = Field(default_factory=list, description="Objective-relevant Mathlib questions left unresolved.")
     usage_notes: list[str] = Field(default_factory=list, description="Concise repository-wide usage guidance for the checked findings.")
+
+    @field_validator("relevant_modules", "relevant_declarations", "unresolved", "usage_notes")
+    @classmethod
+    def _normalized_lists(cls, values: list[str], info: ValidationInfo) -> list[str]:
+        if not values:
+            return []
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            item = value.strip()
+            if item and item not in seen:
+                seen.add(item)
+                normalized.append(item)
+        if not normalized:
+            raise ValueError(f"{info.field_name} must contain at least one non-empty item")
+        return normalized
+
+    @model_validator(mode="after")
+    def _outcome_matches_relevant_entries(self):
+        relevant = bool(self.relevant_modules or self.relevant_declarations)
+        if self.outcome == "no_useful_findings" and relevant:
+            raise ValueError("no_useful_findings may not include relevant Mathlib entries")
+        if self.outcome == "completed" and not relevant:
+            raise ValueError("completed Mathlib recon requires a relevant indexed entry; use no_useful_findings otherwise")
+        return self
 
 
 class SubmitContentPreparationReconArgs(SummarySubmitArgs):

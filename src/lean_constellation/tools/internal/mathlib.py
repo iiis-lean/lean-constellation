@@ -80,12 +80,8 @@ def _record_mathlib_decl(runtime, ctx, args: MathlibDeclRecordArgs):
     recorded = runtime.mathlib.record_mathlib_decl_checked(
         ctx.repo_root,
         decl_name=args.decl_name,
-        module_name=args.module_name,
         summary=args.summary,
         source=args.source,
-        kind=args.kind,
-        signature=args.signature,
-        snippet=args.snippet,
     )
     if not recorded.ok or recorded.value is None:
         return runtime.foundation.fail(recorded.issues)
@@ -262,8 +258,8 @@ def build_tool_specs() -> list[ToolSpec]:
         handler_tool(
             name="record_mathlib_decl",
             description=(
-                "Verify that one Mathlib declaration is accessible from the current repo, "
-                "record it, and return only the changed fields receipt."
+                "Resolve compiler/index metadata for one exact Mathlib declaration name, verify accessibility from the "
+                "current repo, record it, and return only the changed fields receipt."
             ),
             args_model=MathlibDeclRecordArgs,
             capability=ToolCapability.WRITE,
@@ -275,8 +271,8 @@ def build_tool_specs() -> list[ToolSpec]:
         direct_tool(
             name="record_mathlib_batch",
             description=(
-                "Verify up to 25 Mathlib modules and declarations in one Lean snippet, then "
-                "record the checked entries in the repo-level MathlibIndex."
+                "Resolve declaration metadata, verify up to 25 understood Mathlib modules and declarations in one Lean "
+                "snippet, then record the checked entries in the repo-level MathlibIndex."
             ),
             args_model=MathlibBatchRecordArgs,
             capability=ToolCapability.WRITE,

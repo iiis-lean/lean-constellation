@@ -121,10 +121,8 @@ class RepoLeanProviderDiscoveryResult(RepoExplorationResultBase):
 
 class RepoMathlibReconResult(RepoExplorationResultBase):
     result_type: Literal["repo_mathlib_recon"] = "repo_mathlib_recon"
-    created_modules: list[str] = Field(default_factory=list)
-    reused_modules: list[str] = Field(default_factory=list)
-    created_declarations: list[str] = Field(default_factory=list)
-    reused_declarations: list[str] = Field(default_factory=list)
+    relevant_modules: list[str] = Field(default_factory=list)
+    relevant_declarations: list[str] = Field(default_factory=list)
     unresolved: list[str] = Field(default_factory=list)
     usage_notes: list[str] = Field(default_factory=list)
 
@@ -132,10 +130,8 @@ class RepoMathlibReconResult(RepoExplorationResultBase):
         return {
             "outcome": self.outcome,
             "objective": self.objective,
-            "created_modules": list(self.created_modules),
-            "reused_modules": list(self.reused_modules),
-            "created_declarations": list(self.created_declarations),
-            "reused_declarations": list(self.reused_declarations),
+            "relevant_modules": list(self.relevant_modules),
+            "relevant_declarations": list(self.relevant_declarations),
             "unresolved": list(self.unresolved),
             "usage_notes": list(self.usage_notes),
         }

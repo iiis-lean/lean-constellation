@@ -58,10 +58,8 @@ def test_business_agent_step_shells_register_and_parse_submissions() -> None:
                 elif key.endswith("_names") or key.endswith("_deps") or key.endswith("_refs") or key in {
                     "interfaces",
                     "candidates",
-                    "created_modules",
-                    "reused_modules",
-                    "created_declarations",
-                    "reused_declarations",
+                    "relevant_modules",
+                    "relevant_declarations",
                     "unresolved",
                     "usage_notes",
                     "attempted_targets",
@@ -105,6 +103,7 @@ def test_business_agent_step_shells_register_and_parse_submissions() -> None:
             if submission_type in {
                 "repo_resource_discovery_result",
                 "repo_lean_provider_discovery_result",
+                "repo_mathlib_recon_result",
             }:
                 payload["outcome"] = "no_useful_findings"
 

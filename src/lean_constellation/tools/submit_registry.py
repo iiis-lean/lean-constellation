@@ -204,7 +204,7 @@ def build_submit_tool_specs() -> list[ToolSpec]:
         ),
         _submit_tool(
             name="submit_repo_exploration",
-            description="Submit one bounded batch of distinct repository-level resource, Lean-provider, or Mathlib explorations.",
+            description="Submit one bounded later exploration batch through up to three fixed optional objectives: resource, Lean provider, and Mathlib.",
             args_model=SubmitRepoExplorationArgs,
             groups={SubmitGroup.COORDINATOR_SUBMIT},
             roles={"coordinator", "admin"},
@@ -228,7 +228,7 @@ def build_submit_tool_specs() -> list[ToolSpec]:
         ),
         _submit_tool(
             name="submit_repo_mathlib_recon_result",
-            description="Submit the checked repository-level MathlibIndex delta and unresolved findings.",
+            description="Submit objective-relevant Mathlib names already recorded in the current repository index, plus unresolved findings and usage notes.",
             args_model=SubmitRepoMathlibReconResultArgs,
             groups={SubmitGroup.REPO_MATHLIB_RECON_SUBMIT},
             roles={"worker", "admin"},

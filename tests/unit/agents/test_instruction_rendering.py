@@ -85,6 +85,17 @@ def test_coordinator_exploration_instruction_describes_only_current_workflow() -
         assert migration_term not in text
 
 
+def test_repo_mathlib_recon_instruction_uses_canonical_index_result_contract() -> None:
+    text = render_agent_instruction("RepoMathlibReconAgent")
+
+    assert "Read the current MathlibIndex first" in text
+    assert "only a name and optional summary/source" in text
+    assert "derives module, kind, signature, and snippet" in text
+    assert "canonical module/declaration names" in text
+    assert "not created/reused operation history" in text
+    assert "record or correct the missing indexed name and retry" in text
+
+
 def test_coordinator_instruction_lists_exact_normal_submit_boundary() -> None:
     text = render_agent_instruction("CoordinatorAgent")
     expected = {

@@ -45,8 +45,10 @@ def test_nested_tool_input_schemas_are_materialized_for_all_discovery_surfaces()
     provider = _tool(runtime, "repo_lean_provider_discovery_submit", "submit_repo_lean_provider_discovery_result")
     coordinator = _tool(runtime, "native_repo_coordinator_submit", "submit_repo_exploration")
     mathlib = _tool(runtime, "repo_mathlib_recon", "record_mathlib_batch")
+    mathlib_decl = _tool(runtime, "repo_mathlib_recon", "record_mathlib_decl")
+    mathlib_submit = _tool(runtime, "repo_mathlib_recon_submit", "submit_repo_mathlib_recon_result")
 
-    for tool in (resource, provider, coordinator, mathlib):
+    for tool in (resource, provider, coordinator, mathlib, mathlib_decl, mathlib_submit):
         _assert_self_contained(tool.input_schema)
 
     resource_item = resource.input_schema["properties"]["candidates"]["items"]
@@ -65,15 +67,28 @@ def test_nested_tool_input_schemas_are_materialized_for_all_discovery_surfaces()
     assert "resolved_revision" not in provider_item["properties"]
     assert "package_name" not in provider_item["properties"]
 
-    exploration_item = coordinator.input_schema["properties"]["explorations"]["items"]
-    assert exploration_item["type"] == "object"
-    assert exploration_item["properties"]["objective"]["description"]
+    exploration_properties = coordinator.input_schema["properties"]
+    assert "explorations" not in exploration_properties
+    assert exploration_properties["resource_objective"]["description"]
+    assert exploration_properties["lean_provider_objective"]["description"]
+    assert exploration_properties["mathlib_objective"]["description"]
 
     module_item = mathlib.input_schema["properties"]["modules"]["items"]
     declaration_item = mathlib.input_schema["properties"]["declarations"]["items"]
     assert module_item["type"] == "object"
     assert declaration_item["type"] == "object"
     assert declaration_item["properties"]["decl_name"]["description"]
+    assert set(declaration_item["properties"]) == {"decl_name", "summary", "source"}
+
+    assert set(mathlib_decl.input_schema["properties"]) == {"decl_name", "summary", "source"}
+    assert set(mathlib_submit.input_schema["properties"]) == {
+        "outcome",
+        "relevant_modules",
+        "relevant_declarations",
+        "unresolved",
+        "usage_notes",
+        "summary",
+    }
 
 
 def test_malformed_tool_schema_fails_registration_with_tool_identity(monkeypatch) -> None:

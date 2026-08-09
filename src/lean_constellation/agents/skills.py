@@ -225,7 +225,7 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
                 "For the initial callback, consume all resource, Lean-provider, and Mathlib outcomes in the fixed batch. Classify useful findings, no useful findings, and incomplete exploration separately; retain useful findings even when another category was incomplete.",
                 "Do not submit another exploration batch merely to reconcile that initial callback. Enter the Coordinator next-action loop after classification.",
                 "During later work, explore only after a new topic, major unresolved external dependency, failed candidate, repeated repo-wide Mathlib representation issue, or materially changed source direction.",
-                "For a later batch, choose one to three distinct categories with focused, non-overlapping, verifiable objectives; call `submit_repo_exploration` once and stop.",
+                "For a later batch, fill one to three of resource_objective, lean_provider_objective, and mathlib_objective with focused, non-overlapping, verifiable goals; add one short shared context_summary only when needed, call `submit_repo_exploration` once, and stop.",
                 "On every callback, preflight resource candidates before requesting them, use a direct adapter requirement only for exact immutable verified Lean evidence, and do not duplicate MathlibIndex writes already performed by recon.",
             ),
             (
@@ -373,16 +373,17 @@ Deterministic manifests and checks verify paths, bytes, readability, and require
             AppGroup.MATHLIB_NAVIGATION,
             SubmitGroup.REPO_MATHLIB_RECON_SUBMIT,
         ),
-        source_design_doc="dev_docs/implementation/coordinator_repo_exploration_and_typed_requirements",
+        source_design_doc="dev_docs/implementation/repo_discovery_agent_surface_hardening",
         body=_body(
             "repo-mathlib-recon",
             "Find and record checked Mathlib modules and declarations that are reusable across the current repository.",
             (
                 "Read the current MathlibIndex before searching.",
                 "Search semantically only for unresolved objective terms, then inspect exact declarations, modules, names, and signatures.",
-                "Record only verified entries; prefer checked batch recording for several already-understood candidates and split only to diagnose a combined check failure.",
-                "Distinguish created and reused modules and declarations, and preserve unresolved questions explicitly.",
-                "Submit the compact delta once, then stop.",
+                "Record only verified entries. Prefer record_mathlib_module, record_mathlib_decl, or candidate ingest for one understood entry. Use record_mathlib_batch only when several understood names genuinely share one accessibility probe; split a failed batch to diagnose it.",
+                "For declaration recording, provide only the exact declaration name and optional summary/source. Exact navigation and the accessibility check derive module, kind, signature, and snippet; do not guess those fields.",
+                "Re-read every objective-relevant module or declaration from the current MathlibIndex after recording. Terminal submit references only canonical indexed names plus unresolved questions and usage notes; it does not report created/reused operation history.",
+                "If terminal validation reports an unindexed name, record or correct it and retry in the same AgentStep. After an accepted submit, stop.",
             ),
             (
                 "Do not write node hints, node dependencies, declaration dependencies, Resources, requirements, contracts, declarations, or Lean code.",
@@ -1241,6 +1242,7 @@ Either readiness remains unresolved and the Coordinator returns to its next-acti
             (
                 "Record modules with concise purpose and import relevance through `record_mathlib_module`.",
                 "Record declarations with statement meaning and usage notes through `record_mathlib_decl` or `ingest_mathlib_candidate`.",
+                "For `record_mathlib_decl`, pass the exact declaration name and optional summary/source only; checked navigation derives module, kind, signature, and snippet.",
                 "When two or more already-understood entries can share one accessibility probe, use `record_mathlib_batch` (maximum 25 total entries); fall back to individual checked records to isolate a failed combined probe.",
                 "Attach important declarations to module entries with `add_mathlib_module_important_decl` when useful.",
                 "Keep entries lightweight and reusable across nodes.",

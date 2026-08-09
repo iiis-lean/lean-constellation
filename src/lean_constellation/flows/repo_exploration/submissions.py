@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, ValidationInfo, field_validator, model_validator
 
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.flows.common.submissions import LeanBaseSubmission
@@ -120,9 +120,32 @@ class RepoLeanProviderDiscoverySubmission(LeanBaseSubmission):
 class RepoMathlibReconSubmission(LeanBaseSubmission):
     submission_type: Literal["repo_mathlib_recon_result"] = "repo_mathlib_recon_result"
     outcome: RepoExplorationOutcome
-    created_modules: list[str] = Field(default_factory=list)
-    reused_modules: list[str] = Field(default_factory=list)
-    created_declarations: list[str] = Field(default_factory=list)
-    reused_declarations: list[str] = Field(default_factory=list)
+    relevant_modules: list[str] = Field(default_factory=list)
+    relevant_declarations: list[str] = Field(default_factory=list)
     unresolved: list[str] = Field(default_factory=list)
     usage_notes: list[str] = Field(default_factory=list)
+
+    @field_validator("relevant_modules", "relevant_declarations", "unresolved", "usage_notes")
+    @classmethod
+    def _normalized_lists(cls, values: list[str], info: ValidationInfo) -> list[str]:
+        if not values:
+            return []
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            item = value.strip()
+            if item and item not in seen:
+                seen.add(item)
+                normalized.append(item)
+        if not normalized:
+            raise ValueError(f"{info.field_name} must contain at least one non-empty item")
+        return normalized
+
+    @model_validator(mode="after")
+    def _outcome_matches_relevant_entries(self):
+        relevant = bool(self.relevant_modules or self.relevant_declarations)
+        if self.outcome == "no_useful_findings" and relevant:
+            raise ValueError("no_useful_findings may not include relevant Mathlib entries")
+        if self.outcome == "completed" and not relevant:
+            raise ValueError("completed Mathlib recon requires relevant indexed entries")
+        return self

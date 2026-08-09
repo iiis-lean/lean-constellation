@@ -40,10 +40,8 @@ class RepoLeanProviderDiscoveryStepResult(LeanRenderableStepResult):
 class RepoMathlibReconStepResult(LeanRenderableStepResult):
     result_type: Literal["repo_mathlib_recon"] = "repo_mathlib_recon"
     outcome: Literal["completed", "no_useful_findings", "incomplete"]
-    created_modules: list[str] = Field(default_factory=list)
-    reused_modules: list[str] = Field(default_factory=list)
-    created_declarations: list[str] = Field(default_factory=list)
-    reused_declarations: list[str] = Field(default_factory=list)
+    relevant_modules: list[str] = Field(default_factory=list)
+    relevant_declarations: list[str] = Field(default_factory=list)
     unresolved: list[str] = Field(default_factory=list)
     usage_notes: list[str] = Field(default_factory=list)
 
@@ -108,10 +106,8 @@ class RepoMathlibReconAgentStep(AgentStep):
         if isinstance(submission, RepoMathlibReconSubmission):
             return RepoMathlibReconStepResult(
                 outcome=submission.outcome,
-                created_modules=list(submission.created_modules),
-                reused_modules=list(submission.reused_modules),
-                created_declarations=list(submission.created_declarations),
-                reused_declarations=list(submission.reused_declarations),
+                relevant_modules=list(submission.relevant_modules),
+                relevant_declarations=list(submission.relevant_declarations),
                 unresolved=list(submission.unresolved),
                 usage_notes=list(submission.usage_notes),
                 summary=submission.summary,

@@ -534,15 +534,21 @@ def submit_repo_exploration(
     ctx: ToolExecutionContext,
     args: SubmitRepoExplorationArgs,
 ) -> ServiceResult[PreparedSubmissionView]:
+    requested = (
+        ("resource", args.resource_objective),
+        ("lean_provider", args.lean_provider_objective),
+        ("mathlib", args.mathlib_objective),
+    )
     submission = CoordinatorRepoExplorationSubmission(
         **_base_kwargs(ctx, tool_name="submit_repo_exploration", summary=args.summary),
         explorations=[
             RepoExplorationSpec(
-                kind=item.kind,
-                objective=item.objective,
-                context_summary=item.context_summary.strip() if item.context_summary else None,
+                kind=kind,
+                objective=objective,
+                context_summary=args.context_summary,
             )
-            for item in args.explorations
+            for kind, objective in requested
+            if objective is not None
         ],
     )
     return _prepared(
@@ -750,16 +756,44 @@ def submit_repo_mathlib_recon_result(
     ctx: ToolExecutionContext,
     args: SubmitRepoMathlibReconResultArgs,
 ) -> ServiceResult[PreparedSubmissionView]:
+    relevant_modules: list[str] = []
+    for index, module in enumerate(args.relevant_modules):
+        loaded = runtime.mathlib.get_mathlib_module_entry(ctx.repo_root, module=module)
+        if not loaded.ok or loaded.value is None:
+            issue = loaded.issues[0] if loaded.issues else None
+            return _fail(
+                runtime,
+                issue.kind if issue is not None else "mathlib_module_entry_missing",
+                issue.message if issue is not None else "Mathlib module is not recorded in the current index.",
+                field=f"relevant_modules[{index}]",
+            )
+        relevant_modules.append(loaded.value.module)
+    relevant_declarations: list[str] = []
+    for index, declaration in enumerate(args.relevant_declarations):
+        loaded = runtime.mathlib.get_mathlib_decl_entry(ctx.repo_root, name=declaration)
+        if not loaded.ok or loaded.value is None:
+            issue = loaded.issues[0] if loaded.issues else None
+            return _fail(
+                runtime,
+                issue.kind if issue is not None else "mathlib_decl_entry_missing",
+                issue.message if issue is not None else "Mathlib declaration is not recorded in the current index.",
+                field=f"relevant_declarations[{index}]",
+            )
+        relevant_declarations.append(loaded.value.name)
     return _prepared(
         runtime,
         RepoMathlibReconSubmission(
             **_base_kwargs(ctx, tool_name="submit_repo_mathlib_recon_result", summary=args.summary),
-            **args.model_dump(exclude={"summary"}),
+            outcome=args.outcome,
+            relevant_modules=relevant_modules,
+            relevant_declarations=relevant_declarations,
+            unresolved=args.unresolved,
+            usage_notes=args.usage_notes,
         ),
         agent_view={
             "outcome": args.outcome,
-            "created_module_count": len(args.created_modules),
-            "created_declaration_count": len(args.created_declarations),
+            "relevant_module_count": len(relevant_modules),
+            "relevant_declaration_count": len(relevant_declarations),
         },
     )
 

@@ -578,18 +578,8 @@ class MathlibModuleRecordArgs(StrictModel):
 
 class MathlibDeclRecordArgs(StrictModel):
     decl_name: str = Field(description="Mathlib declaration name to verify as accessible from the current repo before recording.")
-    module_name: str | None = Field(
-        default=None,
-        description=(
-            "Known defining Mathlib module for the declaration, if discovered. Exact declaration inspection may canonicalize "
-            "a broader import module to the defining module; record broader reusable imports as module entries or node module hints."
-        ),
-    )
     summary: str | None = Field(default=None, description="Short summary of why the declaration is reusable for this repo or current node.")
     source: str | None = Field(default=None, description="Search result, source inspection, or reasoning source that led to this declaration candidate.")
-    kind: str | None = Field(default=None, description="Lean declaration kind if known, such as def, theorem, lemma, or instance.")
-    signature: str | None = Field(default=None, description="Lean signature or type of the declaration if known.")
-    snippet: str | None = Field(default=None, description="Relevant source or documentation snippet supporting the declaration entry.")
 
 
 class MathlibBatchRecordArgs(StrictModel):

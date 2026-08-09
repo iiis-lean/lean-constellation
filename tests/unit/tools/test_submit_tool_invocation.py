@@ -362,6 +362,64 @@ def test_native_repo_choice_rejects_empty_or_legacy_search_evidence(tmp_path: Pa
     assert gateway.accepted == []
 
 
+def test_coordinator_repo_exploration_flat_objectives_build_fixed_order_specs(tmp_path: Path) -> None:
+    gateway = FakeSubmissionGateway()
+    runtime = _runtime(gateway)
+    assert register_submit_tooling(runtime).ok
+
+    result = runtime.tool_facade.invoke_agent_tool(
+        RawToolCallContext(
+            endpoint_view_key="native_repo_coordinator_submit",
+            runtime_context=_runtime_ctx(
+                tmp_path,
+                view="native_repo_coordinator_submit",
+                agent_type="CoordinatorAgent",
+            ),
+        ),
+        tool_name="submit_repo_exploration",
+        flat_args={
+            "summary": "Inspect external support.",
+            "resource_objective": "Find a primary proof source.",
+            "mathlib_objective": "Find reusable finite-set lemmas.",
+            "context_summary": "Focus on the additive Kneser boundary.",
+        },
+    )
+
+    assert result.ok and result.value is not None and result.value.ok
+    submission = gateway.accepted[0]
+    assert [item.kind.value for item in submission.explorations] == ["resource", "mathlib"]
+    assert [item.objective for item in submission.explorations] == [
+        "Find a primary proof source.",
+        "Find reusable finite-set lemmas.",
+    ]
+    assert {item.context_summary for item in submission.explorations} == {
+        "Focus on the additive Kneser boundary."
+    }
+
+
+def test_coordinator_repo_exploration_requires_one_flat_objective(tmp_path: Path) -> None:
+    gateway = FakeSubmissionGateway()
+    runtime = _runtime(gateway)
+    assert register_submit_tooling(runtime).ok
+
+    result = runtime.tool_facade.invoke_agent_tool(
+        RawToolCallContext(
+            endpoint_view_key="native_repo_coordinator_submit",
+            runtime_context=_runtime_ctx(
+                tmp_path,
+                view="native_repo_coordinator_submit",
+                agent_type="CoordinatorAgent",
+            ),
+        ),
+        tool_name="submit_repo_exploration",
+        flat_args={"summary": "No focused objective yet."},
+    )
+
+    assert result.ok and result.value is not None and not result.value.ok
+    assert result.value.issues[0].kind == "tool_arguments_invalid"
+    assert gateway.accepted == []
+
+
 def test_resource_discovery_submit_reinspects_and_canonicalizes_candidates(tmp_path: Path) -> None:
     gateway = FakeSubmissionGateway()
     runtime = _runtime(gateway)
@@ -552,6 +610,81 @@ def test_lean_provider_direct_submit_rejects_missing_probe_facts(tmp_path: Path)
 
     assert result.ok and result.value is not None and not result.value.ok
     assert result.value.issues[0].kind == "direct_adapter_candidate_incomplete"
+    assert gateway.accepted == []
+
+
+def test_repo_mathlib_recon_submit_reads_canonical_index_entries(tmp_path: Path) -> None:
+    gateway = FakeSubmissionGateway()
+    runtime = _runtime(gateway)
+    assert runtime.mathlib.mathlib_index.upsert_mathlib_module_entry(
+        tmp_path,
+        module="Mathlib.Data.Finset.Card",
+        summary="Finite set cardinality.",
+    ).ok
+    assert runtime.mathlib.mathlib_index.upsert_mathlib_decl_entry(
+        tmp_path,
+        name="Finset.card_union_of_disjoint",
+        module="Mathlib.Data.Finset.Card",
+        kind="theorem",
+        signature="Finset.card_union_of_disjoint ...",
+        summary="Cardinality of a disjoint union.",
+        note=None,
+    ).ok
+    assert register_submit_tooling(runtime).ok
+
+    result = runtime.tool_facade.invoke_agent_tool(
+        RawToolCallContext(
+            endpoint_view_key="repo_mathlib_recon_submit",
+            runtime_context=_runtime_ctx(
+                tmp_path,
+                view="repo_mathlib_recon_submit",
+                role="worker",
+                agent_type="RepoMathlibReconAgent",
+            ),
+        ),
+        tool_name="submit_repo_mathlib_recon_result",
+        flat_args={
+            "outcome": "completed",
+            "summary": "Found checked finite-set support.",
+            "relevant_modules": ["Mathlib.Data.Finset.Card"],
+            "relevant_declarations": ["Finset.card_union_of_disjoint"],
+            "usage_notes": ["Use after proving disjointness."],
+        },
+    )
+
+    assert result.ok and result.value is not None and result.value.ok
+    submission = gateway.accepted[0]
+    assert submission.relevant_modules == ["Mathlib.Data.Finset.Card"]
+    assert submission.relevant_declarations == ["Finset.card_union_of_disjoint"]
+    assert "created_modules" not in type(submission).model_fields
+
+
+def test_repo_mathlib_recon_submit_rejects_unindexed_name_without_terminal_submit(tmp_path: Path) -> None:
+    gateway = FakeSubmissionGateway()
+    runtime = _runtime(gateway)
+    assert register_submit_tooling(runtime).ok
+
+    result = runtime.tool_facade.invoke_agent_tool(
+        RawToolCallContext(
+            endpoint_view_key="repo_mathlib_recon_submit",
+            runtime_context=_runtime_ctx(
+                tmp_path,
+                view="repo_mathlib_recon_submit",
+                role="worker",
+                agent_type="RepoMathlibReconAgent",
+            ),
+        ),
+        tool_name="submit_repo_mathlib_recon_result",
+        flat_args={
+            "outcome": "completed",
+            "summary": "Candidate must be recorded first.",
+            "relevant_declarations": ["Missing.notIndexed"],
+        },
+    )
+
+    assert result.ok and result.value is not None and not result.value.ok
+    assert result.value.issues[0].kind == "mathlib_decl_entry_missing"
+    assert result.value.issues[0].field == "relevant_declarations[0]"
     assert gateway.accepted == []
 
 

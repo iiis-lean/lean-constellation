@@ -1142,7 +1142,7 @@ Do these exact actions:
 2. Inspect the real Codex home on disk. HOME points at the agent home root. Read "$HOME/.agents/lean_constellation_home.json" and inspect "$HOME/.agents/skills". Do not guess skill names; report the actual skill keys whose directory names start with "mathlib-".
 3. Call application MCP tool "get_current_node_mathlib_hints".
 4. Call application MCP tool "record_mathlib_module" with module_name "Init", summary "Runtime Matrix built-in Lean fixture module used by MathlibRecon probe.", and source "Strict real Codex local Lean fixture."
-5. Call application MCP tool "record_mathlib_decl" with decl_name "True.intro", module_name "Init", summary "Runtime Matrix built-in theorem constructor.", source "Strict real Codex local Lean fixture.", kind "theorem", signature "True.intro : True", and snippet "example : True := True.intro".
+5. Call application MCP tool "record_mathlib_decl" with decl_name "True.intro", summary "Runtime Matrix built-in theorem constructor.", and source "Strict real Codex local Lean fixture.". Let the backend derive module, kind, signature, and snippet.
 6. Call application MCP tool "add_mathlib_module_important_decl" with module "Init" and decl_name "True.intro".
 7. Call application MCP tool "search_mathlib_index" with query "True" and limit 5.
 8. Call application MCP tool "get_mathlib_module_entry" with module "Init".
