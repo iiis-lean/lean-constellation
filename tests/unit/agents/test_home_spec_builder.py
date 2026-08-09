@@ -108,3 +108,22 @@ def test_home_bootstrap_spec_projects_resources_to_provider_home_spec() -> None:
     assert {skill.name for skill in ark_spec.skills} >= {"decl-round-change-planning"}
     assert {server.name for server in ark_spec.mcp_servers} == {"lc_app", "lc_submit"}
     assert ark_spec.required_env == ("DEEPSEEK_API_KEY",)
+
+
+def test_codex_and_opencode_repo_discovery_homes_use_the_same_mcp_tool_views() -> None:
+    codex = build_agent_home_bootstrap_spec(
+        "RepoResourceDiscoveryAgent",
+        provider_type="codex",
+        mcp_http_base_url="http://127.0.0.1:8765",
+    )
+    opencode = build_agent_home_bootstrap_spec(
+        "RepoResourceDiscoveryAgent",
+        provider_type="opencode",
+        mcp_http_base_url="http://127.0.0.1:8765",
+    )
+
+    assert codex.tool_view_config == opencode.tool_view_config
+    assert codex.mcp_servers == opencode.mcp_servers
+    assert codex.provider_home_spec.mcp_servers == opencode.provider_home_spec.mcp_servers
+    assert isinstance(codex.provider_home_spec.provider_options, CodexHomeOptions)
+    assert codex.provider_home_spec.provider_options.mcp_servers == tuple(opencode.mcp_servers)

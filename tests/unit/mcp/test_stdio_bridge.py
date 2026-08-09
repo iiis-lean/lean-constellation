@@ -29,6 +29,50 @@ def test_stdio_bridge_exposes_tools_with_tool_spec_schema(tmp_path) -> None:
     assert "native_repo_name" not in native.inputSchema["properties"]
 
 
+def test_stdio_bridge_exposes_self_contained_repo_discovery_schemas() -> None:
+    runtime = make_mcp_runtime()
+    server = create_mcp_server(
+        runtime,
+        view_keys=[
+            "repo_resource_discovery_submit",
+            "native_repo_coordinator_submit",
+            "repo_mathlib_recon",
+        ],
+    )
+    assert server.ok and server.value is not None
+
+    resource_endpoint = server.value.endpoint("repo_resource_discovery_submit").value
+    coordinator_endpoint = server.value.endpoint("native_repo_coordinator_submit").value
+    mathlib_endpoint = server.value.endpoint("repo_mathlib_recon").value
+    resource = {tool.name: tool for tool in mcp_protocol_tools(resource_endpoint)}[
+        "submit_repo_resource_discovery_result"
+    ]
+    coordinator = {tool.name: tool for tool in mcp_protocol_tools(coordinator_endpoint)}[
+        "submit_repo_exploration"
+    ]
+    mathlib = {tool.name: tool for tool in mcp_protocol_tools(mathlib_endpoint)}[
+        "record_mathlib_batch"
+    ]
+
+    for schema in (resource.inputSchema, coordinator.inputSchema, mathlib.inputSchema):
+        _assert_no_schema_refs(schema)
+
+    candidate = resource.inputSchema["properties"]["candidates"]["items"]
+    assert candidate["type"] == "object"
+    assert candidate["properties"]["target"]["description"]
+    assert "canonical_locator" not in candidate["properties"]
+
+    coordinator_properties = coordinator.inputSchema["properties"]
+    assert "explorations" not in coordinator_properties
+    assert coordinator_properties["resource_objective"]["description"]
+    assert coordinator_properties["lean_provider_objective"]["description"]
+    assert coordinator_properties["mathlib_objective"]["description"]
+
+    declaration = mathlib.inputSchema["properties"]["declarations"]["items"]
+    assert declaration["type"] == "object"
+    assert set(declaration["properties"]) == {"decl_name", "summary", "source"}
+
+
 def test_stdio_bridge_reports_nested_argument_errors_with_field_paths(tmp_path) -> None:
     gateway = FakeSubmissionGateway()
     runtime = make_mcp_runtime(gateway)
@@ -195,3 +239,14 @@ def test_stdio_bridge_result_profile_header_and_invalid_configuration() -> None:
     assert json.loads(content_only.content[0].text)["ok"] is False
     assert invalid.structuredContent is not None
     assert invalid.structuredContent["issues"][0]["kind"] == "mcp_result_profile_invalid"
+
+
+def _assert_no_schema_refs(value) -> None:  # noqa: ANN001 - recursive JSON helper.
+    if isinstance(value, dict):
+        assert "$ref" not in value
+        assert "$dynamicRef" not in value
+        for child in value.values():
+            _assert_no_schema_refs(child)
+    elif isinstance(value, list):
+        for child in value:
+            _assert_no_schema_refs(child)

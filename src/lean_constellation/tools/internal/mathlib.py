@@ -258,8 +258,8 @@ def build_tool_specs() -> list[ToolSpec]:
         handler_tool(
             name="record_mathlib_decl",
             description=(
-                "Resolve compiler/index metadata for one exact Mathlib declaration name, verify accessibility from the "
-                "current repo, record it, and return only the changed fields receipt."
+                "Resolve compiler/index metadata for one exact Mathlib declaration name, verify that it is accessible "
+                "from the current repo, record it, and return only the changed fields receipt."
             ),
             args_model=MathlibDeclRecordArgs,
             capability=ToolCapability.WRITE,

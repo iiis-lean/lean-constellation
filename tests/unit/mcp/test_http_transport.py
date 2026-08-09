@@ -39,6 +39,22 @@ def test_http_transport_accepts_submit_tool(tmp_path: Path) -> None:
     assert gateway.accepted[0].submitted_by_agent_id == "agent_http_submit"
 
 
+@pytest.mark.mcp_http
+def test_http_tools_list_exposes_self_contained_repo_discovery_schemas(tmp_path: Path) -> None:
+    runtime = make_mcp_runtime()
+    app_result = create_mcp_http_app(
+        runtime,
+        view_keys=[
+            "repo_resource_discovery_submit",
+            "native_repo_coordinator_submit",
+            "repo_mathlib_recon",
+        ],
+    )
+    assert app_result.ok and app_result.value is not None
+
+    anyio.run(_exercise_discovery_schema_http_mcp, app_result.value, tmp_path)
+
+
 def test_repo_mcp_router_keeps_same_view_managers_repo_local(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     _make_repo(workspace, "RepoA")
@@ -155,6 +171,74 @@ async def _exercise_submit_http_mcp(app, tmp_path: Path) -> None:  # noqa: ANN00
     assert result.structuredContent["ok"] is True
 
 
+async def _exercise_discovery_schema_http_mcp(app, tmp_path: Path) -> None:  # noqa: ANN001 - ASGI app boundary.
+    cases = (
+        (
+            "repo_resource_discovery_submit",
+            "RepoResourceDiscoveryAgent",
+            "worker",
+            "submit_repo_resource_discovery_result",
+        ),
+        (
+            "native_repo_coordinator_submit",
+            "CoordinatorAgent",
+            "coordinator",
+            "submit_repo_exploration",
+        ),
+        (
+            "repo_mathlib_recon",
+            "RepoMathlibReconAgent",
+            "worker",
+            "record_mathlib_batch",
+        ),
+    )
+    schemas: dict[str, dict] = {}
+
+    async with app.router.lifespan_context(app):
+        for view, agent_type, role, tool_name in cases:
+            env = runtime_env(
+                tmp_path,
+                view=view,
+                agent_type=agent_type,
+                role=role,
+                agent_id=f"agent_http_{view}",
+            )
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(
+                transport=transport,
+                base_url="http://testserver",
+                headers=_runtime_headers(env),
+            ) as client:
+                async with streamable_http_client(
+                    f"http://testserver/mcp/views/{view}/",
+                    http_client=client,
+                    terminate_on_close=False,
+                ) as (read_stream, write_stream, _):
+                    async with ClientSession(read_stream, write_stream) as session:
+                        await session.initialize()
+                        listed = await session.list_tools()
+                        tools = {tool.name: tool for tool in listed.tools}
+                        schemas[tool_name] = tools[tool_name].inputSchema
+
+    for schema in schemas.values():
+        _assert_no_schema_refs(schema)
+
+    candidate = schemas["submit_repo_resource_discovery_result"]["properties"]["candidates"]["items"]
+    assert candidate["type"] == "object"
+    assert candidate["properties"]["target"]["description"]
+    assert "canonical_locator" not in candidate["properties"]
+
+    coordinator = schemas["submit_repo_exploration"]["properties"]
+    assert "explorations" not in coordinator
+    assert coordinator["resource_objective"]["description"]
+    assert coordinator["lean_provider_objective"]["description"]
+    assert coordinator["mathlib_objective"]["description"]
+
+    declaration = schemas["record_mathlib_batch"]["properties"]["declarations"]["items"]
+    assert declaration["type"] == "object"
+    assert set(declaration["properties"]) == {"decl_name", "summary", "source"}
+
+
 def _runtime_headers(env: dict[str, str]) -> dict[str, str]:
     return {
         "X-Ark-Flow-Id": env["ARK_FLOW_ID"],
@@ -180,3 +264,14 @@ def _make_repo(workspace: Path, name: str) -> Path:
     repo_root = workspace / name
     (repo_root / ".lean_constellation").mkdir(parents=True)
     return repo_root
+
+
+def _assert_no_schema_refs(value) -> None:  # noqa: ANN001 - recursive JSON helper.
+    if isinstance(value, dict):
+        assert "$ref" not in value
+        assert "$dynamicRef" not in value
+        for child in value.values():
+            _assert_no_schema_refs(child)
+    elif isinstance(value, list):
+        for child in value:
+            _assert_no_schema_refs(child)
