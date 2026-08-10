@@ -83,6 +83,22 @@ class ContentPublicDeclProvider(Protocol):
         ...
 
 
+class ScopeBindingValidator(Protocol):
+    """Validate a Scope export/interface binding against one candidate contract."""
+
+    def validate_scope_export_binding(
+        self,
+        repo_root: Path,
+        *,
+        scope_path: str,
+        candidate_contract: object,
+        interface_name: str,
+        ref: DeclRef,
+        decl_kind: str | None,
+    ) -> ServiceResult[None]:
+        ...
+
+
 class _EmptyContentPublicDeclProvider:
     def __init__(self, runtime: LeanRuntimeServices) -> None:
         self.runtime = runtime
@@ -112,12 +128,19 @@ class ExportComponent:
         contract: ContractComponent | None = None,
         public_decl_provider: ContentPublicDeclProvider | None = None,
         node_projection: "NodeProjectionComponent | None" = None,
+        binding_validator: ScopeBindingValidator | None = None,
     ) -> None:
         self.runtime = runtime
         self.node_tree = node_tree or NodeTreeComponent(runtime)
         self.contract = contract or ContractComponent(runtime, self.node_tree)
         self.public_decl_provider = public_decl_provider or _EmptyContentPublicDeclProvider(runtime)
         self.node_projection = node_projection
+        self.binding_validator = binding_validator
+
+    def set_binding_validator(self, validator: ScopeBindingValidator) -> None:
+        """Attach the shared interface validator after NodeService composition."""
+
+        self.binding_validator = validator
 
     def list_content_public_decls(self, repo_root: Path, *, node_path: str) -> ServiceResult[list[DeclPublicView]]:
         node = self.node_tree.get_node(repo_root, path=node_path)
@@ -218,7 +241,7 @@ class ExportComponent:
                         )
                     )
             elif child.kind == NodeKind.SCOPE:
-                child_contract = self.contract.get_current_contract(repo_root, node_path=child.path)
+                child_contract = self.contract.get_visible_contract(repo_root, node_path=child.path)
                 if not child_contract.ok or child_contract.value is None:
                     continue
                 for ref in child_contract.value.contract.exports:
@@ -291,7 +314,14 @@ class ExportComponent:
             candidate_contract.exports.append(ref.value)
             changed = True
         if bind_interface_name is not None:
-            bound = self._bind_interface(candidate_contract, bind_interface_name, ref.value)
+            bound = self._bind_interface(
+                repo_root,
+                scope_path=scope_path,
+                contract=candidate_contract,
+                name=bind_interface_name,
+                ref=ref.value,
+                decl_kind=candidate.value.kind,
+            )
             if not bound.ok:
                 return self.runtime.foundation.fail(bound.issues)
             changed = True
@@ -386,15 +416,25 @@ class ExportComponent:
         views = [view.model_copy(update={"index": index}) for index, view in enumerate(views)]
         return self.runtime.foundation.ok(views)
 
-    def validate_scope_exports(self, repo_root: Path, *, scope_path: str) -> ServiceResult[GateReport]:
+    def validate_scope_exports(
+        self,
+        repo_root: Path,
+        *,
+        scope_path: str,
+        contract: object | None = None,
+    ) -> ServiceResult[GateReport]:
         scope = self._require_scope(repo_root, scope_path)
         if not scope.ok or scope.value is None:
             return self.runtime.foundation.fail(scope.issues)
-        current = self.contract.get_current_contract(repo_root, node_path=scope_path)
-        if not current.ok or current.value is None:
-            return self.runtime.foundation.fail(current.issues)
+        if contract is None:
+            current = self.contract.get_current_contract(repo_root, node_path=scope_path)
+            if not current.ok or current.value is None:
+                return self.runtime.foundation.fail(current.issues)
+            candidate_contract = current.value.contract
+        else:
+            candidate_contract = contract
         issues: list[ServiceIssue] = []
-        keys = [self._decl_ref_key(ref) for ref in current.value.contract.exports]
+        keys = [self._decl_ref_key(ref) for ref in candidate_contract.exports]
         for duplicate in sorted({key for key in keys if keys.count(key) > 1}):
             issues.append(
                 self.runtime.foundation.issue(
@@ -403,7 +443,7 @@ class ExportComponent:
                     object_ref=scope_path,
                 )
             )
-        for ref in current.value.contract.exports:
+        for ref in candidate_contract.exports:
             candidate = self._find_visible_candidate(repo_root, scope_path=scope_path, ref=ref)
             if not candidate.ok:
                 issues.extend(candidate.issues)
@@ -417,7 +457,7 @@ class ExportComponent:
                     )
                 )
         export_key_set = set(keys)
-        for interface in current.value.contract.interfaces:
+        for interface in candidate_contract.interfaces:
             if interface.bound_decl is not None and self._decl_ref_key(interface.bound_decl) not in export_key_set:
                 issues.append(
                     self.runtime.foundation.issue(
@@ -432,7 +472,7 @@ class ExportComponent:
         return self.runtime.foundation.ok(
             self.runtime.foundation.gate_passed(
                 "scope_exports",
-                summary=f"Checked {len(current.value.contract.exports)} Scope exports.",
+                summary=f"Checked {len(candidate_contract.exports)} Scope exports.",
             )
         )
 
@@ -547,7 +587,7 @@ class ExportComponent:
                     object_ref=scope_path,
                 )
             )
-        child_contract = self.contract.get_current_contract(repo_root, node_path=direct_child)
+        child_contract = self.contract.get_visible_contract(repo_root, node_path=direct_child)
         if not child_contract.ok or child_contract.value is None:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
@@ -656,10 +696,38 @@ class ExportComponent:
             issues=candidate.issues,
         )
 
-    def _bind_interface(self, contract: object, name: str, ref: DeclRef) -> ServiceResult[None]:
+    def _bind_interface(
+        self,
+        repo_root: Path,
+        *,
+        scope_path: str,
+        contract: object,
+        name: str,
+        ref: DeclRef,
+        decl_kind: str | None,
+    ) -> ServiceResult[None]:
         normalized = name.strip()
         if not normalized:
             return self.runtime.foundation.fail(self.runtime.foundation.issue("interface_name_required", "Interface name is required.", field="bind_interface_name"))
+        validator = self.binding_validator
+        if validator is None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "interface_binding_validator_unavailable",
+                    "Scope export/interface binding validation is not configured.",
+                    object_ref=scope_path,
+                )
+            )
+        validated = validator.validate_scope_export_binding(
+            repo_root,
+            scope_path=scope_path,
+            candidate_contract=contract,
+            interface_name=normalized,
+            ref=ref,
+            decl_kind=decl_kind,
+        )
+        if not validated.ok:
+            return self.runtime.foundation.fail(validated.issues)
         for interface in getattr(contract, "interfaces", []):
             if interface.name != normalized:
                 continue

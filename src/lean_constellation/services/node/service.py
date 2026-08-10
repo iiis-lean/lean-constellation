@@ -261,6 +261,7 @@ class NodeService:
             export=self.export,
             node_projection=node_projection,  # type: ignore[arg-type]
         )
+        self.export.set_binding_validator(self.interface)
         self.dependency = dependency or DependencyComponent(
             runtime,
             node_tree=self.node_tree,
@@ -388,6 +389,15 @@ class NodeService:
         current = self.contract.get_edit_contract(repo_root, node_path=scope_path)
         if not current.ok or current.value is None:
             return self.runtime.foundation.fail(current.issues)
+        exports = self.export.validate_scope_exports(
+            repo_root,
+            scope_path=scope_path,
+            contract=current.value.contract,
+        )
+        if not exports.ok or exports.value is None:
+            return self.runtime.foundation.fail(exports.issues)
+        if not exports.value.passed:
+            return self.runtime.foundation.fail(exports.value.issues)
         identities = self.interface.check_bound_interface_lean_identities(
             repo_root,
             node_path=scope_path,

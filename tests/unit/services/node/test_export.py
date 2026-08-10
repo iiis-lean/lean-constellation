@@ -165,7 +165,7 @@ def test_list_scope_export_candidates_from_content_and_child_scope(tmp_path: Pat
     assert child_scope_candidate.stale is False
 
 
-def test_scope_export_draft_can_propagate_an_open_child_scope_boundary(
+def test_scope_export_draft_cannot_propagate_an_open_child_scope_boundary(
     tmp_path: Path,
 ) -> None:
     _create_tree(tmp_path)
@@ -203,9 +203,53 @@ def test_scope_export_draft_can_propagate_an_open_child_scope_boundary(
     )
 
     assert candidates.ok and candidates.value is not None
-    assert ref in [candidate.ref for candidate in candidates.value.candidates]
-    assert added.ok and added.value is not None
-    assert added.value.changed is True
+    assert ref not in [candidate.ref for candidate in candidates.value.candidates]
+    assert not added.ok
+    assert added.issues[0].kind == "scope_export_child_scope_unavailable"
+
+
+def test_scope_commit_rechecks_child_scope_after_parent_export_draft(tmp_path: Path) -> None:
+    _create_tree(tmp_path)
+    child_ref = _write_child_scope_export(tmp_path)
+    component = _component_with_provider(tmp_path)
+    assert component.add_scope_export(
+        tmp_path,
+        scope_path="Main.Topic",
+        decl_node=child_ref.node,
+        decl_name=child_ref.name,
+        revision=child_ref.revision,
+    ).ok
+
+    runtime = make_runtime()
+    opened = runtime.node.contract.ensure_open_contract(tmp_path, node_path="Main.Topic.Sub")
+    assert opened.ok and opened.value is not None
+    child_path = runtime.node.node_tree.node_store.contract_path(
+        tmp_path,
+        node_id=opened.value.node_id,
+        version=opened.value.version,
+    )
+    loaded = runtime.foundation.read_json(child_path, NodeContractSnapshot)
+    assert loaded.ok and loaded.value is not None
+    loaded.value.exports = []
+    assert runtime.foundation.write_json_atomic(
+        child_path,
+        loaded.value,
+        mode=WriteMode.UPDATE_EXISTING,
+    ).ok
+    committed_child = runtime.node.commit_scope_contract(
+        tmp_path,
+        scope_path="Main.Topic.Sub",
+        summary="Child boundary changed.",
+    )
+    assert committed_child.ok
+
+    committed_parent = runtime.node.commit_scope_contract(
+        tmp_path,
+        scope_path="Main.Topic",
+        summary="Parent must recheck child boundary.",
+    )
+    assert not committed_parent.ok
+    assert committed_parent.issues[0].kind == "scope_export_not_child_scope_export"
 
 
 def test_list_scope_export_candidates_marks_already_exported(tmp_path: Path) -> None:
@@ -388,6 +432,35 @@ def test_add_scope_export_interface_bind_failure_branches(tmp_path: Path) -> Non
     )
     assert not already_bound.ok
     assert already_bound.issues[0].kind == "interface_already_bound"
+
+
+def test_add_scope_export_with_interface_bind_reuses_kind_validation(tmp_path: Path) -> None:
+    _create_tree(tmp_path)
+    component = _component_with_provider(tmp_path)
+    interface = make_runtime().node.interface
+    assert interface.add_interface(
+        tmp_path,
+        node_path="Main.Topic",
+        name="topic_definition",
+        kind=DeclKind.DEFINITION,
+        summary="Expose a definition.",
+        actor="coordinator",
+    ).ok
+
+    rejected = component.add_scope_export(
+        tmp_path,
+        scope_path="Main.Topic",
+        decl_node="Main.Topic.Core",
+        decl_name="main_result",
+        bind_interface_name="topic_definition",
+    )
+
+    assert not rejected.ok
+    assert rejected.issues[0].kind == "interface_binding_kind_mismatch"
+    current = make_runtime().node.contract.get_current_contract(tmp_path, node_path="Main.Topic")
+    assert current.ok and current.value is not None
+    assert current.value.contract.exports == []
+    assert current.value.contract.interfaces[0].bound_decl is None
 
 
 def test_remove_scope_export_blocks_bound_interface_then_removes_unbound(tmp_path: Path) -> None:

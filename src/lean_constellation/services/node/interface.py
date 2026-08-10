@@ -318,6 +318,67 @@ class InterfaceComponent:
             warnings=warnings,
         )
 
+    def validate_scope_export_binding(
+        self,
+        repo_root: Path,
+        *,
+        scope_path: str,
+        candidate_contract: NodeContract,
+        interface_name: str,
+        ref: DeclRef,
+        decl_kind: str | None,
+    ) -> ServiceResult[None]:
+        """Run the same semantic checks used by standalone Scope binding.
+
+        Scope export plus binding is one candidate-contract mutation.  The
+        export component must validate the interface against that candidate
+        before persisting either the export or the binding.
+        """
+
+        normalized = interface_name.strip()
+        if not normalized:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "interface_name_required",
+                    "Interface name is required.",
+                    field="bind_interface_name",
+                )
+            )
+        interface = self._find_interface(candidate_contract.interfaces, normalized)
+        if interface is None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "interface_missing",
+                    f"Interface not found: {normalized}",
+                    field=normalized,
+                )
+            )
+        ref_key = self._decl_ref_key(ref)
+        if not any(self._decl_ref_key(exported) == ref_key for exported in candidate_contract.exports):
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "interface_binding_decl_not_exported",
+                    f"Scope interface binding target is not in the candidate Scope exports: {ref.name}",
+                    object_ref=scope_path,
+                    expected="The exact DeclRef must be present in candidate Scope exports.",
+                )
+            )
+        if interface.bound_decl is not None and self._decl_ref_key(interface.bound_decl) != ref_key:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "interface_already_bound",
+                    f"Interface is already bound to a different declaration: {normalized}",
+                    field=normalized,
+                )
+            )
+        return self._validate_binding_semantics(
+            repo_root,
+            node_path=scope_path,
+            interface=interface,
+            ref=ref,
+            decl_kind=decl_kind,
+        )
+
     def list_interfaces(self, repo_root: Path, *, node_path: str) -> ServiceResult[InterfaceListView]:
         view = self.contract.get_current_contract(repo_root, node_path=node_path)
         if not view.ok or view.value is None:
@@ -610,11 +671,41 @@ class InterfaceComponent:
             )
         if not resolved.ok or resolved.value is None:
             return self.runtime.foundation.fail(resolved.issues)
-        identity = self._validate_binding_lean_identity(
+        semantics = self._validate_binding_semantics(
             repo_root,
             node_path=node_path,
             interface=interface,
             ref=resolved.value,
+            decl_kind=None,
+        )
+        if not semantics.ok:
+            return self.runtime.foundation.fail(semantics.issues)
+        return self.runtime.foundation.ok(resolved.value, warnings=[*resolved.issues, *semantics.issues])
+
+    def _validate_binding_semantics(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        interface: DeclInterface,
+        ref: DeclRef,
+        decl_kind: str | None,
+    ) -> ServiceResult[None]:
+        warnings = []
+        if decl_kind is not None:
+            kind_check = self._validate_binding_kind(
+                node_path=node_path,
+                interface=interface,
+                decl_kind=decl_kind,
+            )
+            if not kind_check.ok:
+                return self.runtime.foundation.fail(kind_check.issues)
+            warnings.extend(kind_check.issues)
+        identity = self._validate_binding_lean_identity(
+            repo_root,
+            node_path=node_path,
+            interface=interface,
+            ref=ref,
         )
         if not identity.ok:
             return self.runtime.foundation.fail(identity.issues)
@@ -622,11 +713,11 @@ class InterfaceComponent:
             repo_root,
             node_path=node_path,
             interface=interface,
-            ref=resolved.value,
+            ref=ref,
         )
         if not statement.ok:
             return self.runtime.foundation.fail(statement.issues)
-        return self.runtime.foundation.ok(resolved.value, warnings=resolved.issues)
+        return self.runtime.foundation.ok(None, warnings=warnings)
 
     def _validate_binding_lean_identity(
         self,
@@ -1080,6 +1171,10 @@ class InterfaceComponent:
             if interface.name == name:
                 return interface
         return None
+
+    @staticmethod
+    def _decl_ref_key(ref: DeclRef) -> tuple[str | None, str, str, int]:
+        return (ref.repo, ref.node, ref.name, ref.revision)
 
     @staticmethod
     def _interface_view(interface: DeclInterface, *, protected: bool) -> InterfaceView:
