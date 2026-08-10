@@ -324,6 +324,7 @@ def build_application_tool_views(group_specs: Iterable[ToolGroupSpec] | None = N
                 AppGroup.IMPORTED_REPO_PUBLIC_DECL_READ,
                 AppGroup.VISIBLE_DECL_LEAN_FILE_READ,
                 AppGroup.NODE_CONTRACT_READ_CURRENT,
+                AppGroup.NODE_CONTRACT_DEPENDENCY_CURRENT_WRITE,
                 AppGroup.SOURCE_INDEX_NAVIGATION_READ,
                 AppGroup.SOURCE_MATERIAL_TEXT_READ,
                 AppGroup.RESOURCE_LIBRARY_READ,

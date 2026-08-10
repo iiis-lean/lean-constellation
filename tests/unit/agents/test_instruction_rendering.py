@@ -439,6 +439,14 @@ def test_formal_stage_instructions_match_stage_specific_tool_boundaries() -> Non
     assert "check_statement_formal_policy" not in proof_reviewer
 
 
+def test_statement_nl_worker_instruction_allows_narrow_node_dependency_maintenance() -> None:
+    text = render_agent_instruction("StatementNLWorkerAgent")
+
+    assert "add_current_node_dep" in text
+    assert "Do not change interfaces, exports, task targets, or other Node contract fields." in text
+    assert "change node contracts" not in text
+
+
 def test_runtime_instruction_tool_refs_are_visible_to_each_agent() -> None:
     reports = build_agent_surface_reports()
 
