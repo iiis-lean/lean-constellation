@@ -7,7 +7,7 @@ from tests.unit_services_helpers import (
 )
 
 from lean_constellation.domain.lean_check import LeanCheck
-from lean_constellation.domain.refs import DeclRef
+from lean_constellation.domain.refs import DeclRef, NodeRef
 from lean_constellation.services.decl_graph import DeclState
 from lean_constellation.services.decl_graph.models import (
     DeclFormalSection,
@@ -20,6 +20,7 @@ from lean_constellation.services.foundation import (
     ServiceResult,
     WriteMode,
 )
+from lean_constellation.services.node.contract_fields import NodeDep
 
 
 NODE_PATH = "Main.Topic.Core"
@@ -180,6 +181,17 @@ def _path_file_bytes(root: Path) -> dict[str, bytes]:
         for path in sorted(root.rglob("*"))
         if path.is_file()
     }
+
+
+def _public_result_node_dep() -> NodeDep:
+    return NodeDep(
+        dep_id="fixture-public-result",
+        target=NodeRef(node=NODE_PATH),
+        expected_decl_refs=[
+            DeclRef(node=NODE_PATH, name="PublicResult", revision=1)
+        ],
+        reason="Consume the provider boundary.",
+    )
 
 
 def test_node_closure_reports_and_promotes_private_statement_dependency(
@@ -956,6 +968,50 @@ def test_visibility_revision_rejects_interface_binding(
     assert "decl_visibility_interface_required" in {issue.kind for issue in revised.issues}
 
 
+def test_visibility_revision_reads_active_binding_when_open_contract_unbinds_it(
+    tmp_path: Path,
+) -> None:
+    round_id = _prepare_repo(tmp_path)
+    _seed_definition(tmp_path, round_id=round_id, name="PublicResult", public=True)
+    runtime = make_runtime()
+    assert runtime.node.interface.add_interface(
+        tmp_path,
+        node_path=NODE_PATH,
+        name="public_result",
+        kind="definition",
+        summary="Expose the public result.",
+        actor="coordinator",
+    ).ok
+    assert runtime.node.interface.bind_interface_to_decl(
+        tmp_path,
+        node_path=NODE_PATH,
+        interface_name="public_result",
+        decl_name="PublicResult",
+    ).ok
+    _commit_content_head(tmp_path, "PublicResult")
+    unbound = runtime.node.interface.unbind_interface(
+        tmp_path,
+        node_path=NODE_PATH,
+        interface_name="public_result",
+    )
+    assert unbound.ok and unbound.value is not None
+    assert unbound.value.changed
+
+    revised = runtime.node.public_statement_closure.revise_content_decl_visibility(
+        tmp_path,
+        node_path=NODE_PATH,
+        decl_name="PublicResult",
+        expected_current_visibility="public",
+        new_visibility="private",
+        reason="The open contract no longer binds the active interface.",
+    )
+
+    assert not revised.ok
+    assert "decl_visibility_interface_required" in {
+        issue.kind for issue in revised.issues
+    }
+
+
 def test_visibility_revision_rejects_scope_and_main_exports(
     tmp_path: Path,
 ) -> None:
@@ -1009,6 +1065,130 @@ def test_visibility_revision_rejects_scope_and_main_exports(
     }
 
 
+def test_visibility_revision_reads_active_scope_export_when_open_contract_removes_it(
+    tmp_path: Path,
+) -> None:
+    round_id = _prepare_repo(tmp_path)
+    _seed_definition(tmp_path, round_id=round_id, name="PublicResult", public=True)
+    _commit_content_head(tmp_path, "PublicResult")
+    runtime = make_runtime()
+    assert runtime.node.export.add_scope_export(
+        tmp_path,
+        scope_path="Main.Topic",
+        decl_node=NODE_PATH,
+        decl_name="PublicResult",
+    ).ok
+    committed = runtime.node.commit_scope_contract(
+        tmp_path,
+        scope_path="Main.Topic",
+        summary="Commit the stable export boundary.",
+    )
+    assert committed.ok, committed.issues
+    _set_open_scope_exports(tmp_path, scope_path="Main.Topic", refs=[])
+
+    revised = runtime.node.public_statement_closure.revise_content_decl_visibility(
+        tmp_path,
+        node_path=NODE_PATH,
+        decl_name="PublicResult",
+        expected_current_visibility="public",
+        new_visibility="private",
+        reason="The open Scope draft removed the active export.",
+    )
+
+    assert not revised.ok
+    assert "decl_visibility_scope_export_required" in {
+        issue.kind for issue in revised.issues
+    }
+
+
+def test_visibility_revision_rejects_open_node_dependency(tmp_path: Path) -> None:
+    round_id = _prepare_repo(tmp_path)
+    _seed_definition(tmp_path, round_id=round_id, name="PublicResult", public=True)
+    runtime = make_runtime()
+    current = runtime.node.contract.get_current_contract(
+        tmp_path,
+        node_path="Main",
+    )
+    assert current.ok and current.value is not None
+    current.value.contract.deps.append(_public_result_node_dep())
+    persisted = runtime.node.contract._persist_open_candidate(
+        tmp_path,
+        node_path="Main",
+        candidate=current.value.contract,
+    )
+    assert persisted.ok, persisted.issues
+
+    revised = runtime.node.public_statement_closure.revise_content_decl_visibility(
+        tmp_path,
+        node_path=NODE_PATH,
+        decl_name="PublicResult",
+        expected_current_visibility="public",
+        new_visibility="private",
+        reason="Attempt to hide a Node dependency provider.",
+    )
+
+    assert not revised.ok
+    assert "decl_visibility_consumer_required" in {
+        issue.kind for issue in revised.issues
+    }
+
+
+def test_visibility_revision_reads_active_node_dependency_when_open_contract_removes_it(
+    tmp_path: Path,
+) -> None:
+    round_id = _prepare_repo(tmp_path)
+    _seed_definition(tmp_path, round_id=round_id, name="PublicResult", public=True)
+    runtime = make_runtime()
+    current = runtime.node.contract.get_current_contract(
+        tmp_path,
+        node_path="Main",
+    )
+    assert current.ok and current.value is not None
+    current.value.contract.deps.append(_public_result_node_dep())
+    persisted = runtime.node.contract._persist_open_candidate(
+        tmp_path,
+        node_path="Main",
+        candidate=current.value.contract,
+    )
+    assert persisted.ok, persisted.issues
+    committed = runtime.node.contract._commit_scope_contract_after_guard(
+        tmp_path,
+        scope_path="Main",
+        summary="Commit the stable dependency boundary.",
+    )
+    assert committed.ok, committed.issues
+    opened = runtime.node.contract.ensure_open_contract(
+        tmp_path,
+        node_path="Main",
+    )
+    assert opened.ok and opened.value is not None
+    opened.value.contract.deps = []
+    saved = runtime.foundation.store.write_json_atomic(
+        runtime.node.node_tree.node_store.contract_path(
+            tmp_path,
+            node_id=opened.value.node_id,
+            version=opened.value.version,
+        ),
+        opened.value.contract,
+        mode=WriteMode.UPDATE_EXISTING,
+    )
+    assert saved.ok
+
+    revised = runtime.node.public_statement_closure.revise_content_decl_visibility(
+        tmp_path,
+        node_path=NODE_PATH,
+        decl_name="PublicResult",
+        expected_current_visibility="public",
+        new_visibility="private",
+        reason="The open contract removed the active dependency.",
+    )
+
+    assert not revised.ok
+    assert "decl_visibility_consumer_required" in {
+        issue.kind for issue in revised.issues
+    }
+
+
 def test_visibility_revision_rejects_public_statement_consumer(
     tmp_path: Path,
 ) -> None:
@@ -1034,6 +1214,41 @@ def test_visibility_revision_rejects_public_statement_consumer(
 
     assert not revised.ok
     assert "decl_visibility_public_statement_required" in {
+        issue.kind for issue in revised.issues
+    }
+
+
+def test_visibility_revision_rejects_private_proof_consumer_in_running_round(
+    tmp_path: Path,
+) -> None:
+    round_id = _prepare_repo(tmp_path)
+    _seed_definition(tmp_path, round_id=round_id, name="Support", public=True)
+    _seed_definition(
+        tmp_path,
+        round_id=round_id,
+        name="PrivateConsumer",
+        public=False,
+        proof_deps=["Support"],
+    )
+    runtime = make_runtime()
+    started = runtime.decl_graph.start_round(
+        tmp_path,
+        node_path=NODE_PATH,
+        round_id=round_id,
+    )
+    assert started.ok, started.issues
+
+    revised = runtime.node.public_statement_closure.revise_content_decl_visibility(
+        tmp_path,
+        node_path=NODE_PATH,
+        decl_name="Support",
+        expected_current_visibility="public",
+        new_visibility="private",
+        reason="Attempt to hide a provider used by an admitted proof worker.",
+    )
+
+    assert not revised.ok
+    assert "decl_visibility_running_consumer_required" in {
         issue.kind for issue in revised.issues
     }
 

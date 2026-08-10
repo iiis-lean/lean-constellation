@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from lean_constellation.services.decl_graph.models import (
     Decl,
     DeclRevision,
+    DeclRoundStatus,
     DeclState,
     RepoDeclDep,
 )
@@ -111,22 +112,90 @@ class DeclReleaseGuard:
                             target_node = dep.ref.node if dep.ref.node != "Main" else node.path
                             if target_node == node_path and dep.ref.name == decl_name:
                                 refs.append(f"current:decl:{node.path}:{dependent.name}:{section}")
-            if node.current_contract_version is None:
-                continue
-            contract_path = self.runtime.node.node_tree.node_store.contract_path(
-                repo_root, node_id=node.node_id, version=node.current_contract_version
+                rounds = self.runtime.decl_graph.list_rounds(
+                    repo_root,
+                    node_path=node.path,
+                )
+                if not rounds.ok or rounds.value is None:
+                    return self.runtime.foundation.fail(rounds.issues)
+                for round_record in rounds.value:
+                    if round_record.status not in {
+                        DeclRoundStatus.RUNNING,
+                        DeclRoundStatus.AWAITING_CLOSEOUT,
+                    }:
+                        continue
+                    for revision_ref in round_record.revision_refs:
+                        revision = self.runtime.decl_graph.decl_catalog.get_decl_revision(
+                            repo_root,
+                            node_path=node.path,
+                            name=revision_ref.decl_name,
+                            revision=revision_ref.revision,
+                        )
+                        if not revision.ok or revision.value is None:
+                            return self.runtime.foundation.fail(revision.issues)
+                        for section, deps in (
+                            ("statement", revision.value.statement.deps),
+                            (
+                                "proof",
+                                revision.value.proof.deps
+                                if revision.value.proof
+                                else [],
+                            ),
+                        ):
+                            for dep in deps:
+                                if not isinstance(dep, RepoDeclDep) or dep.ref.repo is not None:
+                                    continue
+                                target_node = (
+                                    dep.ref.node
+                                    if dep.ref.node != "Main"
+                                    else node.path
+                                )
+                                if target_node == node_path and dep.ref.name == decl_name:
+                                    refs.append(
+                                        "admitted:round:"
+                                        f"{round_record.round_id}:{node.path}:"
+                                        f"{revision_ref.decl_name}:{section}"
+                                    )
+            contract_versions = sorted(
+                {
+                    version
+                    for version in (
+                        node.active_contract_version,
+                        node.open_contract_version,
+                    )
+                    if version is not None
+                }
             )
-            contract = self.runtime.foundation.store.read_json(contract_path, NodeContract)
-            if not contract.ok or contract.value is None:
-                return self.runtime.foundation.fail(contract.issues)
-            for label, candidates in (("exports", contract.value.exports), ("interfaces", [item.bound_decl for item in contract.value.interfaces if item.bound_decl]),):
-                for ref in candidates:
-                    if ref.repo is None and ref.node == node_path and ref.name == decl_name:
-                        refs.append(f"current:contract:{node.path}:{label}")
-            for dep in contract.value.deps:
-                for ref in dep.expected_decl_refs:
-                    if ref.repo is None and ref.node == node_path and ref.name == decl_name:
-                        refs.append(f"current:contract:{node.path}:deps")
+            for version in contract_versions:
+                contract_path = self.runtime.node.node_tree.node_store.contract_path(
+                    repo_root,
+                    node_id=node.node_id,
+                    version=version,
+                )
+                contract = self.runtime.foundation.store.read_json(
+                    contract_path,
+                    NodeContract,
+                )
+                if not contract.ok or contract.value is None:
+                    return self.runtime.foundation.fail(contract.issues)
+                for label, candidates in (
+                    ("exports", contract.value.exports),
+                    (
+                        "interfaces",
+                        [
+                            item.bound_decl
+                            for item in contract.value.interfaces
+                            if item.bound_decl
+                        ],
+                    ),
+                ):
+                    for ref in candidates:
+                        if ref.repo is None and ref.node == node_path and ref.name == decl_name:
+                            refs.append(f"current:contract:{node.path}:{label}")
+                for dep in contract.value.deps:
+                    for ref in dep.expected_decl_refs:
+                        if ref.repo is None and ref.node == node_path and ref.name == decl_name:
+                            refs.append(f"current:contract:{node.path}:deps")
         return self.runtime.foundation.ok(sorted(set(refs)))
 
     def _protected_entry(self, repo_root: Path, *, node_path: str, decl_name: str):

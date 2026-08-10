@@ -463,6 +463,15 @@ class PublicStatementClosureComponent:
             issues.extend(inbound.issues)
             return self._unique_issues(issues)
         for ref in inbound.value:
+            if ref.startswith("admitted:round:"):
+                issues.append(
+                    self.runtime.foundation.issue(
+                        "decl_visibility_running_consumer_required",
+                        "A running or awaiting-closeout declaration round consumes this public declaration.",
+                        object_ref=ref,
+                    )
+                )
+                continue
             if ref.endswith(":proof"):
                 continue
             if ":contract:" in ref:
