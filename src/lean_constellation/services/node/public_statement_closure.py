@@ -201,7 +201,7 @@ class PublicStatementClosureComponent:
             options=_InspectionOptions(
                 boundary=PublicStatementClosureBoundary.SCOPE,
                 node_path=scope_path,
-                visible_contracts=False,
+                visible_contracts=visible,
             ),
         )
 
@@ -578,7 +578,7 @@ class PublicStatementClosureComponent:
         options: _InspectionOptions,
     ) -> ServiceResult[PublicStatementClosureReport]:
         queue: deque[tuple[DeclRef, DeclRef | None]] = deque(
-            (self._current_ref(repo_root, root), None) for root in roots
+            (root, None) for root in roots
         )
         visited: set[tuple[str, str, str]] = set()
         requirements: dict[tuple[str, str, str], PublicStatementClosureDecl] = {}
@@ -612,7 +612,7 @@ class PublicStatementClosureComponent:
                 continue
 
             key = ("", ref.node, ref.name)
-            loaded = self._load_current_decl(repo_root, ref)
+            loaded = self._load_exact_decl(repo_root, ref)
             if not loaded.ok or loaded.value is None:
                 issues.extend(loaded.issues)
                 continue
@@ -682,7 +682,7 @@ class PublicStatementClosureComponent:
                 repo_root,
                 node_path=decl.node_path,
                 name=decl.name,
-                revision=decl.current_revision,
+                revision=ref.revision,
             )
             if not revision.ok or revision.value is None:
                 issues.extend(revision.issues)
@@ -698,7 +698,7 @@ class PublicStatementClosureComponent:
                         dep_ref = dep_ref.model_copy(
                             update={"node": decl.node_path}
                         )
-                    queue.append((self._current_ref(repo_root, dep_ref), ref))
+                    queue.append((dep_ref, ref))
 
         declarations = sorted(requirements.values(), key=lambda item: self._ref_sort_key(item.ref))
         promotions = sorted(
@@ -1205,10 +1205,11 @@ class PublicStatementClosureComponent:
                     )
                 )
                 continue
+            selected_root = root if visible else self._current_ref(repo_root, root)
             visible_from_child = self._scope_root_visible_from_direct_child(
                 repo_root,
                 scope_path=scope_path,
-                ref=root,
+                ref=selected_root,
             )
             if not visible_from_child.ok:
                 root_issues.extend(visible_from_child.issues)
@@ -1223,7 +1224,7 @@ class PublicStatementClosureComponent:
                     )
                 )
                 continue
-            selected.append(self._current_ref(repo_root, root))
+            selected.append(selected_root)
         if root_issues:
             return self.runtime.foundation.fail(self._unique_issues(root_issues))
         return self.runtime.foundation.ok(self._unique_refs(selected))
@@ -1252,7 +1253,7 @@ class PublicStatementClosureComponent:
             return self._scope_exports_ref(
                 repo_root,
                 scope_path=child.path,
-                ref=self._current_ref(repo_root, ref),
+                ref=ref,
                 visible=True,
             )
         if ref.node != child.path:
@@ -1263,11 +1264,59 @@ class PublicStatementClosureComponent:
         )
         if not public.ok or public.value is None:
             return self.runtime.foundation.fail(public.issues)
-        current = self._current_ref(repo_root, ref)
         return self.runtime.foundation.ok(
             any(
-                self._ref_key(candidate.ref) == self._ref_key(current)
+                self._ref_key(candidate.ref) == self._ref_key(ref)
                 for candidate in public.value
+            )
+        )
+
+    def _load_exact_decl(
+        self,
+        repo_root: Path,
+        ref: DeclRef,
+    ) -> ServiceResult[tuple[Decl, DeclRef]]:
+        decl = self.runtime.decl_graph.get_decl(
+            repo_root,
+            node_path=ref.node,
+            name=ref.name,
+        )
+        if not decl.ok or decl.value is None:
+            return self.runtime.foundation.fail(decl.issues)
+        if decl.value.lifecycle != DeclLifecycle.ACTIVE:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "public_statement_decl_not_active",
+                    "Public Statement closure can only use active declarations.",
+                    object_ref=f"{ref.node}:{ref.name}",
+                )
+            )
+        revision = self.runtime.decl_graph.get_decl_revision(
+            repo_root,
+            node_path=ref.node,
+            name=ref.name,
+            revision=ref.revision,
+        )
+        if not revision.ok or revision.value is None:
+            return self.runtime.foundation.fail(revision.issues)
+        if revision.value.status != DeclRevisionStatus.COMMITTED:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "public_statement_revision_not_committed",
+                    "Public Statement closure requires the referenced declaration revision to be committed.",
+                    object_ref=f"{ref.node}:{ref.name}@{ref.revision}",
+                    current=revision.value.status.value,
+                    expected=DeclRevisionStatus.COMMITTED.value,
+                )
+            )
+        return self.runtime.foundation.ok(
+            (
+                decl.value,
+                DeclRef(
+                    node=decl.value.node_path,
+                    name=decl.value.name,
+                    revision=ref.revision,
+                ),
             )
         )
 

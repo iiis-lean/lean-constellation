@@ -12,6 +12,8 @@ from lean_constellation.services.decl_graph import DeclState
 from lean_constellation.services.decl_graph.models import (
     DeclFormalSection,
     DeclProof,
+    DeclRevision,
+    DeclRevisionStatus,
     DeclStatement,
     RepoDeclDep,
 )
@@ -173,6 +175,73 @@ def _set_open_scope_exports(
     )
     assert saved.ok
     return opened.value.version
+
+
+def _advance_decl_in_open_content_candidate(
+    repo_root: Path,
+    *,
+    name: str,
+    statement_deps: list[str],
+) -> None:
+    runtime = make_runtime()
+    decl = runtime.decl_graph.get_decl(repo_root, node_path=NODE_PATH, name=name)
+    assert decl.ok and decl.value is not None
+    revision = DeclRevision(
+        revision=2,
+        lean_decl_name=name,
+        state=DeclState.DECLARED,
+        status=DeclRevisionStatus.COMMITTED,
+        statement=DeclStatement(
+            formal=DeclFormalSection(
+                code=f"def {name} : Nat := 0",
+                check=LeanCheck.model_validate(lean_check_payload()),
+            ),
+            deps=[
+                RepoDeclDep(
+                    ref=DeclRef(node=NODE_PATH, name=dependency, revision=1),
+                    reason="Added by the open Content candidate.",
+                )
+                for dependency in statement_deps
+            ],
+        ),
+        proof=DeclProof(),
+    )
+    assert runtime.foundation.store.write_json_atomic(
+        runtime.decl_graph.graph_store.revision_path(
+            repo_root,
+            node_path=NODE_PATH,
+            decl_name=name,
+            revision=2,
+        ),
+        revision,
+        mode=WriteMode.CREATE_ONLY,
+    ).ok
+    decl.value.current_revision = 2
+    decl.value.revision_ids.append(2)
+    assert runtime.foundation.store.write_json_atomic(
+        runtime.decl_graph.graph_store.decl_record_path(
+            repo_root,
+            node_path=NODE_PATH,
+            decl_name=name,
+        ),
+        decl.value,
+        mode=WriteMode.UPDATE_EXISTING,
+    ).ok
+    opened = runtime.node.contract.ensure_open_contract(
+        repo_root,
+        node_path=NODE_PATH,
+    )
+    assert opened.ok and opened.value is not None
+    opened.value.contract.decl_graph_head[name] = 2
+    assert runtime.foundation.store.write_json_atomic(
+        runtime.node.node_tree.node_store.contract_path(
+            repo_root,
+            node_id=opened.value.node_id,
+            version=opened.value.version,
+        ),
+        opened.value.contract,
+        mode=WriteMode.UPDATE_EXISTING,
+    ).ok
 
 
 def _path_file_bytes(root: Path) -> dict[str, bytes]:
@@ -384,6 +453,138 @@ def test_main_scope_closure_adds_statement_dependency_to_scope_chain(
     assert topic.ok and topic.value is not None
     assert topic.value.active_contract_version == 2
     assert topic.value.open_contract_version is None
+
+
+def test_visible_scope_closure_uses_active_exports_while_candidate_uses_open(
+    tmp_path: Path,
+) -> None:
+    round_id = _prepare_repo(tmp_path)
+    _seed_definition(tmp_path, round_id=round_id, name="Family", public=True)
+    _seed_definition(
+        tmp_path,
+        round_id=round_id,
+        name="MainResult",
+        public=True,
+        statement_deps=["Family"],
+    )
+    _commit_content_head(tmp_path, "Family", "MainResult")
+    runtime = make_runtime()
+    for name in ("Family", "MainResult"):
+        assert runtime.node.export.add_scope_export(
+            tmp_path,
+            scope_path="Main.Topic",
+            decl_node=NODE_PATH,
+            decl_name=name,
+        ).ok
+    assert runtime.node.contract._commit_scope_contract_after_guard(
+        tmp_path,
+        scope_path="Main.Topic",
+        summary="Commit the complete Topic boundary.",
+    ).ok
+    for name in ("Family", "MainResult"):
+        assert runtime.node.export.add_scope_export(
+            tmp_path,
+            scope_path="Main",
+            decl_node=NODE_PATH,
+            decl_name=name,
+        ).ok
+    assert runtime.node.contract._commit_scope_contract_after_guard(
+        tmp_path,
+        scope_path="Main",
+        summary="Commit the complete Main boundary.",
+    ).ok
+    _set_open_scope_exports(
+        tmp_path,
+        scope_path="Main",
+        refs=[DeclRef(node=NODE_PATH, name="MainResult", revision=1)],
+    )
+
+    stable = runtime.node.public_statement_closure.inspect_scope(
+        tmp_path,
+        scope_path="Main",
+        visible=True,
+    )
+    candidate = runtime.node.public_statement_closure.inspect_scope(
+        tmp_path,
+        scope_path="Main",
+        visible=False,
+    )
+
+    assert stable.ok and stable.value is not None
+    assert stable.value.closure_complete is True
+    assert candidate.ok and candidate.value is not None
+    assert candidate.value.closure_complete is False
+    assert candidate.value.required_export_additions == {
+        "Main": [DeclRef(node=NODE_PATH, name="Family", revision=1)]
+    }
+
+
+def test_visible_scope_closure_traverses_exact_exported_decl_revision(
+    tmp_path: Path,
+) -> None:
+    round_id = _prepare_repo(tmp_path)
+    _seed_definition(tmp_path, round_id=round_id, name="NewHelper", public=False)
+    _seed_definition(tmp_path, round_id=round_id, name="MainResult", public=True)
+    _commit_content_head(tmp_path, "NewHelper", "MainResult")
+    runtime = make_runtime()
+    assert runtime.node.export.add_scope_export(
+        tmp_path,
+        scope_path="Main.Topic",
+        decl_node=NODE_PATH,
+        decl_name="MainResult",
+    ).ok
+    assert runtime.node.contract._commit_scope_contract_after_guard(
+        tmp_path,
+        scope_path="Main.Topic",
+        summary="Commit Topic at MainResult revision 1.",
+    ).ok
+    assert runtime.node.export.add_scope_export(
+        tmp_path,
+        scope_path="Main",
+        decl_node=NODE_PATH,
+        decl_name="MainResult",
+    ).ok
+    assert runtime.node.contract._commit_scope_contract_after_guard(
+        tmp_path,
+        scope_path="Main",
+        summary="Commit Main at MainResult revision 1.",
+    ).ok
+    _advance_decl_in_open_content_candidate(
+        tmp_path,
+        name="MainResult",
+        statement_deps=["NewHelper"],
+    )
+    _set_open_scope_exports(
+        tmp_path,
+        scope_path="Main",
+        refs=[DeclRef(node=NODE_PATH, name="MainResult", revision=2)],
+    )
+
+    stable = runtime.node.public_statement_closure.inspect_scope(
+        tmp_path,
+        scope_path="Main",
+        visible=True,
+    )
+    candidate = runtime.node.public_statement_closure.inspect_scope(
+        tmp_path,
+        scope_path="Main",
+        visible=False,
+    )
+
+    assert stable.ok and stable.value is not None
+    assert stable.value.closure_complete is True
+    assert stable.value.roots == [
+        DeclRef(node=NODE_PATH, name="MainResult", revision=1)
+    ]
+    assert [item.ref for item in stable.value.declarations] == [
+        DeclRef(node=NODE_PATH, name="MainResult", revision=1)
+    ]
+    assert candidate.ok and candidate.value is not None
+    assert candidate.value.closure_complete is False
+    assert {item.ref.name for item in candidate.value.declarations} == {
+        "MainResult",
+        "NewHelper",
+    }
 
 
 def test_scope_explicit_root_adds_existing_boundary_and_stops_at_target_scope(
