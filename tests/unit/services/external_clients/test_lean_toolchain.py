@@ -499,16 +499,61 @@ def test_mathlib_global_lookup_cache_is_process_local_and_bounded(tmp_path: Path
 
     assert client.search_mathlib_declarations("Nat.add", limit=3).ok
     assert client.search_mathlib_declarations("Nat.add", limit=3).ok
-    assert client.inspect_mathlib_declaration("Nat.add_assoc").ok
-    assert client.inspect_mathlib_declaration("Nat.add_assoc").ok
-    assert client.inspect_mathlib_module("Mathlib.Data.Nat.Basic").ok
-    assert client.inspect_mathlib_module("Mathlib.Data.Nat.Basic").ok
+    assert client.inspect_mathlib_declaration(tmp_path, "Nat.add_assoc").ok
+    assert client.inspect_mathlib_declaration(tmp_path, "Nat.add_assoc").ok
+    assert client.inspect_mathlib_module(tmp_path, "Mathlib.Data.Nat.Basic").ok
+    assert client.inspect_mathlib_module(tmp_path, "Mathlib.Data.Nat.Basic").ok
 
     assert calls == ["lean_explore.find", "lean_explore.find", "mathlib_nav.file_outline"]
     stats = client.mathlib_cache_stats()
     assert stats.hits == 3
     assert stats.entries == 2
     assert stats.evictions == 1
+
+
+def test_mathlib_navigation_cache_and_payload_are_repo_root_aware(tmp_path: Path) -> None:
+    calls: list[tuple[str, dict]] = []
+
+    def dispatch(tool_name: str, payload: dict):
+        calls.append((tool_name, payload))
+        if tool_name == "lean_explore.find":
+            return {
+                "results": [
+                    {
+                        "name": payload["exact_name"],
+                        "module": "Init",
+                        "source_text": "theorem x : True := by trivial",
+                    }
+                ]
+            }
+        if tool_name == "mathlib_nav.file_outline":
+            return {"imports": ["Init"], "declarations": []}
+        raise KeyError(tool_name)
+
+    client = LeanToolchainClient(
+        lake=RecordingLake(),
+        toolkit=LeanMcpToolkitClient(dispatcher=dispatch),
+        config=LeanToolchainClientConfig(
+            mathlib_revision="test-revision",
+            mathlib_cache_max_entries=8,
+        ),
+    )
+    root_a = tmp_path / "repo_a"
+    root_b = tmp_path / "repo_b"
+
+    assert client.inspect_mathlib_module(root_a, "Mathlib.Data.Nat.Basic").ok
+    assert client.inspect_mathlib_module(root_a, "Mathlib.Data.Nat.Basic").ok
+    assert client.inspect_mathlib_module(root_b, "Mathlib.Data.Nat.Basic").ok
+    assert client.inspect_mathlib_declaration(root_a, "Nat.add_assoc").ok
+    assert client.inspect_mathlib_declaration(root_b, "Nat.add_assoc").ok
+
+    module_calls = [payload for tool, payload in calls if tool == "mathlib_nav.file_outline"]
+    assert [payload["project_root"] for payload in module_calls] == [
+        str(root_a.resolve()),
+        str(root_b.resolve()),
+    ]
+    declaration_calls = [payload for tool, payload in calls if tool == "lean_explore.find"]
+    assert len(declaration_calls) == 2
 
 
 def test_mathlib_check_cache_invalidates_on_repo_environment_change(tmp_path: Path) -> None:
@@ -545,8 +590,8 @@ def test_mathlib_failed_results_are_not_cached_without_revision() -> None:
         toolkit=LeanMcpToolkitClient(dispatcher=dispatch),
         config=LeanToolchainClientConfig(mathlib_revision="test-revision"),
     )
-    first = client.inspect_mathlib_declaration("Nat.missing")
-    second = client.inspect_mathlib_declaration("Nat.missing")
+    first = client.inspect_mathlib_declaration(Path("/tmp/repo"), "Nat.missing")
+    second = client.inspect_mathlib_declaration(Path("/tmp/repo"), "Nat.missing")
     assert not first.ok and not second.ok
     assert calls == [
         "lean_explore.find",

@@ -311,13 +311,12 @@ class ToolkitIngestionComponent:
         )
 
     def inspect_mathlib_declaration(self, repo_root: Path, *, decl_name: str) -> ServiceResult[MathlibNavigationView]:
-        del repo_root
         normalized_name = decl_name.strip()
         if not normalized_name:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue("mathlib_decl_name_empty", "Mathlib declaration name must be non-empty.", field="decl_name")
             )
-        result = self.runtime.external.lean_toolchain.inspect_mathlib_declaration(normalized_name)
+        result = self.runtime.external.lean_toolchain.inspect_mathlib_declaration(repo_root, normalized_name)
         if not result.ok:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
@@ -359,7 +358,6 @@ class ToolkitIngestionComponent:
         include_imports: bool = False,
         include_source_excerpt: bool = False,
     ) -> ServiceResult[MathlibModuleNavigationView]:
-        del repo_root
         normalized_module = module.strip()
         if not normalized_module:
             return self.runtime.foundation.fail(
@@ -373,7 +371,7 @@ class ToolkitIngestionComponent:
                     field="limit",
                 )
             )
-        result = self.runtime.external.lean_toolchain.inspect_mathlib_module(normalized_module)
+        result = self.runtime.external.lean_toolchain.inspect_mathlib_module(repo_root, normalized_module)
         if not result.ok:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(

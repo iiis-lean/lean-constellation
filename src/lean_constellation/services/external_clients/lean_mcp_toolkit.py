@@ -409,7 +409,7 @@ class LeanMcpToolkitClient:
             summary=f"Found {len(normalized_items)} Mathlib results",
         )
 
-    def inspect_mathlib_decl(self, decl_name: str) -> ToolkitDeclarationView:
+    def inspect_mathlib_decl(self, repo_root: Path, decl_name: str) -> ToolkitDeclarationView:
         result = self._call_tool_with_fallback(
             "lean_explore.find",
             {
@@ -423,7 +423,7 @@ class LeanMcpToolkitClient:
                 "include_dependencies": True,
             },
             fallback_tool="inspect_mathlib_decl",
-            fallback_payload={"decl_name": decl_name},
+            fallback_payload={"project_root": str(repo_root), "decl_name": decl_name},
         )
         if result.toolkit_tool == "inspect_mathlib_decl":
             return self._declaration_view(decl_name, result)
@@ -462,17 +462,18 @@ class LeanMcpToolkitClient:
             raw_excerpt=result.raw_excerpt,
         )
 
-    def inspect_mathlib_module(self, module: str) -> ToolkitModuleView:
+    def inspect_mathlib_module(self, repo_root: Path, module: str) -> ToolkitModuleView:
         result = self._call_tool_with_fallback(
             "mathlib_nav.file_outline",
             {
+                "project_root": str(repo_root),
                 "target": module,
                 "include_imports": True,
                 "include_decl_headers": True,
                 "limit_decls": 200,
             },
             fallback_tool="inspect_mathlib_module",
-            fallback_payload={"module": module},
+            fallback_payload={"project_root": str(repo_root), "module": module},
         )
         if not result.ok:
             return ToolkitModuleView(

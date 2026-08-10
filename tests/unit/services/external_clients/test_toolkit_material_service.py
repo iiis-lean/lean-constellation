@@ -35,7 +35,7 @@ def test_toolkit_dispatch_and_wrappers(tmp_path) -> None:
     client = LeanMcpToolkitClient(dispatcher=dispatch)
 
     search = client.search_mathlib("addition", ["theorem"], 10)
-    decl = client.inspect_mathlib_decl("Nat.add_assoc")
+    decl = client.inspect_mathlib_decl(tmp_path, "Nat.add_assoc")
     diagnostics = client.run_file_diagnostics(tmp_path, tmp_path / "A.lean")
     missing = client.search_arxiv_theorems("fixed point", 5)
     scan = client.scan_sorry_axiom("axiom bad : False\nexample : True := by sorry\n")
@@ -141,8 +141,8 @@ def test_toolkit_canonical_decl_module_diagnostics_and_extract(tmp_path) -> None
 
     client = LeanMcpToolkitClient(dispatcher=dispatch)
 
-    decl = client.inspect_mathlib_decl("Nat.add_assoc")
-    module = client.inspect_mathlib_module("Init.Data.Nat")
+    decl = client.inspect_mathlib_decl(tmp_path, "Nat.add_assoc")
+    module = client.inspect_mathlib_module(tmp_path, "Init.Data.Nat")
     diagnostics = client.run_file_diagnostics(tmp_path, tmp_path / "Main.lean")
     extracted = client.extract_declaration(tmp_path, "Main.lean", "target_decl")
 
@@ -151,6 +151,7 @@ def test_toolkit_canonical_decl_module_diagnostics_and_extract(tmp_path) -> None
     assert decl.name == "Nat.add_assoc"
     assert decl.code == "theorem Nat.add_assoc := by sorry"
     assert module.ok is True
+    assert calls[1][1]["project_root"] == str(tmp_path)
     assert module.imports == ["Init"]
     assert module.declarations == [{"name": "Nat.add_assoc"}]
     assert diagnostics.ok is True
@@ -180,7 +181,10 @@ def test_toolkit_mathlib_inspection_does_not_substitute_first_related_result() -
             ]
         }
 
-    result = LeanMcpToolkitClient(dispatcher=dispatch).inspect_mathlib_decl("Int.natAbs_mul")
+    result = LeanMcpToolkitClient(dispatcher=dispatch).inspect_mathlib_decl(
+        Path("/tmp/repo"),
+        "Int.natAbs_mul",
+    )
 
     assert result.ok is False
     assert result.issue_code == "declaration_not_found"

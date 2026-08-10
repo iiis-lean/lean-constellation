@@ -556,7 +556,7 @@ def test_live_toolkit_latency_matrix(tmp_path: Path) -> None:
             operation="toolchain inspect_mathlib_module Mathlib",
             backend="lean_mcp_toolkit",
             iteration=iteration,
-            func=lambda: toolchain.inspect_mathlib_module("Mathlib"),
+            func=lambda: toolchain.inspect_mathlib_module(repo_root, "Mathlib"),
             validate=service_ok,
         )
 

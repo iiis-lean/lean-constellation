@@ -62,7 +62,7 @@ def test_live_toolkit_catalog_repo_nav_diagnostics_extract_and_mathlib(tmp_path:
     assert read.ok, read.summary
 
     module = os.environ.get("LEAN_CONSTELLATION_REAL_TOOLKIT_MATHLIB_MODULE", "Mathlib")
-    mathlib_module = toolchain.inspect_mathlib_module(module)
+    mathlib_module = toolchain.inspect_mathlib_module(repo_root, module)
     assert mathlib_module.ok, mathlib_module.summary
     search = toolchain.search_mathlib_declarations("Nat.add", limit=3)
     if not search.ok and search.issue_code == "toolkit_call_failed" and "status=500" in (search.summary or ""):

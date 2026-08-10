@@ -104,7 +104,7 @@ def test_toolkit_live_mathlib_wrappers_use_canonical_tools() -> None:
     assert all(item.get("source_tool") == "lean_explore.find" for item in search.items)
 
     module_name = os.environ.get("LEAN_CONSTELLATION_REAL_TOOLKIT_MATHLIB_MODULE", "Mathlib")
-    module = client.inspect_mathlib_module(module_name)
+    module = client.inspect_mathlib_module(Path.cwd(), module_name)
     assert module.ok, module.summary
     assert module.module == module_name
     assert module.raw_excerpt

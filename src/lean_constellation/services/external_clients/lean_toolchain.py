@@ -805,24 +805,34 @@ class LeanToolchainClient:
         self._cache_put(key, view)
         return view
 
-    def inspect_mathlib_declaration(self, decl_name: str) -> ToolchainDeclarationView:
+    def inspect_mathlib_declaration(self, repo_root: Path, decl_name: str) -> ToolchainDeclarationView:
         normalized_name = decl_name.strip()
-        key = self._mathlib_cache_key("inspect_declaration", decl_name=normalized_name)
+        normalized_root = Path(repo_root).resolve()
+        key = self._mathlib_cache_key(
+            "inspect_declaration",
+            repo_root=normalized_root,
+            decl_name=normalized_name,
+        )
         cached = self._cache_get(key, ToolchainDeclarationView)
         if cached is not None:
             return cached
-        result = self.toolkit.inspect_mathlib_decl(normalized_name)
+        result = self.toolkit.inspect_mathlib_decl(normalized_root, normalized_name)
         view = self._declaration_view(result, provider="lean_mcp_toolkit")
         self._cache_put(key, view)
         return view
 
-    def inspect_mathlib_module(self, module: str) -> ToolchainModuleView:
+    def inspect_mathlib_module(self, repo_root: Path, module: str) -> ToolchainModuleView:
         normalized_module = module.strip()
-        key = self._mathlib_cache_key("inspect_module", module=normalized_module)
+        normalized_root = Path(repo_root).resolve()
+        key = self._mathlib_cache_key(
+            "inspect_module",
+            repo_root=normalized_root,
+            module=normalized_module,
+        )
         cached = self._cache_get(key, ToolchainModuleView)
         if cached is not None:
             return cached
-        result = self.toolkit.inspect_mathlib_module(normalized_module)
+        result = self.toolkit.inspect_mathlib_module(normalized_root, normalized_module)
         view = self._module_view(result, provider="lean_mcp_toolkit")
         self._cache_put(key, view)
         return view
