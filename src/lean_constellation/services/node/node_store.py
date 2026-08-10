@@ -104,8 +104,7 @@ class NodeStore:
                     kind=node.kind.value,
                     lifecycle=node.lifecycle.value,
                     active=active,
-                    active_contract_version=getattr(node, "active_contract_version", None)
-                    or getattr(node, "current_contract_version", None),
+                    active_contract_version=getattr(node, "active_contract_version", None),
                     open_contract_version=getattr(node, "open_contract_version", None),
                 )
             )

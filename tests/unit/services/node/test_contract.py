@@ -101,6 +101,11 @@ def test_get_current_and_ensure_open_contract_copies_committed_version(tmp_path:
     assert current.value.version == 1
     assert current.value.status == ContractVersionStatus.OPEN
     assert current.value.contract.task_completion_mode == RepoCompletionMode.GRAPH_PROVED
+    index = make_runtime().node.node_tree.node_store.read_index(tmp_path)
+    assert index.ok and index.value is not None
+    core_entry = next(item for item in index.value.entries if item.path == "Main.Topic.Core")
+    assert core_entry.active_contract_version is None
+    assert core_entry.open_contract_version == 1
 
     committed = make_runtime().node.commit_content_contract(
         tmp_path, node_path="Main.Topic.Core", summary="Initial core contract complete."
