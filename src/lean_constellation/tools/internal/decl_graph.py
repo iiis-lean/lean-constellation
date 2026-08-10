@@ -1216,7 +1216,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="promote_current_node_public_statement_closure",
-            description="Atomically promote ready same-node formal Statement dependencies required by current-node public roots.",
+            description="Atomically promote ready same-node formal Statement dependencies whose exact revisions are anchored by the active committed Content contract.",
             args_model=PublicStatementClosureArgs,
             capability=ToolCapability.WRITE,
             result_view="public_statement_promotion_receipt",
@@ -1259,7 +1259,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="promote_public_statement_closure",
-            description="Atomically repair formal Statement dependency visibility for one Content boundary or one Scope boundary, including Main.",
+            description="Atomically repair a committed Content/Scope formal Statement boundary; intermediate Scopes require committed ownership without open edits, while the requested target remains open.",
             args_model=PublicStatementBoundaryArgs,
             capability=ToolCapability.WRITE,
             result_view="public_statement_promotion_receipt",

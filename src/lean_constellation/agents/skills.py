@@ -511,7 +511,8 @@ Deterministic manifests and checks verify paths, bytes, readability, and require
                 "Preserve historical public export chains as compatible anchors; append new exports without silently replacing a released boundary.",
                 "Choose exports that belong to the scope public view and write them with `add_scope_export` or exact-reference `remove_scope_export`.",
                 "Inspect the Scope or repository formal Statement closure. Every current-repository declaration required to state a selected public root must be public and exported through each enclosing Scope.",
-                "Use `revise_content_decl_visibility` with the observed visibility and an audit reason for one reviewed Content declaration, or `promote_public_statement_closure` for an add-only Content/Scope closure repair. Before making a declaration private, remove or revise every interface, Scope/Main export, public Statement consumer, contract dependency, and stable Release boundary that still requires it. Proof-only helpers may remain private.",
+                "Use `revise_content_decl_visibility` with the observed visibility and an audit reason for one reviewed Content declaration, or `promote_public_statement_closure` for an add-only repair whose exact declarations are already anchored by active committed Content contracts. Promotion creates and commits only fresh add-only intermediate Scope revisions when those Scopes have no open edits; it writes the requested target Scope's current candidate but leaves that target open. Resolve an intermediate-open or intermediate-uncommitted blocker through its owner instead of merging unrelated edits.",
+                "Before making a declaration private, remove or revise every active/open interface binding, Scope/Main export, Node dependency, public Statement consumer, admitted round consumer, and stable Release boundary that still requires it. Proof-only helpers may remain private only when no admitted consumer or other boundary requires them.",
                 "Bind interfaces only to declarations that satisfy their meaning with `bind_node_interface`.",
                 "Use `get_scope_close_view` to confirm exports, interface bindings, child readiness, and projection/readiness checks are stable before commit.",
             ),
@@ -1164,7 +1165,7 @@ Use this Skill only when all expected Content work is reconciled, required Scope
 1. Re-read `get_current_repo_run_context`, `get_preparation_input`, `get_node_tree`, and current Lake dependencies. Confirm the bound release baseline still matches current truth.
 2. Call `get_scope_close_view` for Main and any relevant unverified Scope.
 3. Check Main interfaces and exports against protected root contracts.
-4. Treat Main as the root Scope, not as a separate repository-only boundary. Call `inspect_public_statement_closure` with `boundary=scope` and `scope_path=Main`. Every selected Main export's current-repository formal Statement dependencies must be public in their Content nodes and exported through every intervening Scope through Main. Use `promote_public_statement_closure` only for an add-only repair of already-ready declarations. The same operation applies to any other Scope and stops at that Scope rather than propagating to its parent.
+4. Treat Main as the root Scope, not as a separate repository-only boundary. Call `inspect_public_statement_closure` with `boundary=scope` and `scope_path=Main`. Every selected Main export's current-repository formal Statement dependencies must be public in their Content nodes and exported through every intervening Scope through Main. Apply `scope-export-interface-curation` before any repair: promotion starts from active committed Content heads, refuses to absorb an intermediate Scope's open edits, and leaves the requested target Scope open for owner review. The same operation applies to any other Scope and stops at that Scope rather than propagating to its parent.
 5. Call `get_repo_ready_node_view`. It is a lightweight structural intent view: it checks committed Main/active contracts/open requirements/publication policy but deliberately performs no projection mutation or Lean build.
 6. If the structural view has blockers, repair only the owning semantic state and return to the next-action loop. Do not poll for a hidden heavy preview.
 
@@ -1669,11 +1670,11 @@ Proof-only dependencies and local proof helpers remain private unless they are i
 
 1. Read current public declarations and call `inspect_current_node_public_statement_closure`.
 2. Inspect each reported private formal Statement prerequisite.
-3. If one already-ready declaration needs a deliberate visibility change, call `revise_current_decl_visibility` with the visibility you just observed, the requested visibility, and a concrete reason.
-4. For a complete add-only local repair, call `promote_current_node_public_statement_closure`.
+3. If one already-ready declaration in the active committed Content head needs a deliberate visibility change, call `revise_current_decl_visibility` with the visibility you just observed, the requested visibility, and a concrete reason.
+4. For a complete add-only local repair over exact revisions already anchored by the active committed Content head, call `promote_current_node_public_statement_closure`. During an initial open-only task, choose correct visibility during declaration planning; closeout promotion cannot turn uncommitted declarations into a stable boundary.
 5. Reinspect before the Content completion gate.
 
-Visibility revision changes no declaration code, Decl revision, proof, round, or contract dependency. Making a declaration private is allowed only after deterministic gates confirm that no interface, Scope/Main export, public Statement consumer, contract dependency, or stable Release boundary still requires it. A proof-only helper can be made private when no other boundary requires it. This operation cannot repair unfinished work and never silently removes exports or bindings.
+Visibility revision changes no declaration code, Decl revision, proof, round, or contract dependency. Making a declaration private is allowed only after deterministic gates confirm that no active/open interface, Scope/Main export, Node dependency, public Statement consumer, running/awaiting-closeout round consumer, or stable Release boundary still requires it. A proof-only helper can be made private when no admitted consumer or other boundary requires it. This operation cannot repair unfinished work and never silently removes exports or bindings.
 
 ## Boundary
 
@@ -1716,7 +1717,7 @@ This is ContentPlan closeout work. Do not treat an unbound current-node interfac
 
 Before the readiness gate, call `inspect_current_node_public_statement_closure`. Every public declaration must expose every same-node declaration named by its formal Statement dependencies. Proof-only dependencies remain private unless independently selected as stable API.
 
-Use `revise_current_decl_visibility` with the visibility you just observed and a concrete reason for one reviewed declaration, or `promote_current_node_public_statement_closure` for a complete add-only local repair. A visibility revision creates no Decl round or revision and never silently removes an interface or export. If another node's required declaration is not already public through its boundary, report a precise Coordinator blocker instead of expanding authority.
+Apply `current-node-public-boundary-curation` before mutating visibility; its committed-head eligibility and admitted-consumer blockers are authoritative. A visibility revision creates no Decl round or revision and never silently removes an interface or export. If another node's required declaration is not already public through its boundary, report a precise Coordinator blocker instead of expanding authority.
 
 ## Interface Semantic Fit
 
