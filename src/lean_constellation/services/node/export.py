@@ -348,20 +348,7 @@ class ExportComponent:
             warnings=warnings,
         )
 
-    def remove_scope_export(self, repo_root: Path, *, scope_path: str, index: int) -> ServiceResult[ScopeExportView]:
-        listed = self.list_scope_exports(repo_root, scope_path=scope_path)
-        if not listed.ok or listed.value is None:
-            return self.runtime.foundation.fail(listed.issues)
-        if index < 0 or index >= len(listed.value):
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue(
-                    "scope_export_index_out_of_range",
-                    f"Scope export index is out of range: {index}",
-                    object_ref=scope_path,
-                    field="index",
-                )
-            )
-        ref = listed.value[index].ref
+    def remove_scope_export(self, repo_root: Path, *, scope_path: str, ref: DeclRef) -> ServiceResult[ScopeExportView]:
         current = self.contract.get_edit_contract(repo_root, node_path=scope_path)
         if not current.ok or current.value is None:
             return self.runtime.foundation.fail(current.issues)
@@ -369,7 +356,12 @@ class ExportComponent:
         key = self._decl_ref_key(ref)
         if not any(self._decl_ref_key(ref) == key for ref in candidate_contract.exports):
             return self.runtime.foundation.fail(
-                self.runtime.foundation.issue("scope_export_missing", f"Scope export not found at index: {index}", object_ref=scope_path, field="index")
+                self.runtime.foundation.issue(
+                    "scope_export_missing",
+                    f"Scope export not found: {ref.node}:{ref.name}@{ref.revision}",
+                    object_ref=scope_path,
+                    field="ref",
+                )
             )
         bound_interfaces = [interface.name for interface in candidate_contract.interfaces if interface.bound_decl and self._decl_ref_key(interface.bound_decl) == key]
         if bound_interfaces:

@@ -481,7 +481,8 @@ def test_remove_scope_export_blocks_bound_interface_then_removes_unbound(tmp_pat
         bind_interface_name="topic_result",
     ).ok
 
-    blocked = component.remove_scope_export(tmp_path, scope_path="Main.Topic", index=0)
+    target = DeclRef(repo=None, node="Main.Topic.Core", name="main_result", revision=1)
+    blocked = component.remove_scope_export(tmp_path, scope_path="Main.Topic", ref=target)
     assert not blocked.ok
     assert blocked.issues[0].kind == "scope_export_bound_interface"
 
@@ -492,7 +493,7 @@ def test_remove_scope_export_blocks_bound_interface_then_removes_unbound(tmp_pat
     loaded.value.interfaces[0].bound_decl = None
     assert foundation.write_json_atomic(path, loaded.value, mode=WriteMode.UPDATE_EXISTING).ok
 
-    removed = component.remove_scope_export(tmp_path, scope_path="Main.Topic", index=0)
+    removed = component.remove_scope_export(tmp_path, scope_path="Main.Topic", ref=target)
     assert removed.ok
     assert removed.value is not None
     assert removed.value.changed is True
@@ -504,9 +505,13 @@ def test_remove_scope_export_parse_missing_and_projection_failure(tmp_path: Path
     _create_tree(tmp_path)
     component = _component_with_provider(tmp_path)
 
-    missing = component.remove_scope_export(tmp_path, scope_path="Main.Topic", index=0)
+    missing = component.remove_scope_export(
+        tmp_path,
+        scope_path="Main.Topic",
+        ref=DeclRef(repo=None, node="Main.Topic.Core", name="missing", revision=1),
+    )
     assert not missing.ok
-    assert missing.issues[0].kind == "scope_export_index_out_of_range"
+    assert missing.issues[0].kind == "scope_export_missing"
 
     assert component.add_scope_export(tmp_path, scope_path="Main.Topic", decl_node="Main.Topic.Core", decl_name="main_result").ok
     runtime = make_runtime()
@@ -527,12 +532,42 @@ def test_remove_scope_export_parse_missing_and_projection_failure(tmp_path: Path
         ),
         node_projection=FailingProjection(foundation),  # type: ignore[arg-type]
     )
-    projection_failed = failing.remove_scope_export(tmp_path, scope_path="Main.Topic", index=0)
+    projection_failed = failing.remove_scope_export(
+        tmp_path,
+        scope_path="Main.Topic",
+        ref=DeclRef(repo=None, node="Main.Topic.Core", name="main_result", revision=1),
+    )
     assert not projection_failed.ok
     assert projection_failed.issues[0].kind == "projection_refresh_failed"
     restored = failing.list_scope_exports(tmp_path, scope_path="Main.Topic")
     assert restored.ok and restored.value is not None
     assert [item.name for item in restored.value] == ["main_result"]
+
+
+def test_remove_scope_export_requires_exact_decl_ref_revision(tmp_path: Path) -> None:
+    _create_tree(tmp_path)
+    component = _component_with_provider(tmp_path)
+    target = DeclRef(repo=None, node="Main.Topic.Core", name="main_result", revision=1)
+    assert component.add_scope_export(
+        tmp_path,
+        scope_path="Main.Topic",
+        decl_node=target.node,
+        decl_name=target.name,
+        revision=target.revision,
+    ).ok
+
+    wrong_revision = component.remove_scope_export(
+        tmp_path,
+        scope_path="Main.Topic",
+        ref=target.model_copy(update={"revision": 2}),
+    )
+    assert not wrong_revision.ok
+    assert wrong_revision.issues[0].kind == "scope_export_missing"
+
+    removed = component.remove_scope_export(tmp_path, scope_path="Main.Topic", ref=target)
+    assert removed.ok
+    assert removed.value is not None
+    assert removed.value.exports == []
 
 
 def test_add_scope_export_reports_projection_failure(tmp_path: Path) -> None:

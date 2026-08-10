@@ -11,7 +11,7 @@ from pydantic import Field
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.domain.interface import DeclInterface, DeclKind, exact_interface_lean_decl_name
 from lean_constellation.domain.preparation import RepoPreparationInput
-from lean_constellation.domain.refs import DeclRef
+from lean_constellation.domain.refs import DeclRef, MaterialRef
 from lean_constellation.domain.repo import ProofAvailability, RepoFormat
 from lean_constellation.services.foundation import FoundationContext, GateReport, ServiceResult
 from lean_constellation.services.decl_graph.models import DeclRevisionStatus
@@ -44,6 +44,7 @@ class InterfaceView(StrictModel):
     protected: bool = False
     expected_statement_lean_code: str | None = None
     bound_decl: DeclRef | None = None
+    source_refs: list[MaterialRef] = Field(default_factory=list)
     note: str | None = None
 
 
@@ -394,6 +395,7 @@ class InterfaceComponent:
                 protected=interface.name in protected.value,
                 expected_statement_lean_code=interface.expected_statement_lean_code,
                 bound_decl=interface.bound_decl,
+                source_refs=list(interface.source_refs),
                 note=interface.note,
             )
             for interface in sorted(view.value.contract.interfaces, key=lambda item: item.name)
@@ -1185,6 +1187,7 @@ class InterfaceComponent:
             protected=protected,
             expected_statement_lean_code=interface.expected_statement_lean_code,
             bound_decl=interface.bound_decl,
+            source_refs=list(interface.source_refs),
             note=interface.note,
         )
 

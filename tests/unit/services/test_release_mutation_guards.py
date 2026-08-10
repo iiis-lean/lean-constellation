@@ -86,8 +86,11 @@ def test_released_scope_boundary_mutation_is_rejected(tmp_path: Path) -> None:
     node_path = runtime.node.node_tree.node_store.node_file(tmp_path, node_id=main.value.node_id)
     before_contract = contract_path.read_bytes()
     before_node = node_path.read_bytes()
+    current = runtime.node.contract.get_visible_contract(tmp_path, node_path="Main")
+    assert current.ok and current.value is not None
+    target = current.value.contract.exports[0]
 
-    removed = runtime.node.export.remove_scope_export(tmp_path, scope_path="Main", index=0)
+    removed = runtime.node.export.remove_scope_export(tmp_path, scope_path="Main", ref=target)
 
     assert not removed.ok
     assert removed.issues[0].kind == "released_scope_export_removed"

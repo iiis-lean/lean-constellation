@@ -20,6 +20,7 @@ from lean_constellation.app.operator_data.execution import (
 )
 from lean_constellation.app.repo_runtime_registry import RepoRuntimeRegistry
 from lean_constellation.domain.interface import DeclKind
+from lean_constellation.domain.refs import DeclRef
 from lean_constellation.services.foundation import ServiceResult
 from lean_constellation.services.node import InterfaceActor
 from lean_constellation.services.node.contract_fields import (
@@ -216,7 +217,10 @@ class AddScopeExportInput(OperatorInputModel):
 class RemoveScopeExportInput(OperatorInputModel):
     scope_path: str
     expected_contract_version: int = Field(ge=1)
-    index: int = Field(ge=0)
+    decl_node: str
+    decl_name: str
+    decl_repo: str | None = None
+    revision: int = Field(default=1, ge=1)
 
 
 class DeleteNodeInput(OperatorInputModel):
@@ -521,7 +525,16 @@ class NodeOperatorApi:
             checked = self._check_contract_version(ctx, request.scope_path, request.expected_contract_version)
             if not checked.ok:
                 return checked
-            return ctx.runtime.node.export.remove_scope_export(ctx.repo_root, scope_path=request.scope_path, index=request.index)
+            return ctx.runtime.node.export.remove_scope_export(
+                ctx.repo_root,
+                scope_path=request.scope_path,
+                ref=DeclRef(
+                    repo=request.decl_repo,
+                    node=request.decl_node,
+                    name=request.decl_name,
+                    revision=request.revision,
+                ),
+            )
 
         return self._execute(repo_key, REMOVE_SCOPE_EXPORT, action)
 

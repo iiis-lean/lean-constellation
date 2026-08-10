@@ -509,7 +509,7 @@ Deterministic manifests and checks verify paths, bytes, readability, and require
             (
                 "Read required interfaces and current export candidates with `list_node_interfaces`, `list_scope_export_candidates`, and `list_scope_exports`.",
                 "Preserve historical public export chains as compatible anchors; append new exports without silently replacing a released boundary.",
-                "Choose exports that belong to the scope public view and write them with `add_scope_export` or `remove_scope_export`.",
+                "Choose exports that belong to the scope public view and write them with `add_scope_export` or exact-reference `remove_scope_export`.",
                 "Inspect the Scope or repository formal Statement closure. Every current-repository declaration required to state a selected public root must be public and exported through each enclosing Scope.",
                 "Use `revise_content_decl_visibility` with the observed visibility and an audit reason for one reviewed Content declaration, or `promote_public_statement_closure` for an add-only Content/Scope closure repair. Before making a declaration private, remove or revise every interface, Scope/Main export, public Statement consumer, contract dependency, and stable Release boundary that still requires it. Proof-only helpers may remain private.",
                 "Bind interfaces only to declarations that satisfy their meaning with `bind_node_interface`.",

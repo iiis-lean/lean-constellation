@@ -5,7 +5,7 @@ from pathlib import Path
 from lean_constellation.domain.interface import DeclInterface, DeclKind
 from lean_constellation.domain.lean_check import LeanCheck
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
-from lean_constellation.domain.refs import DeclRef
+from lean_constellation.domain.refs import DeclRef, MaterialRef, SourceRef
 from lean_constellation.services import LeanProviderOverrides
 from lean_constellation.services.foundation import FoundationContext, FoundationService, ServiceResult, WriteMode
 from lean_constellation.services.decl_graph import DeclState
@@ -474,7 +474,13 @@ def test_remove_and_unbind_report_missing_and_unbind_is_idempotent(tmp_path: Pat
 
 
 def test_list_interfaces_returns_sorted_bound_views(tmp_path: Path) -> None:
-    protected = DeclInterface(name="z_protected", kind=DeclKind.THEOREM, summary="Protected theorem.")
+    source_ref = MaterialRef(kind="source", ref=SourceRef(path="notes/theorem.md", start_line=4, end_line=8))
+    protected = DeclInterface(
+        name="z_protected",
+        kind=DeclKind.THEOREM,
+        summary="Protected theorem.",
+        source_refs=[source_ref],
+    )
     _init_main(tmp_path, interfaces=[protected])
     component = make_runtime().node.interface
     assert component.add_interface(
@@ -496,6 +502,7 @@ def test_list_interfaces_returns_sorted_bound_views(tmp_path: Path) -> None:
     assert [item.name for item in listed.value.interfaces] == ["a_supplement", "z_protected"]
     assert listed.value.interfaces[1].protected is True
     assert listed.value.interfaces[1].bound_decl == DeclRef(node="Main.Core", name="z_protected", revision=1)
+    assert listed.value.interfaces[1].source_refs == [source_ref]
 
 
 def test_bind_and_unbind_content_interface_to_public_decl(tmp_path: Path) -> None:

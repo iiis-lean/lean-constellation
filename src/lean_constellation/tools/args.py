@@ -426,7 +426,10 @@ class ScopeExportAddArgs(ScopePathArgs):
 
 
 class ScopeExportRemoveArgs(ScopePathArgs):
-    index: int = Field(ge=0, description="0-based export index from list_scope_exports.")
+    decl_node: str = Field(description="Exact provider node path of the export to remove.")
+    decl_name: str = Field(description="Exact declaration name of the export to remove.")
+    decl_repo: str | None = Field(default=None, description="Exact provider repo key; omit for the current repo.")
+    revision: int = Field(default=1, ge=1, description="Exact declaration revision of the export to remove.")
 
 
 class IndexArgs(StrictModel):

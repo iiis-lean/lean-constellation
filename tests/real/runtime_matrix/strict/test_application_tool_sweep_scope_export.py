@@ -105,17 +105,13 @@ def test_strict_scope_export_write_tool_cases_execute(
         assertion_summary="Scope export list contains the exported declaration before removal.",
     )
     export_items = _field(exports.value, "exports")
-    export_index = next(
-        _field(item, "index")
-        for item in export_items
-        if _field(item, "declaration_name") == DECL_NAME
-    )
+    assert any(_field(item, "declaration_name") == DECL_NAME for item in export_items)
 
     removed = call_tool_with_evidence(
         server,
         "native_repo_coordinator",
         "remove_scope_export",
-        {"scope_path": SCOPE_PATH, "index": export_index},
+        {"scope_path": SCOPE_PATH, "decl_node": CONTENT_NODE_PATH, "decl_name": DECL_NAME, "revision": 1},
         runtime_context=ctx,
         recorder=evidence_recorder,
         assertion_summary="Scope export was removed after interface unbind.",

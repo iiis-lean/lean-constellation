@@ -38,6 +38,7 @@ from lean_constellation.tools.keys import ApplicationToolGroupKey as AppGroup
 from lean_constellation.tools.specs import actor_for_write, current_node_path, direct_tool, handler_tool
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.domain.repo import RepoCompletionMode
+from lean_constellation.domain.refs import DeclRef
 from lean_constellation.flows.content_node_task.flows import ContentNodeTaskResult
 from lean_constellation.flows.common.flow_requests import node_scope_id
 from lean_constellation.services.foundation import GateReport, ServiceIssue
@@ -621,17 +622,24 @@ def _remove_scope_export(runtime, ctx, args: ScopeExportRemoveArgs):
     before = runtime.node.export.list_scope_exports(ctx.repo_root, scope_path=args.scope_path)
     if not before.ok or before.value is None:
         return runtime.foundation.fail(before.issues)
-    if args.index >= len(before.value):
+    ref = DeclRef(
+        repo=args.decl_repo,
+        node=args.decl_node,
+        name=args.decl_name,
+        revision=args.revision,
+    )
+    removed = next((item for item in before.value if item.ref == ref), None)
+    if removed is None:
         return runtime.foundation.fail(
             runtime.foundation.issue(
-                "scope_export_index_out_of_range",
-                f"Scope export index is out of range: {args.index}",
+                "scope_export_missing",
+                f"Scope export not found: {args.decl_node}:{args.decl_name}@{args.revision}",
                 object_ref=args.scope_path,
-                field="index",
+                field="ref",
             )
         )
-    removed = _scope_export_decl_view(before.value[args.index])
-    updated = runtime.node.export.remove_scope_export(ctx.repo_root, scope_path=args.scope_path, index=args.index)
+    removed = _scope_export_decl_view(removed)
+    updated = runtime.node.export.remove_scope_export(ctx.repo_root, scope_path=args.scope_path, ref=ref)
     if not updated.ok or updated.value is None:
         return runtime.foundation.fail(updated.issues)
     return runtime.foundation.ok(
@@ -1253,7 +1261,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="remove_scope_export",
-            description="Remove one Scope export by list index and return only the mutation receipt.",
+            description="Remove one Scope export by its exact declaration reference and return only the mutation receipt.",
             args_model=ScopeExportRemoveArgs,
             capability=ToolCapability.WRITE,
             result_view="scope_export_mutation_receipt",
