@@ -108,7 +108,7 @@ def test_inspect_mathlib_declaration_and_module(tmp_path: Path) -> None:
 
 def test_inspect_mathlib_declaration_rejects_toolchain_identity_mismatch(tmp_path: Path) -> None:
     service = _service(lambda tool_name, payload: (_ for _ in ()).throw(KeyError(tool_name)))
-    service.runtime.external.lean_toolchain.inspect_mathlib_declaration = lambda _name: ToolchainDeclarationView(
+    service.runtime.external.lean_toolchain.inspect_mathlib_declaration = lambda _root, _name: ToolchainDeclarationView(
         ok=True,
         provider="test",
         name="norm_pow_natAbs",
@@ -154,7 +154,7 @@ def test_check_mathlib_name_direct_and_fallback(tmp_path: Path) -> None:
     assert unavailable_check.issues[0].kind == "mathlib_check_unavailable"
 
 
-def test_record_checked_decl_clears_stale_metadata_when_exact_source_metadata_is_unavailable(tmp_path: Path) -> None:
+def test_record_checked_decl_rejects_missing_exact_source_metadata_without_overwriting_index(tmp_path: Path) -> None:
     def dispatch(tool_name: str, payload: dict):
         if tool_name == "lean_explore.find":
             assert payload["exact_name"] == "Int.natAbs_mul"
@@ -189,13 +189,14 @@ def test_record_checked_decl_clears_stale_metadata_when_exact_source_metadata_is
         summary="Uses natural absolute value multiplication.",
     )
 
-    assert recorded.ok and recorded.value is not None
-    assert [issue.kind for issue in recorded.issues] == ["mathlib_decl_source_metadata_unavailable"]
-    assert recorded.value.module is None
-    assert recorded.value.kind is None
-    assert recorded.value.signature is None
-    assert recorded.value.snippet is None
-    assert recorded.value.summary == "Uses natural absolute value multiplication."
+    assert not recorded.ok
+    assert recorded.issues[0].kind == "declaration_not_found"
+    preserved = service.get_mathlib_decl_entry(tmp_path, name="Int.natAbs_mul")
+    assert preserved.ok and preserved.value is not None
+    assert preserved.value.module == "Mathlib.Analysis.Normed.Group.Basic"
+    assert preserved.value.kind == "theorem"
+    assert preserved.value.signature == "theorem norm_pow_natAbs : True"
+    assert preserved.value.snippet == "theorem norm_pow_natAbs : True := by trivial"
 
 
 def test_ingest_mathlib_candidate_success_and_check_failure(tmp_path: Path) -> None:
@@ -214,6 +215,11 @@ def test_ingest_mathlib_candidate_success_and_check_failure(tmp_path: Path) -> N
                         "snippet": "theorem Finset.sum_congr ...",
                     }
                 ]
+            }
+        if tool_name == "inspect_mathlib_decl":
+            return {
+                "code": "theorem Finset.sum_congr : True := by trivial",
+                "module": "Mathlib.Data.Finset.Basic",
             }
         if tool_name == "check_mathlib_name":
             if check_should_pass:
@@ -277,7 +283,7 @@ def test_ingest_candidate_requires_module_or_navigation_recovery(tmp_path: Path)
 
     missing_module = service.ingest_mathlib_candidate(tmp_path, candidate_id=candidate_id, summary="Associativity.")
     assert not missing_module.ok
-    assert missing_module.issues[0].kind == "mathlib_candidate_module_missing"
+    assert missing_module.issues[0].kind == "toolkit_tool_missing"
 
     mode = "navigation_success"
     recovered = service.ingest_mathlib_candidate(tmp_path, candidate_id=candidate_id, summary="Associativity.")

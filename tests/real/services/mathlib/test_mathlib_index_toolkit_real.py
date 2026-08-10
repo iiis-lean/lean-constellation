@@ -127,7 +127,11 @@ def test_mathlib_index_toolkit_use_real_service_lifecycle(tmp_path: Path) -> Non
     assert cached.value is not None
     assert set(cached.value.candidates) == {candidate.candidate_id for candidate in search.value.candidates}
 
-    module_nav = service.inspect_mathlib_module(repo_root, module="Mathlib.Data.Nat.Basic")
+    module_nav = service.inspect_mathlib_module(
+        repo_root,
+        module="Mathlib.Data.Nat.Basic",
+        include_imports=True,
+    )
     assert module_nav.ok
     assert module_nav.value is not None
     assert module_nav.value.imports == ["Mathlib.Init"]

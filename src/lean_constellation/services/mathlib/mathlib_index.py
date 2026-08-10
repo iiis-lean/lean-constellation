@@ -50,7 +50,7 @@ class MathlibModuleEntryView(StrictModel):
 
 class MathlibDeclEntryView(StrictModel):
     name: str
-    module: str | None = None
+    module: str
     kind: str | None = None
     signature: str | None = None
     snippet: str | None = None
@@ -277,6 +277,7 @@ class MathlibIndexComponent:
         *,
         entries: list[MathlibDeclEntryView],
         modules: list[str] | None = None,
+        module_entries: list[MathlibModuleEntryView] | None = None,
     ) -> ServiceResult[MathlibIndexEnsureEffect]:
         """Persist canonical verified declaration/module entries in one index write."""
 
@@ -299,19 +300,30 @@ class MathlibIndexComponent:
                 )
                 created_modules.append(normalized_module.value)
 
+        for candidate in module_entries or []:
+            normalized_module = self._normalize_module_or_fail(candidate.module)
+            if not normalized_module.ok or normalized_module.value is None:
+                return self.runtime.foundation.fail(normalized_module.issues)
+            existing_module = index.modules.get(normalized_module.value)
+            if existing_module is None:
+                index.modules[normalized_module.value] = MathlibModuleEntry(
+                    module=normalized_module.value,
+                    summary=candidate.summary,
+                    important_decl_names=list(candidate.important_decl_names),
+                    note=candidate.note,
+                )
+                created_modules.append(normalized_module.value)
+                continue
+            existing_module.summary = candidate.summary if candidate.summary is not None else existing_module.summary
+            existing_module.note = candidate.note if candidate.note is not None else existing_module.note
+            for name in candidate.important_decl_names:
+                if name not in existing_module.important_decl_names:
+                    existing_module.important_decl_names.append(name)
+
         for candidate in entries:
             normalized_name = self._normalize_decl_or_fail(candidate.name)
             if not normalized_name.ok or normalized_name.value is None:
                 return self.runtime.foundation.fail(normalized_name.issues)
-            if candidate.module is None:
-                return self.runtime.foundation.fail(
-                    self.runtime.foundation.issue(
-                        "mathlib_decl_module_missing",
-                        "A canonical Mathlib declaration entry must include its defining module.",
-                        object_ref=candidate.name,
-                        field="module",
-                    )
-                )
             normalized_module = self._normalize_module_or_fail(candidate.module)
             if not normalized_module.ok or normalized_module.value is None:
                 return self.runtime.foundation.fail(normalized_module.issues)
@@ -319,16 +331,6 @@ class MathlibIndexComponent:
             name = normalized_name.value
             module = normalized_module.value
             existing = index.declarations.get(name)
-            if existing is not None and existing.module not in {None, module}:
-                return self.runtime.foundation.fail(
-                    self.runtime.foundation.issue(
-                        "mathlib_decl_module_conflict",
-                        "Canonical Mathlib declaration metadata conflicts with the repo index.",
-                        object_ref=name,
-                        current=existing.module,
-                        expected=module,
-                    )
-                )
 
             module_entry = index.modules.get(module)
             if module_entry is None:
@@ -351,12 +353,21 @@ class MathlibIndexComponent:
                 created_declarations.append(name)
                 continue
 
+            if existing.module != module and existing.module in index.modules:
+                index.modules[existing.module].important_decl_names = [
+                    item
+                    for item in index.modules[existing.module].important_decl_names
+                    if item != name
+                ]
+
             updated = existing.model_copy(
                 update={
                     "module": module,
-                    "kind": existing.kind or candidate.kind,
-                    "signature": existing.signature or candidate.signature,
-                    "snippet": existing.snippet or candidate.snippet,
+                    "kind": candidate.kind if candidate.kind is not None else existing.kind,
+                    "signature": candidate.signature if candidate.signature is not None else existing.signature,
+                    "snippet": candidate.snippet if candidate.snippet is not None else existing.snippet,
+                    "summary": candidate.summary if candidate.summary is not None else existing.summary,
+                    "note": candidate.note if candidate.note is not None else existing.note,
                 }
             )
             if updated != existing:
@@ -392,51 +403,45 @@ class MathlibIndexComponent:
         repo_root: Path,
         *,
         name: str,
-        module: str | None,
+        module: str,
         kind: str | None,
         signature: str | None,
         summary: str | None,
         note: str | None,
         snippet: str | None = None,
-        replace_missing_metadata: bool = False,
     ) -> ServiceResult[MathlibDeclEntryView]:
         normalized_name = self._normalize_decl_or_fail(name)
         if not normalized_name.ok or normalized_name.value is None:
             return self.runtime.foundation.fail(normalized_name.issues)
         warnings: list[ServiceIssue] = []
-        normalized_module: str | None = None
-        if module is not None:
-            module_result = self._normalize_module_or_fail(module)
-            if not module_result.ok:
-                return self.runtime.foundation.fail(module_result.issues)
-            normalized_module = module_result.value
+        module_result = self._normalize_module_or_fail(module)
+        if not module_result.ok or module_result.value is None:
+            return self.runtime.foundation.fail(module_result.issues)
+        normalized_module = module_result.value
 
-        index = self._load_index(repo_root)
-        if not index.ok or index.value is None:
-            return self.runtime.foundation.fail(index.issues)
-        if normalized_module is not None and normalized_module not in index.value.modules:
-            warnings.append(
-                self.runtime.foundation.issue(
-                    "mathlib_decl_module_not_indexed",
-                    f"Declaration references a Mathlib module that is not recorded in the index: {normalized_module}",
-                    severity=IssueSeverity.WARNING,
-                    object_ref=normalized_module,
-                    field="module",
-                )
-            )
-        entry = index.value.declarations.get(normalized_name.value) or MathlibDeclEntry(name=normalized_name.value)
+        loaded = self._load_index(repo_root)
+        if not loaded.ok or loaded.value is None:
+            return self.runtime.foundation.fail(loaded.issues)
+        index = loaded.value.model_copy(deep=True)
+        module_entry = index.modules.get(normalized_module)
+        if module_entry is None:
+            module_entry = MathlibModuleEntry(module=normalized_module)
+            index.modules[normalized_module] = module_entry
+        entry = index.declarations.get(normalized_name.value) or MathlibDeclEntry(
+            name=normalized_name.value,
+            module=normalized_module,
+        )
         old_module = entry.module
-        if module is not None or replace_missing_metadata:
-            entry.module = normalized_module
-        if kind is not None or replace_missing_metadata:
+        entry.module = normalized_module
+        if kind is not None:
             entry.kind = self._optional_text(kind)
-        if signature is not None or replace_missing_metadata:
+        if signature is not None:
             entry.signature = self._optional_text(signature)
         if summary is not None:
             entry.summary = self._optional_text(summary)
         if note is not None:
             entry.note = self._optional_text(note)
-        if snippet is not None or replace_missing_metadata:
+        if snippet is not None:
             normalized_snippet = self._optional_text(snippet)
             if normalized_snippet is not None and len(normalized_snippet) > _MAX_SNIPPET_CHARS:
                 normalized_snippet = normalized_snippet[:_MAX_SNIPPET_CHARS]
@@ -450,12 +455,14 @@ class MathlibIndexComponent:
                     )
                 )
             entry.snippet = normalized_snippet
-        if old_module is not None and old_module != entry.module and old_module in index.value.modules:
-            index.value.modules[old_module].important_decl_names = [
-                item for item in index.value.modules[old_module].important_decl_names if item != normalized_name.value
+        if old_module != entry.module and old_module in index.modules:
+            index.modules[old_module].important_decl_names = [
+                item for item in index.modules[old_module].important_decl_names if item != normalized_name.value
             ]
-        index.value.declarations[normalized_name.value] = entry
-        saved = self._save_index(repo_root, index.value)
+        if normalized_name.value not in module_entry.important_decl_names:
+            module_entry.important_decl_names.append(normalized_name.value)
+        index.declarations[normalized_name.value] = entry
+        saved = self._save_index(repo_root, index)
         if not saved.ok:
             return self.runtime.foundation.fail(saved.issues)
         return self.runtime.foundation.ok(self._decl_view(entry), warnings=warnings)
@@ -500,8 +507,8 @@ class MathlibIndexComponent:
             note=entry.note,
         )
 
-    def _normalize_module_or_fail(self, module: str) -> ServiceResult[str]:
-        normalized = self._normalize_ref_text(module)
+    def _normalize_module_or_fail(self, module: str | None) -> ServiceResult[str]:
+        normalized = self._normalize_ref_text(module) if module is not None else ""
         if not normalized:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue("mathlib_module_name_empty", "Mathlib module name must be non-empty.", field="module")

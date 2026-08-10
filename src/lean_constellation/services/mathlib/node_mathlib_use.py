@@ -482,8 +482,8 @@ class NodeMathlibUseComponent:
         normalized_decl = self._normalize_dotted_name(decl_name, field="decl_name", issue_prefix="mathlib_decl")
         if not normalized_decl.ok or normalized_decl.value is None:
             return self.runtime.foundation.fail(normalized_decl.issues)
-        decl_entry = self._decl_entry_or_warning(repo_root, normalized_decl.value)
-        if not decl_entry.ok:
+        decl_entry = self._decl_entry(repo_root, normalized_decl.value)
+        if not decl_entry.ok or decl_entry.value is None:
             return self.runtime.foundation.fail(decl_entry.issues)
 
         opened = self.contract.get_edit_contract(repo_root, node_path=node_path)
@@ -493,7 +493,7 @@ class NodeMathlibUseComponent:
         if not current.ok or current.value is None:
             return self.runtime.foundation.fail(current.issues)
 
-        warnings = list(decl_entry.issues)
+        warnings: list[ServiceIssue] = []
         existing = next((item for item in current.value if item.name == normalized_decl.value), None)
         if existing is not None:
             refreshed = self._refresh_prelude(repo_root, node_path=node_path)
@@ -519,11 +519,10 @@ class NodeMathlibUseComponent:
                 warnings=[*warnings, *refreshed.issues],
             )
 
-        entry = decl_entry.value
         added_item = NodeMathlibDeclUse(
             name=normalized_decl.value,
-            module=entry.module if entry is not None else None,
-            kind=entry.kind if entry is not None else None,
+            module=decl_entry.value.module,
+            kind=decl_entry.value.kind,
             reason=self._optional_text(reason),
             added_by=normalized_actor.value,
         )
@@ -664,11 +663,10 @@ class NodeMathlibUseComponent:
             decl_entry = self.mathlib_index.get_mathlib_decl_entry(repo_root, name=item.name)
             if not decl_entry.ok or decl_entry.value is None:
                 if self._is_missing_kind(decl_entry.issues, "mathlib_decl_entry_missing"):
-                    warnings.append(
+                    issues.append(
                         self.runtime.foundation.issue(
                             "mathlib_decl_not_indexed",
                             f"Mathlib declaration use is not recorded in MathlibIndex: {item.name}",
-                            severity=IssueSeverity.WARNING,
                             object_ref=node_path,
                             field="mathlib_decls",
                         )
@@ -676,8 +674,8 @@ class NodeMathlibUseComponent:
                     continue
                 issues.extend(decl_entry.issues)
                 continue
-            module = decl_entry.value.module or item.module
-            if module and module not in module_set:
+            module = decl_entry.value.module
+            if module not in module_set:
                 warnings.append(
                     self.runtime.foundation.issue(
                         "mathlib_decl_module_not_imported",
@@ -785,22 +783,18 @@ class NodeMathlibUseComponent:
             )
         return self.runtime.foundation.fail(entry.issues)
 
-    def _decl_entry_or_warning(self, repo_root: Path, name: str) -> ServiceResult[MathlibDeclEntryView | None]:
+    def _decl_entry(self, repo_root: Path, name: str) -> ServiceResult[MathlibDeclEntryView]:
         entry = self.mathlib_index.get_mathlib_decl_entry(repo_root, name=name)
-        if entry.ok:
+        if entry.ok and entry.value is not None:
             return self.runtime.foundation.ok(entry.value)
         if self._is_missing_kind(entry.issues, "mathlib_decl_entry_missing"):
-            return self.runtime.foundation.ok(
-                None,
-                warnings=[
-                    self.runtime.foundation.issue(
-                        "mathlib_decl_not_indexed",
-                        f"Mathlib declaration use is not recorded in MathlibIndex: {name}",
-                        severity=IssueSeverity.WARNING,
-                        object_ref=name,
-                        field="decl_name",
-                    )
-                ],
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "mathlib_decl_not_indexed",
+                    f"Mathlib declaration use is not recorded in MathlibIndex: {name}",
+                    object_ref=name,
+                    field="decl_name",
+                )
             )
         return self.runtime.foundation.fail(entry.issues)
 

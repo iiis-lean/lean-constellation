@@ -410,7 +410,7 @@ def test_validate_node_mathlib_uses_reports_import_hint_and_invalid_entries(tmp_
     assert invalid.value.issues[0].kind == "mathlib_module_name_invalid"
 
 
-def test_validate_node_mathlib_uses_warning_policy_for_missing_index_entries(tmp_path: Path) -> None:
+def test_missing_decl_index_is_rejected_on_add_and_by_validation_gate(tmp_path: Path) -> None:
     service = make_runtime().mathlib
     _create_content_node(tmp_path, service)
     assert service.node_mathlib_use.add_mathlib_module_use(
@@ -420,23 +420,44 @@ def test_validate_node_mathlib_uses_warning_policy_for_missing_index_entries(tmp
         reason=None,
         actor="coordinator",
     ).ok
-    assert service.node_mathlib_use.add_mathlib_decl_use(
+    rejected = service.node_mathlib_use.add_mathlib_decl_use(
         tmp_path,
         node_path="Main.Topic.Core",
         decl_name="Missing.decl",
         reason=None,
         actor="worker",
+    )
+    assert not rejected.ok
+    assert rejected.issues[0].kind == "mathlib_decl_not_indexed"
+
+    current = service.runtime.node.contract.get_current_contract(
+        tmp_path,
+        node_path="Main.Topic.Core",
+    )
+    assert current.ok and current.value is not None
+    current.value.contract.mathlib_decls.append(
+        NodeMathlibDeclUse(
+            name="Missing.decl",
+            added_by=MathlibUseActor.WORKER,
+        )
+    )
+    contract_path = service.runtime.foundation.node_contract_path(
+        FoundationContext(repo_root=tmp_path),
+        "Main.Topic.Core",
+        current.value.contract.version,
+    )
+    assert service.runtime.foundation.write_json_atomic(
+        contract_path,
+        current.value.contract,
+        mode=WriteMode.UPDATE_EXISTING,
     ).ok
 
     checked = service.validate_node_mathlib_uses(tmp_path, node_path="Main.Topic.Core")
 
     assert checked.ok
     assert checked.value is not None
-    assert checked.value.passed is True
-    assert [issue.kind for issue in checked.value.issues] == [
-        "mathlib_module_not_indexed",
-        "mathlib_decl_not_indexed",
-    ]
+    assert checked.value.passed is False
+    assert [issue.kind for issue in checked.value.issues] == ["mathlib_decl_not_indexed"]
 
 
 def test_validate_node_mathlib_uses_detects_duplicates_and_rejects_legacy_shapes(tmp_path: Path) -> None:

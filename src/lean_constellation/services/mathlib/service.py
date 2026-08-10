@@ -293,7 +293,7 @@ class MathlibService:
         repo_root: Path,
         *,
         name: str,
-        module: str | None = None,
+        module: str,
         kind: str | None = None,
         signature: str | None = None,
         summary: str | None = None,

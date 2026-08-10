@@ -1,9 +1,9 @@
 from tests.unit_services_helpers import make_runtime
 
+import json
 from pathlib import Path
 
 from lean_constellation.domain.mathlib import MathlibIndex
-from lean_constellation.services.mathlib import MathlibService
 
 
 def test_upsert_module_create_update_and_persist(tmp_path: Path) -> None:
@@ -103,7 +103,7 @@ def test_add_important_decl_rejects_invalid_module_and_decl_names(tmp_path: Path
     assert bad_decl.issues[0].kind == "mathlib_decl_name_invalid"
 
 
-def test_upsert_decl_missing_module_warning_update_and_snippet_truncation(tmp_path: Path) -> None:
+def test_upsert_decl_autocreates_module_and_truncates_snippet(tmp_path: Path) -> None:
     service = make_runtime().mathlib
 
     long_snippet = "x" * 2100
@@ -119,10 +119,7 @@ def test_upsert_decl_missing_module_warning_update_and_snippet_truncation(tmp_pa
     )
     assert created.ok
     assert created.value is not None
-    assert [issue.kind for issue in created.issues] == [
-        "mathlib_decl_module_not_indexed",
-        "mathlib_decl_snippet_truncated",
-    ]
+    assert [issue.kind for issue in created.issues] == ["mathlib_decl_snippet_truncated"]
     assert created.value.module == "Mathlib.Data.Finset.Basic"
     assert created.value.kind == "theorem"
     assert created.value.snippet is not None
@@ -131,7 +128,7 @@ def test_upsert_decl_missing_module_warning_update_and_snippet_truncation(tmp_pa
     updated = service.upsert_mathlib_decl_entry(
         tmp_path,
         name="Finset.sum_congr",
-        module=None,
+        module="Mathlib.Data.Finset.Basic",
         kind=None,
         signature=None,
         summary="Updated summary.",
@@ -165,7 +162,7 @@ def test_upsert_decl_accepts_free_kind_and_empty_strings_clear_optional_fields(t
     cleared = service.upsert_mathlib_decl_entry(
         tmp_path,
         name="Finset.sum_congr",
-        module=None,
+        module="Mathlib.Data.Finset.Basic",
         kind=" ",
         signature="",
         summary=" ",
@@ -323,7 +320,7 @@ def test_get_rejects_invalid_module_and_decl_names(tmp_path: Path) -> None:
     bad_upsert = service.upsert_mathlib_decl_entry(
         tmp_path,
         name="Bad Decl",
-        module=None,
+        module="Mathlib.Init",
         kind=None,
         signature=None,
         summary=None,
@@ -343,3 +340,40 @@ def test_get_rejects_invalid_module_and_decl_names(tmp_path: Path) -> None:
     )
     assert not bad_module_upsert.ok
     assert bad_module_upsert.issues[0].kind == "mathlib_module_name_invalid"
+
+    missing_module_upsert = service.upsert_mathlib_decl_entry(
+        tmp_path,
+        name="Good.Decl",
+        module=None,  # type: ignore[arg-type] - runtime boundary must reject null explicitly.
+        kind=None,
+        signature=None,
+        summary=None,
+        note=None,
+    )
+    assert not missing_module_upsert.ok
+    assert missing_module_upsert.issues[0].kind == "mathlib_module_name_empty"
+
+
+def test_mathlib_index_loader_rejects_null_declaration_module(tmp_path: Path) -> None:
+    service = make_runtime().mathlib
+    path = service.mathlib_index.index_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "modules": {},
+                "declarations": {
+                    "Nat.add_assoc": {
+                        "name": "Nat.add_assoc",
+                        "module": None,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = service.get_mathlib_decl_entry(tmp_path, name="Nat.add_assoc")
+
+    assert not loaded.ok
+    assert loaded.issues[0].kind == "schema_validation_failed"

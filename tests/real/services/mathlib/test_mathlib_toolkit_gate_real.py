@@ -64,6 +64,18 @@ def _lake_backed_toolkit(repo_root: Path, timeout_seconds: int = 120) -> LeanMcp
     lake = LakeCommandClient(LakeCommandClientConfig(timeout_seconds=timeout_seconds))
 
     def dispatch(tool_name: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if tool_name == "lean_explore.find":
+            if payload.get("query") == "smokeTrue":
+                return {
+                    "results": [
+                        {
+                            "name": "smokeTrue",
+                            "module": "Main",
+                            "source_text": "theorem smokeTrue : True := by\n  trivial",
+                        }
+                    ]
+                }
+            return {"results": []}
         if tool_name not in {"lsp.run_snippet", "run_snippet", "check_mathlib_name"}:
             raise KeyError(tool_name)
         code = str(payload.get("code") or "")

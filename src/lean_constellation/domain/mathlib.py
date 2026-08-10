@@ -45,7 +45,7 @@ class MathlibModuleEntry(StrictModel):
 
 class MathlibDeclEntry(StrictModel):
     name: str
-    module: str | None = None
+    module: str
     kind: str | None = None
     signature: str | None = None
     snippet: str | None = None
@@ -60,7 +60,15 @@ class MathlibDeclEntry(StrictModel):
             raise ValueError("name must be non-empty")
         return value
 
-    @field_validator("module", "kind", "signature", "snippet", "summary", "note")
+    @field_validator("module")
+    @classmethod
+    def _non_empty_decl_module(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("module must be non-empty")
+        return value
+
+    @field_validator("kind", "signature", "snippet", "summary", "note")
     @classmethod
     def _normalize_optional_text(cls, value: str | None) -> str | None:
         if value is None:

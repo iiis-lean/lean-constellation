@@ -93,8 +93,19 @@ def test_record_mathlib_decl_checked_uses_navigation_and_records_module_decl(tmp
     assert module.value.important_decl_names == ["Nat.add_assoc"]
 
 
-def test_record_mathlib_decl_checked_fallback_check_and_duplicate_update(tmp_path: Path) -> None:
+def test_record_mathlib_decl_checked_uses_exact_navigation_with_fallback_check_and_updates(tmp_path: Path) -> None:
     def dispatch(tool_name: str, payload: dict):
+        if tool_name == "lean_explore.find":
+            assert payload["query"] == "Nat.add_comm"
+            return {
+                "results": [
+                    {
+                        "name": "Nat.add_comm",
+                        "module": "Init",
+                        "source_text": "theorem Nat.add_comm : True := by trivial",
+                    }
+                ]
+            }
         if tool_name == "check_mathlib_name":
             raise KeyError(tool_name)
         if tool_name == "lsp.run_snippet":
@@ -122,14 +133,11 @@ def test_record_mathlib_decl_checked_fallback_check_and_duplicate_update(tmp_pat
 
     assert first.ok, first.issues
     assert second.ok, second.issues
-    assert [issue.kind for issue in second.issues] == [
-        "mathlib_decl_source_metadata_unavailable",
-        "mathlib_module_important_decl_duplicate",
-    ]
+    assert second.issues == []
     assert second.value is not None
-    assert second.value.kind is None
-    assert second.value.signature is None
-    assert second.value.snippet is None
+    assert second.value.kind == "theorem"
+    assert second.value.signature == "theorem Nat.add_comm : True"
+    assert second.value.snippet == "theorem Nat.add_comm : True := by trivial"
     assert second.value.summary == "Updated commutativity summary."
     assert second.value.note == "first source"
 
@@ -138,6 +146,17 @@ def test_record_mathlib_decl_checked_rejects_failed_check_and_module_conflict(tm
     passed = False
 
     def dispatch(tool_name: str, payload: dict):
+        if tool_name == "lean_explore.find":
+            name = payload["query"]
+            return {
+                "results": [
+                    {
+                        "name": name,
+                        "module": "Init",
+                        "source_text": f"theorem {name} : True := by trivial",
+                    }
+                ]
+            }
         if tool_name == "check_mathlib_name":
             return {"passed": passed, "diagnostics": [{"severity": "error", "message": "unknown declaration"}] if not passed else []}
         raise KeyError(tool_name)
@@ -173,6 +192,17 @@ def test_record_mathlib_batch_checked_uses_one_lean_probe_and_records_all_entrie
 
     def dispatch(tool_name: str, payload: dict):
         calls.append((tool_name, payload))
+        if tool_name == "lean_explore.find":
+            assert payload["query"] == "Nat.add_assoc"
+            return {
+                "results": [
+                    {
+                        "name": "Nat.add_assoc",
+                        "module": "Init",
+                        "source_text": "theorem Nat.add_assoc : True := by trivial",
+                    }
+                ]
+            }
         assert tool_name == "lsp.run_snippet"
         assert payload["code"] == (
             "import Mathlib.Data.Nat.Basic\n"
@@ -208,7 +238,7 @@ def test_record_mathlib_batch_checked_uses_one_lean_probe_and_records_all_entrie
     assert recorded.value is not None
     assert [item.module for item in recorded.value.modules] == ["Mathlib.Data.Nat.Basic"]
     assert [item.name for item in recorded.value.declarations] == ["Nat.add_assoc"]
-    assert len(calls) == 1
+    assert [name for name, _ in calls] == ["lean_explore.find", "lsp.run_snippet"]
 
 
 def test_record_mathlib_batch_checked_repairs_stale_import_module_from_exact_navigation(
@@ -219,13 +249,18 @@ def test_record_mathlib_batch_checked_repairs_stale_import_module_from_exact_nav
     def dispatch(tool_name: str, payload: dict):
         calls.append((tool_name, payload))
         if tool_name == "lean_explore.find":
-            assert payload["query"] == "Finset.card_image_le"
+            name = payload["query"]
+            module = (
+                "Mathlib.Data.Finset.Card"
+                if name == "Finset.card_image_le"
+                else "Init"
+            )
             return {
                 "results": [
                     {
-                        "name": "Finset.card_image_le",
-                        "module": "Mathlib.Data.Finset.Card",
-                        "source_text": "theorem Finset.card_image_le : True := by trivial",
+                        "name": name,
+                        "module": module,
+                        "source_text": f"theorem {name} : True := by trivial",
                     }
                 ]
             }
@@ -284,4 +319,42 @@ def test_record_mathlib_batch_checked_repairs_stale_import_module_from_exact_nav
     exact_entry = service.get_mathlib_module_entry(tmp_path, module="Mathlib.Data.Finset.Card")
     assert exact_entry.ok and exact_entry.value is not None
     assert "Finset.card_image_le" in exact_entry.value.important_decl_names
-    assert [name for name, _ in calls] == ["lean_explore.find", "lsp.run_snippet"]
+    assert [name for name, _ in calls] == [
+        "lean_explore.find",
+        "lean_explore.find",
+        "lsp.run_snippet",
+    ]
+
+
+def test_record_mathlib_batch_missing_exact_module_writes_nothing(tmp_path: Path) -> None:
+    def dispatch(tool_name: str, payload: dict):
+        if tool_name == "lean_explore.find":
+            name = payload["query"]
+            return {
+                "results": [
+                    {
+                        "name": name,
+                        "module": "Init" if name == "Nat.add_assoc" else None,
+                        "source_text": f"theorem {name} : True := by trivial",
+                    }
+                ]
+            }
+        raise KeyError(tool_name)
+
+    service = _service(dispatch)
+    recorded = service.record_mathlib_batch_checked(
+        tmp_path,
+        modules=[{"module_name": "Mathlib.Data.Nat.Basic"}],
+        declarations=[
+            {"decl_name": "Nat.add_assoc"},
+            {"decl_name": "Nat.module_unknown"},
+        ],
+    )
+
+    assert not recorded.ok
+    assert recorded.issues[0].kind == "mathlib_decl_module_missing"
+    assert not service.get_mathlib_module_entry(
+        tmp_path,
+        module="Mathlib.Data.Nat.Basic",
+    ).ok
+    assert not service.get_mathlib_decl_entry(tmp_path, name="Nat.add_assoc").ok
