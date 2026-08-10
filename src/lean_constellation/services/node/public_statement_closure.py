@@ -800,7 +800,8 @@ class PublicStatementClosureComponent:
                     mutation_issues.extend(refreshed.issues)
                     break
         if not mutation_issues:
-            for scope_path in sorted(export_additions, key=lambda path: (-path.count("."), path)):
+            ordered_scopes = sorted(export_additions, key=lambda path: (-path.count("."), path))
+            for scope_index, scope_path in enumerate(ordered_scopes):
                 for ref in export_additions[scope_path]:
                     added = self.runtime.node.export.add_scope_export(
                         repo_root,
@@ -814,6 +815,23 @@ class PublicStatementClosureComponent:
                         break
                 if mutation_issues:
                     break
+                # A parent Scope may consume only committed child Scope
+                # boundaries.  Commit each deeper repaired boundary before
+                # adding exports to the next shallower Scope; the requested
+                # target Scope itself remains an open candidate for its caller.
+                needs_committed_boundary = any(
+                    scope_path.startswith(f"{parent_path}.")
+                    for parent_path in ordered_scopes[scope_index + 1 :]
+                )
+                if needs_committed_boundary:
+                    committed = self.runtime.node.commit_scope_contract(
+                        repo_root,
+                        scope_path=scope_path,
+                        summary="Commit repaired child Scope boundary before parent closure propagation.",
+                    )
+                    if not committed.ok:
+                        mutation_issues.extend(committed.issues)
+                        break
         if not mutation_issues:
             rebuilt = self.runtime.node.node_tree.node_store.rebuild_index(repo_root)
             if not rebuilt.ok:

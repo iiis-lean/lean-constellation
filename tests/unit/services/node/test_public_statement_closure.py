@@ -612,6 +612,12 @@ def test_visibility_revision_rejects_scope_and_main_exports(
         decl_node=NODE_PATH,
         decl_name="PublicResult",
     ).ok
+    committed_topic = runtime.node.commit_scope_contract(
+        tmp_path,
+        scope_path="Main.Topic",
+        summary="Commit the child boundary before testing Main visibility.",
+    )
+    assert committed_topic.ok, committed_topic.issues
 
     scope_revised = runtime.node.public_statement_closure.revise_content_decl_visibility(
         tmp_path,
