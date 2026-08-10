@@ -115,6 +115,16 @@ def test_interface_catalogs_follow_live_registries() -> None:
         "safety",
     }
 
+    restart = next(
+        item
+        for item in admin["operations"]
+        if item["path"]
+        == "/admin/repos/{repo_key:str}/steps/{step_id:str}/restart-failed"
+    )
+    assert restart["input_model"] == "RestartFailedAgentStepInput"
+    assert restart["route_owned_fields"] == ["step_id"]
+    assert restart["input_schema"]["properties"] == {}
+
     submit_requirement = next(
         item for item in tools["tools"] if item["name"] == "submit_repo_requirement"
     )

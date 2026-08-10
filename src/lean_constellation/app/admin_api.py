@@ -508,6 +508,22 @@ class ClearAgentStepOverrideInput(StrictModel):
     step_id: str
 
 
+class RestartFailedAgentStepInput(StrictModel):
+    step_id: str
+
+
+class RestartFailedAgentStepView(StrictModel):
+    failed_step_id: str
+    replacement_step_id: str
+    flow_id: str
+    scope_id: str
+    agent_id: str
+    agent_reused: bool
+    enqueued: bool
+    reopened_round_id: str | None = None
+    summary: str
+
+
 class ManualCheckpointInput(StrictModel):
     repo_root: Path
     scope_ids: list[str]
@@ -3311,6 +3327,80 @@ class LeanAdminApi:
         except Exception as exc:  # noqa: BLE001 - admin boundary.
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue("clear_agent_step_override_failed", f"Failed to clear AgentStep override: {exc}")
+            )
+
+    def restart_failed_agent_step(
+        self,
+        input_model: RestartFailedAgentStepInput,
+    ) -> ServiceResult[RestartFailedAgentStepView]:
+        flow_service = self.runtime.ark.flow_service
+        step_service = self.runtime.ark.step_service
+        if flow_service is None or step_service is None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "flow_step_service_missing",
+                    "ARK flow/step services are not configured.",
+                )
+            )
+        try:
+            failed_step = step_service.store.get_step(input_model.step_id)
+            failed_flow = flow_service.get_flow(failed_step.flow_id)
+            round_target: tuple[Path, str, str] | None = None
+            if failed_flow.flow_type == "decl_graph_round":
+                from lean_constellation.flows.content_node_task.decl_round.flow import (
+                    DeclGraphRoundInput,
+                )
+
+                round_input = failed_flow.input
+                if not isinstance(round_input, DeclGraphRoundInput) or round_input.repo_path is None:
+                    raise TypeError("DeclGraphRoundFlow has no typed repo_path input")
+                repo_root = Path(round_input.repo_path)
+                validated = self.runtime.decl_graph.validate_failed_round_execution_restart(
+                    repo_root,
+                    node_path=round_input.node_path,
+                    round_id=round_input.round_id,
+                    failed_step_id=failed_step.step_id,
+                )
+                if not validated.ok:
+                    return self.runtime.foundation.fail(validated.issues)
+                round_target = (repo_root, round_input.node_path, round_input.round_id)
+
+            restarted = flow_service.restart_failed_agent_step(input_model.step_id)
+            reopened_round_id = None
+            if round_target is not None:
+                repo_root, node_path, round_id = round_target
+                reopened = self.runtime.decl_graph.reopen_failed_round_execution(
+                    repo_root,
+                    node_path=node_path,
+                    round_id=round_id,
+                    failed_step_id=input_model.step_id,
+                )
+                if not reopened.ok:
+                    return self.runtime.foundation.fail(reopened.issues)
+                reopened_round_id = round_id
+            return self.runtime.foundation.ok(
+                RestartFailedAgentStepView(
+                    failed_step_id=restarted.failed_step_id,
+                    replacement_step_id=restarted.replacement_step_id,
+                    flow_id=restarted.flow_id,
+                    scope_id=failed_step.scope_id,
+                    agent_id=restarted.agent_id,
+                    agent_reused=restarted.agent_reused,
+                    enqueued=restarted.enqueued,
+                    reopened_round_id=reopened_round_id,
+                    summary=(
+                        f"Restarted failed AgentStep {restarted.failed_step_id} as "
+                        f"{restarted.replacement_step_id}."
+                    ),
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - operator mutation boundary.
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "restart_failed_agent_step_failed",
+                    f"Failed to restart AgentStep: {exc}",
+                    object_ref=input_model.step_id,
+                )
             )
 
     def create_manual_test_checkpoint(self, input_model: ManualCheckpointInput):

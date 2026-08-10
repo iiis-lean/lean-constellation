@@ -244,6 +244,36 @@ class DeclGraphService:
             reason=reason,
         )
 
+    def reopen_failed_round_execution(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_id: str,
+        failed_step_id: str,
+    ) -> ServiceResult[DeclGraphRound]:
+        return self.strategy_round.reopen_failed_round_execution(
+            repo_root,
+            node_path=node_path,
+            round_id=round_id,
+            failed_step_id=failed_step_id,
+        )
+
+    def validate_failed_round_execution_restart(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_id: str,
+        failed_step_id: str,
+    ) -> ServiceResult[DeclGraphRound]:
+        return self.strategy_round.validate_failed_round_execution_restart(
+            repo_root,
+            node_path=node_path,
+            round_id=round_id,
+            failed_step_id=failed_step_id,
+        )
+
     def closeout_round_by_plan(
         self,
         repo_root: Path,

@@ -403,6 +403,76 @@ class StrategyRoundComponent:
         round_record.value.status = DeclRoundStatus.AWAITING_CLOSEOUT
         return self._write_round(repo_root, node_path=node_path, round_record=round_record.value)
 
+    def reopen_failed_round_execution(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_id: str,
+        failed_step_id: str,
+    ) -> ServiceResult[DeclGraphRound]:
+        """Clear only the failure marker written by DeclGraphRoundFlow."""
+
+        round_record = self.validate_failed_round_execution_restart(
+            repo_root,
+            node_path=node_path,
+            round_id=round_id,
+            failed_step_id=failed_step_id,
+        )
+        if not round_record.ok or round_record.value is None:
+            return self.runtime.foundation.fail(round_record.issues)
+        round_record.value.status = DeclRoundStatus.RUNNING
+        round_record.value.execution_result_kind = None
+        round_record.value.execution_reason = None
+        round_record.value.execution_completed_at = None
+        return self._write_round(
+            repo_root,
+            node_path=node_path,
+            round_record=round_record.value,
+        )
+
+    def validate_failed_round_execution_restart(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_id: str,
+        failed_step_id: str,
+    ) -> ServiceResult[DeclGraphRound]:
+        round_record = self.get_round(repo_root, node_path=node_path, round_id=round_id)
+        if not round_record.ok or round_record.value is None:
+            return self.runtime.foundation.fail(round_record.issues)
+        expected_reason_prefix = (
+            f"Step {failed_step_id} failed before DeclGraph round completion:"
+        )
+        if (
+            round_record.value.status is not DeclRoundStatus.AWAITING_CLOSEOUT
+            or round_record.value.execution_result_kind is not DeclRoundResultKind.FAILED
+            or not (round_record.value.execution_reason or "").startswith(expected_reason_prefix)
+        ):
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "round_failed_step_marker_mismatch",
+                    "Declaration round does not carry the expected failed AgentStep marker.",
+                    object_ref=round_id,
+                    expected=expected_reason_prefix,
+                    current=round_record.value.execution_reason,
+                )
+            )
+        if (
+            round_record.value.result_kind is not None
+            or round_record.value.plan_closeout_acknowledged_at is not None
+            or round_record.value.plan_closeout_acknowledged_by is not None
+        ):
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "round_failed_step_already_closed_out",
+                    "Declaration round failure has already been consumed by ContentPlan closeout.",
+                    object_ref=round_id,
+                )
+            )
+        return self.runtime.foundation.ok(round_record.value)
+
     def persist_round_closeout(
         self,
         repo_root: Path,

@@ -256,6 +256,36 @@ def test_native_source_index_recovery_routes_are_typed_and_route_owned(tmp_path)
     assert "expected_recovery_token" in missing_token.json()["issues"][0]["message"]
 
 
+def test_failed_agent_step_restart_route_owns_step_id_and_uses_production_admin(
+    tmp_path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    _make_repo(workspace, "MainRepo")
+    app_result = create_production_app_server(
+        LeanAppConfig(
+            workspace_root=workspace,
+            scheduler_enabled=False,
+            materialize_agent_homes=False,
+        )
+    )
+    assert app_result.ok and app_result.value is not None
+
+    with TestClient(app_result.value) as client:
+        route_owned = client.post(
+            "/admin/repos/MainRepo/steps/missing/restart-failed",
+            json={"step_id": "other"},
+        )
+        missing = client.post(
+            "/admin/repos/MainRepo/steps/missing/restart-failed",
+            json={},
+        )
+
+    assert route_owned.status_code == 422
+    assert "route-owned" in route_owned.json()["issues"][0]["message"]
+    assert missing.status_code == 400
+    assert missing.json()["issues"][0]["kind"] == "restart_failed_agent_step_failed"
+
+
 def test_production_semantic_advance_route_is_typed_and_starts_process_local_lease(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     repo_root = _make_repo(workspace, "MainRepo")

@@ -34,6 +34,7 @@ from lean_constellation.app.admin_api import (
     RepoRemotePublicationInput,
     RepoRunRequestInput,
     RepoRunStartInput,
+    RestartFailedAgentStepInput,
     RequirementResumeInput,
     RunningAgentRepairInput,
     RuntimePauseView,
@@ -470,6 +471,26 @@ def create_workspace_admin_http_routes(
             timeout_s=30.0 if timeout_s is None else timeout_s,
         )
         return _service_result_response(result)
+
+    async def repo_restart_failed_agent_step(request: Request) -> JSONResponse:
+        data = await _json_or_empty(request)
+        if "step_id" in data:
+            return _request_validation_response("Body must not provide route-owned field: step_id.")
+        data["step_id"] = request.path_params["step_id"]
+        try:
+            input_model = RestartFailedAgentStepInput.model_validate(data)
+        except ValidationError as exc:
+            return _request_validation_response(str(exc))
+        admin_result = repo_admin(request)
+        if not admin_result.ok or admin_result.value is None:
+            return _service_result_response(admin_result)
+        record = registry.discover_repo(request.path_params["repo_key"])
+        if not record.ok or record.value is None:
+            return _service_result_response(record)
+        with record.value.lock:
+            return _service_result_response(
+                admin_result.value.restart_failed_agent_step(input_model)
+            )
 
     async def repo_content_task_progress(request: Request) -> JSONResponse:
         admin_result = repo_admin(request)
@@ -1031,6 +1052,11 @@ def create_workspace_admin_http_routes(
             "/admin/repos/{repo_key:str}/steps/{step_id:str}/wait",
             repo_step_terminal_wait,
             methods=["GET"],
+        ),
+        Route(
+            "/admin/repos/{repo_key:str}/steps/{step_id:str}/restart-failed",
+            repo_restart_failed_agent_step,
+            methods=["POST"],
         ),
         Route("/admin/repos/{repo_key:str}/agents", repo_agents_monitor, methods=["GET"]),
         Route(

@@ -295,6 +295,8 @@ def _admin_input_model(endpoint: Any) -> type[BaseModel] | None:
 
 def _admin_route_owned_fields(endpoint: Any) -> list[str]:
     names = set(endpoint.__code__.co_names)
+    if endpoint.__name__ == "repo_restart_failed_agent_step":
+        return ["step_id"]
     if "_repo_path_model_route" in names:
         return ["release_id", "repo_key", "repo_root"]
     if names.intersection(

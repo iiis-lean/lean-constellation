@@ -195,6 +195,79 @@ def test_round_draft_start_summary_and_success_terminal(tmp_path: Path) -> None:
     assert reloaded.value.summary == "Both declarations were completed."
 
 
+def test_failed_agent_step_marker_can_be_reopened_without_reverting_round_truth(
+    tmp_path: Path,
+) -> None:
+    _create_content_node(tmp_path)
+    service = make_runtime().decl_graph
+    strategy = service.ensure_open_strategy(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        objective="Resume a failed worker without rebuilding the round.",
+    )
+    assert strategy.ok and strategy.value is not None
+    round_record = service.create_round_draft(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        strategy_id=strategy.value.strategy_id,
+        objective="Keep the current declaration revisions.",
+    )
+    assert round_record.ok and round_record.value is not None
+    created = service.create_decl(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=round_record.value.round_id,
+        name="restart_target",
+        kind="theorem",
+        objective="Create the target declaration.",
+        summary="Restart target.",
+        target_state=DeclState.DECLARED,
+    )
+    assert created.ok and created.value is not None
+    started = service.start_round(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=round_record.value.round_id,
+    )
+    assert started.ok and started.value is not None
+    revision_refs = list(started.value.revision_refs)
+    failed_step_id = "decl_stage_worker_failed"
+    failed = service.strategy_round.record_round_execution_result(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=round_record.value.round_id,
+        result_kind=DeclRoundResultKind.FAILED,
+        reason=(
+            f"Step {failed_step_id} failed before DeclGraph round completion: "
+            "stream disconnected before completion"
+        ),
+    )
+    assert failed.ok, failed.issues
+
+    wrong_step = service.reopen_failed_round_execution(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=round_record.value.round_id,
+        failed_step_id="different_step",
+    )
+    assert not wrong_step.ok
+    assert wrong_step.issues[0].kind == "round_failed_step_marker_mismatch"
+
+    reopened = service.reopen_failed_round_execution(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=round_record.value.round_id,
+        failed_step_id=failed_step_id,
+    )
+
+    assert reopened.ok and reopened.value is not None
+    assert reopened.value.status is DeclRoundStatus.RUNNING
+    assert reopened.value.execution_result_kind is None
+    assert reopened.value.execution_reason is None
+    assert reopened.value.execution_completed_at is None
+    assert reopened.value.revision_refs == revision_refs
+
+
 def test_round_terminal_requires_summary_and_blocked_reason(tmp_path: Path) -> None:
     _create_content_node(tmp_path)
     service = make_runtime().decl_graph
