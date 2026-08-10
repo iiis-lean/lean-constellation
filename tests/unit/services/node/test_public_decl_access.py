@@ -66,6 +66,7 @@ def _create_provider_repo(
     *,
     provider_name: str = "Provider",
     interface_name: str | None = None,
+    decl_kind: str = "theorem",
 ) -> None:
     initialize_native_test_repo(provider_root, project_name=provider_name)
     runtime = make_runtime()
@@ -103,7 +104,7 @@ def _create_provider_repo(
     decl_record = Decl(
         name="provider_result",
         node_path="Main.Core",
-        kind="theorem",
+        kind=decl_kind,
         public=True,
         current_revision=1,
         revision_ids=[1],

@@ -345,25 +345,26 @@ def _finalize_theorem(
     *,
     name: str = "main_result",
     module: str = "Upstream.Basic",
+    kind: DeclKind = DeclKind.THEOREM,
 ) -> None:
     assert service.create_adapter_decl(
         repo_root,
         name=name,
-        kind="theorem",
+        kind=kind,
         module=module,
         lean_decl_name=f"{module}.{name}",
-        summary=f"Expose theorem {name}.",
+        summary=f"Expose {kind.value} {name}.",
     ).ok
     assert service.set_adapter_statement_formal(
         repo_root,
         name=name,
-        code=f"theorem {name} : True := by\n  sorry",
+        code=f"{kind.value} {name} : True := by\n  sorry",
     ).ok
     assert service.set_adapter_statement_nl(repo_root, name=name, text=f"Statement for {name}.").ok
     assert service.set_adapter_proof_formal(
         repo_root,
         name=name,
-        code=f"theorem {name} : True := by\n  trivial",
+        code=f"{kind.value} {name} : True := by\n  trivial",
     ).ok
     assert service.set_adapter_proof_nl(repo_root, name=name, text=f"Proof for {name}.").ok
     assert service.finalize_adapter_decl(repo_root, name=name).ok
@@ -1545,6 +1546,30 @@ def test_adapter_interface_binding_failures_unbind_and_validation(tmp_path: Path
     assert gate.value is not None
     assert gate.value.passed is False
     assert {issue.kind for issue in gate.value.issues} == {"adapter_interface_unbound"}
+
+
+def test_adapter_theorem_interface_accepts_finalized_lemma(tmp_path: Path) -> None:
+    service = _service(
+        tmp_path,
+        interfaces=[
+            DeclInterface(
+                name="main_result",
+                kind=DeclKind.THEOREM,
+                summary="Expose a theorem-like declaration.",
+            )
+        ],
+    )
+    assert service.ensure_flat_main_catalog(tmp_path).ok
+    _finalize_theorem(service, tmp_path, kind=DeclKind.LEMMA)
+
+    bound = service.bind_adapter_interface(
+        tmp_path,
+        interface_name="main_result",
+        decl_name="main_result",
+        binding_summary="Bind the equivalent lemma kind.",
+    )
+
+    assert bound.ok, bound.issues
 
 
 def test_adapter_interface_binding_detects_missing_bound_target(tmp_path: Path) -> None:

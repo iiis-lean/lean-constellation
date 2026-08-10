@@ -8,7 +8,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from lean_constellation.domain.common import utc_now_iso
-from lean_constellation.domain.interface import DeclInterface, DeclKind
+from lean_constellation.domain.interface import (
+    DeclInterface,
+    DeclKind,
+    decl_kind_compatible,
+)
 from lean_constellation.domain.preparation import (
     AdapterProviderRoute,
     AutoProviderRoute,
@@ -698,7 +702,7 @@ class RepoRequirementComponent:
             )
             if not decl.ok or decl.value is None:
                 return self.runtime.foundation.fail(decl.issues)
-            if decl.value.kind != interface.kind.value:
+            if not decl_kind_compatible(interface.kind, decl.value.kind):
                 issues.append(
                     self.runtime.foundation.issue(
                         "provider_interface_kind_mismatch",

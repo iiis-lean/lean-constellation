@@ -208,6 +208,45 @@ def test_stable_requirement_truth_uses_semantic_provider_public_boundary(
     assert valid.ok
 
 
+def test_stable_requirement_truth_accepts_theorem_requirement_bound_to_lemma(
+    tmp_path: Path,
+) -> None:
+    from tests.unit.services.node.test_public_decl_access import _create_provider_repo
+
+    consumer = tmp_path / "consumer"
+    provider = tmp_path / "provider"
+    runtime = make_runtime()
+    assert runtime.repo_workspace.metadata.ensure_repo_model(consumer).ok
+    _create_provider_repo(
+        provider,
+        provider_name="provider",
+        interface_name="provider_result",
+        decl_kind="lemma",
+    )
+    assert runtime.repo_workspace.requirement.create_requirement(
+        consumer,
+        name="need_provider_result",
+        target_repo="provider",
+        reason="Use the released provider theorem-like declaration.",
+    ).ok
+    assert runtime.repo_workspace.requirement.add_requirement_interface(
+        consumer,
+        requirement_name="need_provider_result",
+        interface_name="provider_result",
+        kind=DeclKind.THEOREM,
+        summary="Released provider theorem-like declaration.",
+    ).ok
+
+    valid = runtime.repo_workspace.requirement.validate_requirement_provider_truth(
+        consumer,
+        requirement_name="need_provider_result",
+        provider_repo="provider",
+        require_stable=True,
+    )
+
+    assert valid.ok, valid.issues
+
+
 def test_direct_provider_ready_mark_is_rejected_for_release_managed_formats(tmp_path: Path) -> None:
     runtime = make_runtime()
     for repo_format, issue_kind in (

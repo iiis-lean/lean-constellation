@@ -9,7 +9,13 @@ from typing import TYPE_CHECKING
 from pydantic import Field
 
 from lean_constellation.domain.common import StrictModel
-from lean_constellation.domain.interface import DeclInterface, DeclKind, exact_interface_lean_decl_name
+from lean_constellation.domain.interface import (
+    DeclInterface,
+    DeclKind,
+    decl_kind_compatible,
+    exact_interface_lean_decl_name,
+    normalize_decl_kind,
+)
 from lean_constellation.domain.preparation import RepoPreparationInput
 from lean_constellation.domain.refs import DeclRef, MaterialRef
 from lean_constellation.domain.repo import ProofAvailability, RepoFormat
@@ -30,11 +36,6 @@ class InterfaceActor(StrEnum):
     WORKER = "worker"
     REVIEWER = "reviewer"
     SYSTEM = "system"
-
-
-_LEAN_SOURCE_KIND_TO_INTERFACE_KIND = {
-    "abbrev": DeclKind.DEFINITION,
-}
 
 
 class InterfaceView(StrictModel):
@@ -981,25 +982,18 @@ class InterfaceComponent:
                     object_ref=node_path,
                 )
             )
-        actual = _LEAN_SOURCE_KIND_TO_INTERFACE_KIND.get(decl_kind)
+        actual = normalize_decl_kind(decl_kind)
         if actual is None:
-            try:
-                actual = DeclKind(decl_kind)
-            except ValueError:
-                return self.runtime.foundation.fail(
-                    self.runtime.foundation.issue(
-                        "interface_binding_kind_invalid",
-                        f"Declaration kind is invalid: {decl_kind}",
-                        object_ref=node_path,
-                        current=decl_kind,
-                        expected=", ".join(kind.value for kind in DeclKind),
-                    )
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "interface_binding_kind_invalid",
+                    f"Declaration kind is invalid: {decl_kind}",
+                    object_ref=node_path,
+                    current=decl_kind,
+                    expected=", ".join(kind.value for kind in DeclKind),
                 )
-        compatible = actual == interface.kind or {
-            actual,
-            interface.kind,
-        } == {DeclKind.THEOREM, DeclKind.LEMMA}
-        if not compatible:
+            )
+        if not decl_kind_compatible(interface.kind, actual):
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
                     "interface_binding_kind_mismatch",

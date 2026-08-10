@@ -9,7 +9,12 @@ from typing import TYPE_CHECKING
 from pydantic import Field
 
 from lean_constellation.domain.common import StrictModel
-from lean_constellation.domain.interface import DeclInterface, DeclKind, exact_interface_lean_decl_name
+from lean_constellation.domain.interface import (
+    DeclInterface,
+    DeclKind,
+    decl_kind_compatible,
+    exact_interface_lean_decl_name,
+)
 from lean_constellation.domain.refs import DeclRef
 from lean_constellation.services.adapter.adapter_decl_catalog import AdapterDeclCatalogComponent, AdapterDeclView
 from lean_constellation.services.adapter.upstream_navigation import is_compiled_reference_witness
@@ -89,7 +94,7 @@ class InterfaceBindingComponent:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue("adapter_decl_not_finalized", "Adapter interface can only bind to finalized active decls.", object_ref=decl_name)
             )
-        if not self._kind_compatible(interface.kind, view.kind):
+        if not decl_kind_compatible(interface.kind, view.kind):
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
                     "adapter_interface_kind_mismatch",
@@ -213,7 +218,7 @@ class InterfaceBindingComponent:
                         current=view.name,
                     )
                 )
-            if not self._kind_compatible(interface.kind, view.kind):
+            if not decl_kind_compatible(interface.kind, view.kind):
                 issues.append(
                     self.runtime.foundation.issue(
                         "adapter_interface_kind_mismatch",
@@ -378,12 +383,6 @@ class InterfaceBindingComponent:
         if node.ok and node.value is not None:
             return self.runtime.node.node_tree.node_store.contract_path(repo_root, node_id=node.value.node_id, version=version)
         raise ValueError("Cannot resolve active adapter root node: Main")
-
-    def _kind_compatible(self, required: DeclKind, actual: DeclKind) -> bool:
-        if required == actual:
-            return True
-        theorem_like = {DeclKind.THEOREM, DeclKind.LEMMA}
-        return required in theorem_like and actual in theorem_like
 
     def _validate_lean_identity(
         self,
