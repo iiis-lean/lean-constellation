@@ -245,11 +245,15 @@ class ExportComponent:
                 if not child_contract.ok or child_contract.value is None:
                     continue
                 for ref in child_contract.value.contract.exports:
+                    kind = self._exact_decl_kind(repo_root, ref=ref)
+                    if not kind.ok or kind.value is None:
+                        return self.runtime.foundation.fail(kind.issues)
                     candidates.append(
                         ScopeExportCandidate(
                             ref=ref,
                             source_child=child.path,
                             source_kind=NodeKind.SCOPE.value,
+                            kind=kind.value,
                             ready=True,
                             stale=False,
                             already_exported=self._decl_ref_key(ref) in current_export_keys,
@@ -435,12 +439,16 @@ class ExportComponent:
                     object_ref=scope_path,
                 )
             )
+        candidates_by_key: dict[tuple[str | None, str, str, int], ScopeExportCandidate] = {}
         for ref in candidate_contract.exports:
             candidate = self._find_visible_candidate(repo_root, scope_path=scope_path, ref=ref)
             if not candidate.ok:
                 issues.extend(candidate.issues)
                 continue
-            if candidate.value is not None and (not candidate.value.ready or candidate.value.stale):
+            if candidate.value is None:
+                continue
+            candidates_by_key[self._decl_ref_key(ref)] = candidate.value
+            if not candidate.value.ready or candidate.value.stale:
                 issues.append(
                     self.runtime.foundation.issue(
                         "scope_export_decl_not_ready",
@@ -459,6 +467,32 @@ class ExportComponent:
                         field=interface.name,
                     )
                 )
+                continue
+            if interface.bound_decl is None:
+                continue
+            candidate = candidates_by_key.get(self._decl_ref_key(interface.bound_decl))
+            if candidate is None:
+                continue
+            validator = self.binding_validator
+            if validator is None:
+                issues.append(
+                    self.runtime.foundation.issue(
+                        "interface_binding_validator_unavailable",
+                        "Scope binding validation is not configured.",
+                        object_ref=scope_path,
+                    )
+                )
+                continue
+            validated = validator.validate_scope_export_binding(
+                repo_root,
+                scope_path=scope_path,
+                candidate_contract=candidate_contract,
+                interface_name=interface.name,
+                ref=interface.bound_decl,
+                decl_kind=candidate.kind,
+            )
+            if not validated.ok:
+                issues.extend(validated.issues)
         if issues:
             return self.runtime.foundation.ok(self.runtime.foundation.gate_failed("scope_exports", issues, summary=f"{len(issues)} Scope export checks failed."))
         return self.runtime.foundation.ok(
@@ -592,11 +626,15 @@ class ExportComponent:
             if (child_ref.repo, child_ref.node, child_ref.name) != (ref.repo, ref.node, ref.name):
                 continue
             if child_ref.revision == ref.revision:
+                kind = self._exact_decl_kind(repo_root, ref=child_ref)
+                if not kind.ok or kind.value is None:
+                    return self.runtime.foundation.fail(kind.issues)
                 return self.runtime.foundation.ok(
                     ScopeExportCandidate(
                         ref=child_ref,
                         source_child=direct_child,
                         source_kind=NodeKind.SCOPE.value,
+                        kind=kind.value,
                     )
                 )
             parent_resolved = self._resolve_semantic_ref(repo_root, ref)
@@ -610,11 +648,15 @@ class ExportComponent:
                 and child_resolved.value.compatible
                 and parent_resolved.value.resolved_revision == child_resolved.value.resolved_revision
             ):
+                kind = self._exact_decl_kind(repo_root, ref=child_ref)
+                if not kind.ok or kind.value is None:
+                    return self.runtime.foundation.fail(kind.issues)
                 return self.runtime.foundation.ok(
                     ScopeExportCandidate(
                         ref=child_ref,
                         source_child=direct_child,
                         source_kind=NodeKind.SCOPE.value,
+                        kind=kind.value,
                     )
                 )
         return self.runtime.foundation.fail(
@@ -636,6 +678,61 @@ class ExportComponent:
                 config.value.config.completion_mode
             ),
         )
+
+    def _exact_decl_kind(self, repo_root: Path, *, ref: DeclRef) -> ServiceResult[str]:
+        """Recover declaration kind from the exact local declaration anchor."""
+
+        if ref.repo is not None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "scope_export_kind_evidence_unavailable",
+                    "Scope export kind evidence must resolve to a declaration in the current repository.",
+                    object_ref=f"{ref.repo}:{ref.node}:{ref.name}@{ref.revision}",
+                )
+            )
+        decl = self.runtime.decl_graph.get_decl(
+            repo_root,
+            node_path=ref.node,
+            name=ref.name,
+        )
+        revision = self.runtime.decl_graph.get_decl_revision(
+            repo_root,
+            node_path=ref.node,
+            name=ref.name,
+            revision=ref.revision,
+        )
+        if not decl.ok or decl.value is None:
+            return self.runtime.foundation.fail(
+                [
+                    *decl.issues,
+                    self.runtime.foundation.issue(
+                        "scope_export_kind_evidence_unavailable",
+                        "Scope export declaration kind evidence is unavailable.",
+                        object_ref=f"{ref.node}:{ref.name}@{ref.revision}",
+                    ),
+                ]
+            )
+        if not revision.ok or revision.value is None:
+            return self.runtime.foundation.fail(
+                [
+                    *revision.issues,
+                    self.runtime.foundation.issue(
+                        "scope_export_kind_evidence_unavailable",
+                        "Scope export exact declaration revision is unavailable for kind validation.",
+                        object_ref=f"{ref.node}:{ref.name}@{ref.revision}",
+                    ),
+                ]
+            )
+        kind = decl.value.kind.strip()
+        if not kind:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "scope_export_kind_evidence_unavailable",
+                    "Scope export declaration kind evidence is empty.",
+                    object_ref=f"{ref.node}:{ref.name}@{ref.revision}",
+                )
+            )
+        return self.runtime.foundation.ok(kind)
 
     def _decl_ref_view(self, repo_root: Path, scope_path: str, ref: DeclRef, *, index: int) -> DeclRefView:
         candidate = self._find_visible_candidate(repo_root, scope_path=scope_path, ref=ref)

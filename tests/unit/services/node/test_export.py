@@ -7,6 +7,14 @@ from lean_constellation.domain.refs import DeclRef
 from lean_constellation.domain.repo import RepoCompletionMode
 from lean_constellation.services import LeanProviderOverrides
 from lean_constellation.services.foundation import FoundationContext, FoundationService, ServiceResult, WriteMode
+from lean_constellation.services.decl_graph import DeclState
+from lean_constellation.services.decl_graph.models import (
+    Decl,
+    DeclFormalSection,
+    DeclRevision,
+    DeclRevisionStatus,
+    DeclStatement,
+)
 from lean_constellation.services.node import (
     DeclPublicView,
     ExportComponent,
@@ -52,6 +60,88 @@ def _create_tree(tmp_path: Path) -> None:
         success_criteria="Core ready.",
     ).ok
     assert tree.create_scope_node(tmp_path, path="Main.Topic.Sub", goal="Sub goal", boundary="Sub boundary").ok
+    assert tree.create_content_node(
+        tmp_path,
+        path="Main.Topic.Sub.Inner",
+        goal="Inner goal",
+        boundary="Inner boundary",
+        objective="Build inner declarations.",
+        success_criteria="Inner declarations are ready.",
+    ).ok
+
+
+def _seed_declared_public_decl(
+    repo_root: Path,
+    *,
+    node_path: str,
+    name: str,
+    kind: str,
+) -> None:
+    runtime = make_runtime()
+    decl = Decl(
+        name=name,
+        node_path=node_path,
+        kind=kind,
+        public=True,
+        module=f"Fixture.{name}",
+        summary=f"{name} declaration.",
+    )
+    revision = DeclRevision(
+        revision=1,
+        state=DeclState.DECLARED,
+        status=DeclRevisionStatus.COMMITTED,
+        lean_decl_name=name,
+        statement=DeclStatement(
+            formal=DeclFormalSection(
+                code=(
+                    (
+                        "/--\n"
+                        f"# lean-constellation target: `{name}`\n"
+                        "-/\n"
+                        f"theorem {name} : True := by trivial"
+                    )
+                    if kind in {"theorem", "lemma"}
+                    else f"def {name} : Nat := 0"
+                )
+            )
+        ),
+    )
+    ensured = runtime.foundation.store.ensure_dir(
+        runtime.decl_graph.graph_store.decl_revisions_dir(
+            repo_root,
+            node_path=node_path,
+            decl_name=name,
+        )
+    )
+    assert ensured.ok
+    written_decl = runtime.foundation.store.write_json_atomic(
+        runtime.decl_graph.graph_store.decl_record_path(
+            repo_root,
+            node_path=node_path,
+            decl_name=name,
+        ),
+        decl,
+    )
+    assert written_decl.ok
+    written_revision = runtime.foundation.store.write_json_atomic(
+        runtime.decl_graph.graph_store.revision_path(
+            repo_root,
+            node_path=node_path,
+            decl_name=name,
+            revision=1,
+        ),
+        revision,
+    )
+    assert written_revision.ok
+    rebuilt = runtime.decl_graph.graph_store.rebuild_index(repo_root, node_path=node_path)
+    assert rebuilt.ok
+    contract = runtime.node.contract._commit_content_contract_with_head(
+        repo_root,
+        node_path=node_path,
+        summary=f"{name} boundary ready.",
+        decl_graph_head={name: 1},
+    )
+    assert contract.ok, contract.issues
 
 
 def _component_with_provider(tmp_path: Path) -> ExportComponent:
@@ -81,6 +171,12 @@ def _component_with_public_decls(decls: dict[str, list[DeclPublicView]]) -> Expo
 
 
 def _write_child_scope_export(tmp_path: Path) -> DeclRef:
+    _seed_declared_public_decl(
+        tmp_path,
+        node_path="Main.Topic.Sub.Inner",
+        name="sub_result",
+        kind="theorem",
+    )
     foundation = make_runtime().foundation
     path = foundation.node_contract_path(FoundationContext(repo_root=tmp_path), "Main.Topic.Sub", 1)
     loaded = foundation.read_json(path, NodeContractSnapshot)
@@ -161,6 +257,7 @@ def test_list_scope_export_candidates_from_content_and_child_scope(tmp_path: Pat
     ]
     child_scope_candidate = candidates.value.candidates[1]
     assert child_scope_candidate.source_kind == "scope"
+    assert child_scope_candidate.kind == "theorem"
     assert child_scope_candidate.ready is True
     assert child_scope_candidate.stale is False
 
@@ -206,6 +303,213 @@ def test_scope_export_draft_cannot_propagate_an_open_child_scope_boundary(
     assert ref not in [candidate.ref for candidate in candidates.value.candidates]
     assert not added.ok
     assert added.issues[0].kind == "scope_export_child_scope_unavailable"
+
+
+def test_child_scope_export_binding_uses_exact_kind_and_is_atomic(tmp_path: Path) -> None:
+    _create_tree(tmp_path)
+    child_ref = _write_child_scope_export(tmp_path)
+    component = _component_with_provider(tmp_path)
+    assert make_runtime().node.interface.add_interface(
+        tmp_path,
+        node_path="Main.Topic",
+        name="topic_definition",
+        kind=DeclKind.DEFINITION,
+        summary="Expose a definition.",
+        actor="coordinator",
+    ).ok
+
+    rejected = component.add_scope_export(
+        tmp_path,
+        scope_path="Main.Topic",
+        decl_node=child_ref.node,
+        decl_name=child_ref.name,
+        revision=child_ref.revision,
+        bind_interface_name="topic_definition",
+    )
+
+    assert not rejected.ok
+    assert rejected.issues[0].kind == "interface_binding_kind_mismatch"
+    current = make_runtime().node.contract.get_current_contract(
+        tmp_path,
+        node_path="Main.Topic",
+    )
+    assert current.ok and current.value is not None
+    assert current.value.contract.exports == []
+    assert current.value.contract.interfaces[0].bound_decl is None
+
+
+def test_child_scope_candidate_fails_closed_without_exact_kind_evidence(
+    tmp_path: Path,
+) -> None:
+    _create_tree(tmp_path)
+    foundation = make_runtime().foundation
+    path = foundation.node_contract_path(
+        FoundationContext(repo_root=tmp_path),
+        "Main.Topic.Sub",
+        1,
+    )
+    loaded = foundation.read_json(path, NodeContractSnapshot)
+    assert loaded.ok and loaded.value is not None
+    loaded.value.exports = [
+        DeclRef(
+            node="Main.Topic.Sub.Inner",
+            name="missing_kind_evidence",
+            revision=1,
+        )
+    ]
+    assert foundation.write_json_atomic(
+        path,
+        loaded.value,
+        mode=WriteMode.UPDATE_EXISTING,
+    ).ok
+    committed = make_runtime().node.contract._commit_scope_contract_after_guard(
+        tmp_path,
+        scope_path="Main.Topic.Sub",
+        summary="Persist malformed historical boundary for fail-closed coverage.",
+    )
+    assert committed.ok
+
+    candidates = _component_with_provider(tmp_path).list_scope_export_candidates(
+        tmp_path,
+        scope_path="Main.Topic",
+    )
+
+    assert not candidates.ok
+    assert "scope_export_kind_evidence_unavailable" in {
+        issue.kind for issue in candidates.issues
+    }
+
+
+def test_scope_commit_revalidates_bound_interface_kind_after_candidate_drift(
+    tmp_path: Path,
+) -> None:
+    _create_tree(tmp_path)
+    child_ref = _write_child_scope_export(tmp_path)
+    component = _component_with_provider(tmp_path)
+    assert make_runtime().node.interface.add_interface(
+        tmp_path,
+        node_path="Main.Topic",
+        name="topic_result",
+        kind=DeclKind.THEOREM,
+        summary="Expose a theorem.",
+        actor="coordinator",
+    ).ok
+    assert component.add_scope_export(
+        tmp_path,
+        scope_path="Main.Topic",
+        decl_node=child_ref.node,
+        decl_name=child_ref.name,
+        revision=child_ref.revision,
+        bind_interface_name="topic_result",
+    ).ok
+    runtime = make_runtime()
+    decl = runtime.decl_graph.get_decl(
+        tmp_path,
+        node_path=child_ref.node,
+        name=child_ref.name,
+    )
+    assert decl.ok and decl.value is not None
+    decl.value.kind = "definition"
+    saved = runtime.foundation.store.write_json_atomic(
+        runtime.decl_graph.graph_store.decl_record_path(
+            tmp_path,
+            node_path=child_ref.node,
+            decl_name=child_ref.name,
+        ),
+        decl.value,
+        mode=WriteMode.UPDATE_EXISTING,
+    )
+    assert saved.ok
+
+    committed = runtime.node.commit_scope_contract(
+        tmp_path,
+        scope_path="Main.Topic",
+        summary="Must reject stale binding semantics.",
+    )
+
+    assert not committed.ok
+    assert "interface_binding_kind_mismatch" in {
+        issue.kind for issue in committed.issues
+    }
+
+
+def test_scope_commit_revalidates_bound_interface_statement_after_candidate_drift(
+    tmp_path: Path,
+) -> None:
+    _create_tree(tmp_path)
+    child_ref = _write_child_scope_export(tmp_path)
+    component = _component_with_provider(tmp_path)
+    runtime = make_runtime()
+    current = runtime.node.contract.get_current_contract(
+        tmp_path,
+        node_path="Main.Topic",
+    )
+    assert current.ok and current.value is not None
+    current.value.contract.interfaces.append(
+        runtime.node.interface._build_interface(
+            name="topic_result",
+            kind=DeclKind.THEOREM,
+            summary="Expose the exact theorem.",
+            statement_hint=None,
+        ).value.model_copy(
+            update={
+                "expected_statement_lean_code": (
+                    "theorem sub_result : True := by trivial"
+                )
+            }
+        )
+    )
+    saved_contract = runtime.node.contract._persist_open_candidate(
+        tmp_path,
+        node_path="Main.Topic",
+        candidate=current.value.contract,
+    )
+    assert saved_contract.ok
+    assert component.add_scope_export(
+        tmp_path,
+        scope_path="Main.Topic",
+        decl_node=child_ref.node,
+        decl_name=child_ref.name,
+        revision=child_ref.revision,
+        bind_interface_name="topic_result",
+    ).ok
+    revision = runtime.decl_graph.get_decl_revision(
+        tmp_path,
+        node_path=child_ref.node,
+        name=child_ref.name,
+        revision=child_ref.revision,
+    )
+    assert revision.ok and revision.value is not None
+    revision.value.statement.formal = DeclFormalSection(
+        code=(
+            "/--\n"
+            "# lean-constellation target: `sub_result`\n"
+            "-/\n"
+            "theorem sub_result : False := by contradiction"
+        )
+    )
+    saved_revision = runtime.foundation.store.write_json_atomic(
+        runtime.decl_graph.graph_store.revision_path(
+            tmp_path,
+            node_path=child_ref.node,
+            decl_name=child_ref.name,
+            revision=child_ref.revision,
+        ),
+        revision.value,
+        mode=WriteMode.UPDATE_EXISTING,
+    )
+    assert saved_revision.ok
+
+    committed = runtime.node.commit_scope_contract(
+        tmp_path,
+        scope_path="Main.Topic",
+        summary="Must reject stale statement semantics.",
+    )
+
+    assert not committed.ok
+    assert "interface_statement_contract_mismatch" in {
+        issue.kind for issue in committed.issues
+    }
 
 
 def test_scope_commit_rechecks_child_scope_after_parent_export_draft(tmp_path: Path) -> None:

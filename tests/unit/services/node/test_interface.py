@@ -862,13 +862,82 @@ def test_bind_content_interface_reports_public_readiness_ambiguity_and_kind_edge
         },
     )
     unknown_kind = component.bind_interface_to_decl(tmp_path, node_path="Main.Core", interface_name="core_result", decl_name="unknown_kind")
-    assert unknown_kind.ok
-    assert [issue.kind for issue in unknown_kind.issues] == ["interface_binding_kind_check_deferred"]
-    assert component.unbind_interface(tmp_path, node_path="Main.Core", interface_name="core_result").ok
+    assert not unknown_kind.ok
+    assert unknown_kind.issues[0].kind == "interface_binding_kind_evidence_unavailable"
 
     invalid_kind = component.bind_interface_to_decl(tmp_path, node_path="Main.Core", interface_name="core_result", decl_name="invalid_kind")
     assert not invalid_kind.ok
     assert invalid_kind.issues[0].kind == "interface_binding_kind_invalid"
+
+
+def test_interface_kind_compatibility_is_theorem_like_but_other_is_not_wildcard(
+    tmp_path: Path,
+) -> None:
+    _init_main(tmp_path, interfaces=[])
+    _create_content_node(tmp_path, "Main.Core")
+    component, _export = _component_with_public_decls(
+        tmp_path,
+        {
+            "Main.Core": [
+                DeclPublicView(
+                    ref=DeclRef(node="Main.Core", name="as_lemma", revision=1),
+                    kind=DeclKind.LEMMA.value,
+                ),
+                DeclPublicView(
+                    ref=DeclRef(node="Main.Core", name="as_theorem", revision=1),
+                    kind=DeclKind.THEOREM.value,
+                ),
+                DeclPublicView(
+                    ref=DeclRef(node="Main.Core", name="as_other", revision=1),
+                    kind=DeclKind.OTHER.value,
+                ),
+            ]
+        },
+    )
+    for name, kind in (
+        ("theorem_requirement", DeclKind.THEOREM),
+        ("lemma_requirement", DeclKind.LEMMA),
+        ("other_requirement", DeclKind.OTHER),
+    ):
+        assert component.add_interface(
+            tmp_path,
+            node_path="Main.Core",
+            name=name,
+            kind=kind,
+            summary=f"{kind.value} requirement.",
+            actor="coordinator",
+        ).ok
+
+    theorem_to_lemma = component.bind_interface_to_decl(
+        tmp_path,
+        node_path="Main.Core",
+        interface_name="theorem_requirement",
+        decl_name="as_lemma",
+    )
+    lemma_to_theorem = component.bind_interface_to_decl(
+        tmp_path,
+        node_path="Main.Core",
+        interface_name="lemma_requirement",
+        decl_name="as_theorem",
+    )
+    other_to_theorem = component.bind_interface_to_decl(
+        tmp_path,
+        node_path="Main.Core",
+        interface_name="other_requirement",
+        decl_name="as_theorem",
+    )
+    other_to_other = component.bind_interface_to_decl(
+        tmp_path,
+        node_path="Main.Core",
+        interface_name="other_requirement",
+        decl_name="as_other",
+    )
+
+    assert theorem_to_lemma.ok
+    assert lemma_to_theorem.ok
+    assert not other_to_theorem.ok
+    assert other_to_theorem.issues[0].kind == "interface_binding_kind_mismatch"
+    assert other_to_other.ok
 
 
 def test_bind_scope_interface_requires_current_scope_export(tmp_path: Path) -> None:

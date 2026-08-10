@@ -673,16 +673,7 @@ class InterfaceComponent:
             )
         if not resolved.ok or resolved.value is None:
             return self.runtime.foundation.fail(resolved.issues)
-        semantics = self._validate_binding_semantics(
-            repo_root,
-            node_path=node_path,
-            interface=interface,
-            ref=resolved.value,
-            decl_kind=None,
-        )
-        if not semantics.ok:
-            return self.runtime.foundation.fail(semantics.issues)
-        return self.runtime.foundation.ok(resolved.value, warnings=[*resolved.issues, *semantics.issues])
+        return self.runtime.foundation.ok(resolved.value, warnings=resolved.issues)
 
     def _validate_binding_semantics(
         self,
@@ -693,16 +684,13 @@ class InterfaceComponent:
         ref: DeclRef,
         decl_kind: str | None,
     ) -> ServiceResult[None]:
-        warnings = []
-        if decl_kind is not None:
-            kind_check = self._validate_binding_kind(
-                node_path=node_path,
-                interface=interface,
-                decl_kind=decl_kind,
-            )
-            if not kind_check.ok:
-                return self.runtime.foundation.fail(kind_check.issues)
-            warnings.extend(kind_check.issues)
+        kind_check = self._validate_binding_kind(
+            node_path=node_path,
+            interface=interface,
+            decl_kind=decl_kind,
+        )
+        if not kind_check.ok:
+            return self.runtime.foundation.fail(kind_check.issues)
         identity = self._validate_binding_lean_identity(
             repo_root,
             node_path=node_path,
@@ -719,7 +707,7 @@ class InterfaceComponent:
         )
         if not statement.ok:
             return self.runtime.foundation.fail(statement.issues)
-        return self.runtime.foundation.ok(None, warnings=warnings)
+        return self.runtime.foundation.ok(None)
 
     def _validate_binding_lean_identity(
         self,
@@ -883,7 +871,19 @@ class InterfaceComponent:
                     object_ref=node_path,
                 )
             )
-        return self._validate_binding_candidate(node_path=node_path, interface=interface, decl=matches[0])
+        validated = self._validate_binding_candidate(node_path=node_path, decl=matches[0])
+        if not validated.ok or validated.value is None:
+            return self.runtime.foundation.fail(validated.issues)
+        semantics = self._validate_binding_semantics(
+            repo_root,
+            node_path=node_path,
+            interface=interface,
+            ref=validated.value,
+            decl_kind=matches[0].kind,
+        )
+        if not semantics.ok:
+            return self.runtime.foundation.fail(semantics.issues)
+        return self.runtime.foundation.ok(validated.value)
 
     def _resolve_scope_binding(
         self,
@@ -942,12 +942,18 @@ class InterfaceComponent:
                     expected="ready=True, stale=False",
                 )
             )
-        kind_check = self._validate_binding_kind(node_path=scope_path, interface=interface, decl_kind=candidate.kind)
-        if not kind_check.ok:
-            return self.runtime.foundation.fail(kind_check.issues)
-        return self.runtime.foundation.ok(export_matches[0], warnings=kind_check.issues)
+        semantics = self._validate_binding_semantics(
+            repo_root,
+            node_path=scope_path,
+            interface=interface,
+            ref=export_matches[0],
+            decl_kind=candidate.kind,
+        )
+        if not semantics.ok:
+            return self.runtime.foundation.fail(semantics.issues)
+        return self.runtime.foundation.ok(export_matches[0])
 
-    def _validate_binding_candidate(self, *, node_path: str, interface: DeclInterface, decl: DeclPublicView) -> ServiceResult[DeclRef]:
+    def _validate_binding_candidate(self, *, node_path: str, decl: DeclPublicView) -> ServiceResult[DeclRef]:
         if not decl.ready or decl.stale:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
@@ -958,10 +964,7 @@ class InterfaceComponent:
                     expected="ready=True, stale=False",
                 )
             )
-        kind_check = self._validate_binding_kind(node_path=node_path, interface=interface, decl_kind=decl.kind)
-        if not kind_check.ok:
-            return self.runtime.foundation.fail(kind_check.issues)
-        return self.runtime.foundation.ok(decl.ref, warnings=kind_check.issues)
+        return self.runtime.foundation.ok(decl.ref)
 
     def _validate_binding_kind(
         self,
@@ -971,16 +974,12 @@ class InterfaceComponent:
         decl_kind: str | None,
     ) -> ServiceResult[None]:
         if decl_kind is None:
-            return self.runtime.foundation.ok(
-                None,
-                warnings=[
-                    self.runtime.foundation.issue(
-                        "interface_binding_kind_check_deferred",
-                        "Declaration kind is not available from the current public boundary provider.",
-                        object_ref=node_path,
-                        severity="warning",
-                    )
-                ],
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "interface_binding_kind_evidence_unavailable",
+                    "Declaration kind evidence is required for interface binding.",
+                    object_ref=node_path,
+                )
             )
         actual = _LEAN_SOURCE_KIND_TO_INTERFACE_KIND.get(decl_kind)
         if actual is None:
@@ -996,7 +995,11 @@ class InterfaceComponent:
                         expected=", ".join(kind.value for kind in DeclKind),
                     )
                 )
-        if actual != interface.kind:
+        compatible = actual == interface.kind or {
+            actual,
+            interface.kind,
+        } == {DeclKind.THEOREM, DeclKind.LEMMA}
+        if not compatible:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
                     "interface_binding_kind_mismatch",
