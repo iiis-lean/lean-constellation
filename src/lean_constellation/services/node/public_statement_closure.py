@@ -93,6 +93,14 @@ class _InspectionOptions:
     visible_contracts: bool
 
 
+@dataclass(frozen=True)
+class _ScopePromotionPlan:
+    scope_path: str
+    refs: tuple[DeclRef, ...]
+    is_target: bool
+    expected_active_version: int | None
+
+
 class _PathSnapshot:
     """Small in-memory rollback snapshot for one scoped business mutation."""
 
@@ -604,15 +612,28 @@ class PublicStatementClosureComponent:
             required_scopes = self._required_export_scopes(ref.node, options)
             missing_scopes: list[str] = []
             for scope_path in required_scopes:
+                stable_intermediate = scope_path != options.node_path
                 exported = self._scope_exports_ref(
                     repo_root,
                     scope_path=scope_path,
                     ref=ref,
-                    visible=options.visible_contracts,
+                    visible=(
+                        options.visible_contracts
+                        or stable_intermediate
+                    ),
                 )
                 if not exported.ok or exported.value is None:
-                    issues.extend(exported.issues)
-                elif not exported.value:
+                    if not (
+                        stable_intermediate
+                        and {issue.kind for issue in exported.issues}
+                        == {"node_committed_contract_missing"}
+                    ):
+                        issues.extend(exported.issues)
+                        continue
+                    is_exported = False
+                else:
+                    is_exported = exported.value
+                if not is_exported:
                     missing_scopes.append(scope_path)
                     issues.append(
                         self.runtime.foundation.issue(
@@ -726,6 +747,24 @@ class PublicStatementClosureComponent:
             loaded = self._load_current_decl(repo_root, ref)
             if not loaded.ok or loaded.value is None:
                 preflight_issues.extend(loaded.issues)
+                continue
+            decl, current_ref = loaded.value
+            if current_ref.revision != ref.revision or decl.public:
+                preflight_issues.append(
+                    self.runtime.foundation.issue(
+                        "public_statement_promotion_cas_mismatch",
+                        "Declaration revision or visibility changed after closure inspection.",
+                        object_ref=f"{ref.node}:{ref.name}",
+                        current=(
+                            f"revision={current_ref.revision}, "
+                            f"visibility={'public' if decl.public else 'private'}"
+                        ),
+                        expected=f"revision={ref.revision}, visibility=private",
+                    )
+                )
+        anchors = self._validate_committed_promotion_anchors(repo_root, promoted)
+        if not anchors.ok:
+            preflight_issues.extend(anchors.issues)
         config = self.runtime.repo_workspace.metadata.get_repo_config(repo_root)
         if not config.ok or config.value is None:
             preflight_issues.extend(config.issues)
@@ -749,6 +788,14 @@ class PublicStatementClosureComponent:
                 )
         if preflight_issues:
             return self.runtime.foundation.fail(self._unique_issues(preflight_issues))
+
+        scope_plans = self._build_scope_promotion_plans(
+            repo_root,
+            target_scope=node_path,
+            export_additions=export_additions,
+        )
+        if not scope_plans.ok or scope_plans.value is None:
+            return self.runtime.foundation.fail(scope_plans.issues)
 
         touched_nodes = {ref.node for ref in promoted} | set(export_additions)
         snapshot = _PathSnapshot(
@@ -776,6 +823,20 @@ class PublicStatementClosureComponent:
                     if not loaded.ok or loaded.value is None:
                         mutation_issues.extend(loaded.issues)
                         continue
+                    if loaded.value.current_revision != ref.revision or loaded.value.public:
+                        mutation_issues.append(
+                            self.runtime.foundation.issue(
+                                "public_statement_promotion_cas_mismatch",
+                                "Declaration revision or visibility changed before promotion mutation.",
+                                object_ref=f"{ref.node}:{ref.name}",
+                                current=(
+                                    f"revision={loaded.value.current_revision}, "
+                                    f"visibility={'public' if loaded.value.public else 'private'}"
+                                ),
+                                expected=f"revision={ref.revision}, visibility=private",
+                            )
+                        )
+                        continue
                     loaded.value.public = True
                     loaded.value.updated_at = utc_now_iso()
                     mutation.stage_json(
@@ -800,12 +861,53 @@ class PublicStatementClosureComponent:
                     mutation_issues.extend(refreshed.issues)
                     break
         if not mutation_issues:
-            ordered_scopes = sorted(export_additions, key=lambda path: (-path.count("."), path))
-            for scope_index, scope_path in enumerate(ordered_scopes):
-                for ref in export_additions[scope_path]:
+            for plan in scope_plans.value:
+                if not plan.is_target:
+                    current = self.runtime.node.node_tree.get_node(
+                        repo_root,
+                        path=plan.scope_path,
+                    )
+                    if (
+                        not current.ok
+                        or current.value is None
+                        or current.value.active_contract_version
+                        != plan.expected_active_version
+                        or current.value.open_contract_version is not None
+                    ):
+                        mutation_issues.append(
+                            self.runtime.foundation.issue(
+                                "scope_promotion_intermediate_cas_mismatch",
+                                "Intermediate Scope ownership changed after promotion preflight.",
+                                object_ref=plan.scope_path,
+                                expected=(
+                                    f"active={plan.expected_active_version}, open=None"
+                                ),
+                            )
+                        )
+                        break
+                    opened = self.runtime.node.contract.ensure_open_contract(
+                        repo_root,
+                        node_path=plan.scope_path,
+                    )
+                    if (
+                        not opened.ok
+                        or opened.value is None
+                        or not opened.value.created_new_open
+                    ):
+                        mutation_issues.extend(opened.issues)
+                        if opened.ok:
+                            mutation_issues.append(
+                                self.runtime.foundation.issue(
+                                    "scope_promotion_intermediate_fresh_open_required",
+                                    "Intermediate Scope promotion requires a fresh revision copied from the expected active boundary.",
+                                    object_ref=plan.scope_path,
+                                )
+                            )
+                        break
+                for ref in plan.refs:
                     added = self.runtime.node.export.add_scope_export(
                         repo_root,
-                        scope_path=scope_path,
+                        scope_path=plan.scope_path,
                         decl_node=ref.node,
                         decl_name=ref.name,
                         revision=ref.revision,
@@ -815,18 +917,10 @@ class PublicStatementClosureComponent:
                         break
                 if mutation_issues:
                     break
-                # A parent Scope may consume only committed child Scope
-                # boundaries.  Commit each deeper repaired boundary before
-                # adding exports to the next shallower Scope; the requested
-                # target Scope itself remains an open candidate for its caller.
-                needs_committed_boundary = any(
-                    scope_path.startswith(f"{parent_path}.")
-                    for parent_path in ordered_scopes[scope_index + 1 :]
-                )
-                if needs_committed_boundary:
+                if not plan.is_target:
                     committed = self.runtime.node.commit_scope_contract(
                         repo_root,
-                        scope_path=scope_path,
+                        scope_path=plan.scope_path,
                         summary="Commit repaired child Scope boundary before parent closure propagation.",
                     )
                     if not committed.ok:
@@ -890,6 +984,137 @@ class PublicStatementClosureComponent:
                 ),
             )
         )
+
+    def _validate_committed_promotion_anchors(
+        self,
+        repo_root: Path,
+        promoted: list[DeclRef],
+    ) -> ServiceResult[None]:
+        heads: dict[str, dict[str, int]] = {}
+        issues: list[ServiceIssue] = []
+        for node_path in sorted({ref.node for ref in promoted}):
+            visible = self.runtime.node.contract.get_visible_contract(
+                repo_root,
+                node_path=node_path,
+            )
+            if not visible.ok or visible.value is None:
+                issues.extend(visible.issues)
+                continue
+            if visible.value.node_kind != NodeKind.CONTENT:
+                issues.append(
+                    self.runtime.foundation.issue(
+                        "public_statement_promotion_owner_not_content",
+                        "Declaration visibility promotion requires a Content owner.",
+                        object_ref=node_path,
+                    )
+                )
+                continue
+            target = self.runtime.node.contract.check_provider_completion_target(
+                repo_root,
+                node_path=node_path,
+                contract=visible.value,
+                require_committed=True,
+            )
+            if not target.ok or target.value is None:
+                issues.extend(target.issues)
+                continue
+            if not target.value.passed:
+                issues.extend(target.value.issues)
+                continue
+            heads[node_path] = visible.value.contract.decl_graph_head
+        for ref in promoted:
+            if heads.get(ref.node, {}).get(ref.name) != ref.revision:
+                issues.append(
+                    self.runtime.foundation.issue(
+                        "public_statement_promotion_not_committed_head",
+                        "Visibility promotion requires the exact declaration revision in the active committed Content head.",
+                        object_ref=f"{ref.node}:{ref.name}@{ref.revision}",
+                    )
+                )
+        if issues:
+            return self.runtime.foundation.fail(self._unique_issues(issues))
+        return self.runtime.foundation.ok(None)
+
+    def _build_scope_promotion_plans(
+        self,
+        repo_root: Path,
+        *,
+        target_scope: str,
+        export_additions: dict[str, list[DeclRef]],
+    ) -> ServiceResult[list[_ScopePromotionPlan]]:
+        plans: list[_ScopePromotionPlan] = []
+        issues: list[ServiceIssue] = []
+        for scope_path in sorted(
+            (path for path, refs in export_additions.items() if refs),
+            key=lambda path: (-path.count("."), path),
+        ):
+            refs = tuple(export_additions[scope_path])
+            if scope_path == target_scope:
+                plans.append(
+                    _ScopePromotionPlan(
+                        scope_path=scope_path,
+                        refs=refs,
+                        is_target=True,
+                        expected_active_version=None,
+                    )
+                )
+                continue
+            node = self.runtime.node.node_tree.get_node(repo_root, path=scope_path)
+            if not node.ok or node.value is None:
+                issues.extend(node.issues)
+                continue
+            if node.value.kind != NodeKind.SCOPE:
+                issues.append(
+                    self.runtime.foundation.issue(
+                        "scope_promotion_intermediate_not_scope",
+                        "Public closure propagation can mutate only intermediate Scope nodes.",
+                        object_ref=scope_path,
+                    )
+                )
+                continue
+            if node.value.active_contract_version is None:
+                issues.append(
+                    self.runtime.foundation.issue(
+                        "scope_promotion_intermediate_not_committed",
+                        "Intermediate Scope requires an active committed boundary before automatic promotion.",
+                        object_ref=scope_path,
+                        current=f"open={node.value.open_contract_version}",
+                        expected="active committed contract",
+                    )
+                )
+                continue
+            if node.value.open_contract_version is not None:
+                issues.append(
+                    self.runtime.foundation.issue(
+                        "scope_promotion_intermediate_open",
+                        "Intermediate Scope has caller-owned open edits and cannot be mutated automatically.",
+                        object_ref=scope_path,
+                        current=(
+                            f"active={node.value.active_contract_version}, "
+                            f"open={node.value.open_contract_version}"
+                        ),
+                        expected="active committed contract with no open revision",
+                    )
+                )
+                continue
+            visible = self.runtime.node.contract.get_visible_contract(
+                repo_root,
+                node_path=scope_path,
+            )
+            if not visible.ok or visible.value is None:
+                issues.extend(visible.issues)
+                continue
+            plans.append(
+                _ScopePromotionPlan(
+                    scope_path=scope_path,
+                    refs=refs,
+                    is_target=False,
+                    expected_active_version=node.value.active_contract_version,
+                )
+            )
+        if issues:
+            return self.runtime.foundation.fail(self._unique_issues(issues))
+        return self.runtime.foundation.ok(plans)
 
     def _node_roots(
         self,
@@ -975,7 +1200,6 @@ class PublicStatementClosureComponent:
                 repo_root,
                 scope_path=scope_path,
                 ref=root,
-                visible=visible,
             )
             if not visible_from_child.ok:
                 root_issues.extend(visible_from_child.issues)
@@ -1001,7 +1225,6 @@ class PublicStatementClosureComponent:
         *,
         scope_path: str,
         ref: DeclRef,
-        visible: bool,
     ) -> ServiceResult[bool]:
         children = self.runtime.node.node_tree.list_children(repo_root, scope_path=scope_path)
         if not children.ok or children.value is None:
@@ -1021,14 +1244,23 @@ class PublicStatementClosureComponent:
                 repo_root,
                 scope_path=child.path,
                 ref=self._current_ref(repo_root, ref),
-                visible=visible,
+                visible=True,
             )
         if ref.node != child.path:
             return self.runtime.foundation.ok(False)
-        loaded = self._load_current_decl(repo_root, ref)
-        if not loaded.ok or loaded.value is None:
-            return self.runtime.foundation.fail(loaded.issues)
-        return self.runtime.foundation.ok(loaded.value[0].public)
+        public = self.runtime.node.export._list_committed_content_public_decls(
+            repo_root,
+            node_path=child.path,
+        )
+        if not public.ok or public.value is None:
+            return self.runtime.foundation.fail(public.issues)
+        current = self._current_ref(repo_root, ref)
+        return self.runtime.foundation.ok(
+            any(
+                self._ref_key(candidate.ref) == self._ref_key(current)
+                for candidate in public.value
+            )
+        )
 
     def _load_current_decl(
         self,
@@ -1220,6 +1452,10 @@ class PublicStatementClosureComponent:
         for ref in refs:
             unique[self._identity(ref)] = ref
         return list(unique.values())
+
+    @staticmethod
+    def _ref_key(ref: DeclRef) -> tuple[str | None, str, str, int]:
+        return (ref.repo, ref.node, ref.name, ref.revision)
 
     @staticmethod
     def _unique_issues(issues: list[ServiceIssue]) -> list[ServiceIssue]:

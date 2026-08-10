@@ -15,7 +15,11 @@ from lean_constellation.services.decl_graph.models import (
     DeclStatement,
     RepoDeclDep,
 )
-from lean_constellation.services.foundation import ServiceResult, WriteMode
+from lean_constellation.services.foundation import (
+    FoundationContext,
+    ServiceResult,
+    WriteMode,
+)
 
 
 NODE_PATH = "Main.Topic.Core"
@@ -144,6 +148,40 @@ def _commit_content_head(repo_root: Path, *names: str) -> None:
     assert committed.ok, committed.issues
 
 
+def _set_open_scope_exports(
+    repo_root: Path,
+    *,
+    scope_path: str,
+    refs: list[DeclRef],
+) -> int:
+    runtime = make_runtime()
+    opened = runtime.node.contract.ensure_open_contract(
+        repo_root,
+        node_path=scope_path,
+    )
+    assert opened.ok and opened.value is not None
+    opened.value.contract.exports = refs
+    saved = runtime.foundation.store.write_json_atomic(
+        runtime.node.node_tree.node_store.contract_path(
+            repo_root,
+            node_id=opened.value.node_id,
+            version=opened.value.version,
+        ),
+        opened.value.contract,
+        mode=WriteMode.UPDATE_EXISTING,
+    )
+    assert saved.ok
+    return opened.value.version
+
+
+def _path_file_bytes(root: Path) -> dict[str, bytes]:
+    return {
+        str(path.relative_to(root)): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
 def test_node_closure_reports_and_promotes_private_statement_dependency(
     tmp_path: Path,
 ) -> None:
@@ -161,6 +199,7 @@ def test_node_closure_reports_and_promotes_private_statement_dependency(
         public=True,
         statement_deps=["Family"],
     )
+    _commit_content_head(tmp_path, "Family", "MainResult")
     runtime = make_runtime()
 
     before = runtime.node.public_statement_closure.inspect_content(
@@ -193,6 +232,29 @@ def test_node_closure_reports_and_promotes_private_statement_dependency(
     )
     assert replay.ok and replay.value is not None
     assert replay.value.changed is False
+
+
+def test_content_promotion_requires_active_committed_head(tmp_path: Path) -> None:
+    round_id = _prepare_repo(tmp_path)
+    _seed_definition(tmp_path, round_id=round_id, name="Helper", public=False)
+
+    promoted = make_runtime().node.public_statement_closure.promote_content_closure(
+        tmp_path,
+        node_path=NODE_PATH,
+        root_decl_names=["Helper"],
+    )
+
+    assert not promoted.ok
+    assert "node_committed_contract_missing" in {
+        issue.kind for issue in promoted.issues
+    }
+    helper = make_runtime().decl_graph.get_decl(
+        tmp_path,
+        node_path=NODE_PATH,
+        name="Helper",
+    )
+    assert helper.ok and helper.value is not None
+    assert helper.value.public is False
 
 
 def test_content_commit_rejects_private_public_statement_dependency(
@@ -306,6 +368,10 @@ def test_main_scope_closure_adds_statement_dependency_to_scope_chain(
             "Family",
             "MainResult",
         }
+    topic = runtime.node.node_tree.get_node(tmp_path, path="Main.Topic")
+    assert topic.ok and topic.value is not None
+    assert topic.value.active_contract_version == 2
+    assert topic.value.open_contract_version is None
 
 
 def test_scope_explicit_root_adds_existing_boundary_and_stops_at_target_scope(
@@ -367,6 +433,282 @@ def test_scope_explicit_root_adds_existing_boundary_and_stops_at_target_scope(
     assert main_exports.ok and main_exports.value == []
 
 
+def test_scope_promotion_allows_open_only_target_and_never_commits_it(
+    tmp_path: Path,
+) -> None:
+    round_id = _prepare_repo(tmp_path)
+    _seed_definition(tmp_path, round_id=round_id, name="Family", public=False)
+    _seed_definition(
+        tmp_path,
+        round_id=round_id,
+        name="MainResult",
+        public=True,
+        statement_deps=["Family"],
+    )
+    _commit_content_head(tmp_path, "Family", "MainResult")
+    runtime = make_runtime()
+
+    promoted = runtime.node.public_statement_closure.promote_scope_closure(
+        tmp_path,
+        scope_path="Main.Topic",
+        roots=[DeclRef(node=NODE_PATH, name="MainResult")],
+    )
+
+    assert promoted.ok and promoted.value is not None
+    target = runtime.node.node_tree.get_node(tmp_path, path="Main.Topic")
+    assert target.ok and target.value is not None
+    assert target.value.active_contract_version is None
+    assert target.value.open_contract_version == 1
+    exports = runtime.node.export.list_scope_exports(
+        tmp_path,
+        scope_path="Main.Topic",
+    )
+    assert exports.ok and exports.value is not None
+    assert {item.ref.name for item in exports.value} == {"Family", "MainResult"}
+
+
+def test_scope_promotion_reuses_active_target_open_without_committing_it(
+    tmp_path: Path,
+) -> None:
+    round_id = _prepare_repo(tmp_path)
+    _seed_definition(tmp_path, round_id=round_id, name="Family", public=False)
+    _seed_definition(
+        tmp_path,
+        round_id=round_id,
+        name="MainResult",
+        public=True,
+        statement_deps=["Family"],
+    )
+    _commit_content_head(tmp_path, "Family", "MainResult")
+    runtime = make_runtime()
+    assert runtime.node.export.add_scope_export(
+        tmp_path,
+        scope_path="Main.Topic",
+        decl_node=NODE_PATH,
+        decl_name="MainResult",
+    ).ok
+    committed = runtime.node.contract._commit_scope_contract_after_guard(
+        tmp_path,
+        scope_path="Main.Topic",
+        summary="Commit the initial target boundary.",
+    )
+    assert committed.ok, committed.issues
+    opened = runtime.node.contract.ensure_open_contract(
+        tmp_path,
+        node_path="Main.Topic",
+    )
+    assert opened.ok and opened.value is not None
+    assert opened.value.created_new_open
+
+    promoted = runtime.node.public_statement_closure.promote_scope_closure(
+        tmp_path,
+        scope_path="Main.Topic",
+        roots=[DeclRef(node=NODE_PATH, name="MainResult")],
+    )
+
+    assert promoted.ok and promoted.value is not None
+    target = runtime.node.node_tree.get_node(tmp_path, path="Main.Topic")
+    assert target.ok and target.value is not None
+    assert target.value.active_contract_version == 1
+    assert target.value.open_contract_version == 2
+    current = runtime.node.contract.get_current_contract(
+        tmp_path,
+        node_path="Main.Topic",
+    )
+    assert current.ok and current.value is not None
+    assert {ref.name for ref in current.value.contract.exports} == {
+        "Family",
+        "MainResult",
+    }
+
+
+def test_scope_promotion_blocks_intermediate_active_open_before_any_mutation(
+    tmp_path: Path,
+) -> None:
+    round_id = _prepare_repo(tmp_path)
+    _seed_definition(tmp_path, round_id=round_id, name="Family", public=False)
+    _seed_definition(
+        tmp_path,
+        round_id=round_id,
+        name="MainResult",
+        public=True,
+        statement_deps=["Family"],
+    )
+    _commit_content_head(tmp_path, "Family", "MainResult")
+    runtime = make_runtime()
+    assert runtime.node.export.add_scope_export(
+        tmp_path,
+        scope_path="Main.Topic",
+        decl_node=NODE_PATH,
+        decl_name="MainResult",
+    ).ok
+    committed = runtime.node.contract._commit_scope_contract_after_guard(
+        tmp_path,
+        scope_path="Main.Topic",
+        summary="Commit the incomplete intermediate boundary.",
+    )
+    assert committed.ok, committed.issues
+    opened = runtime.node.contract.ensure_open_contract(
+        tmp_path,
+        node_path="Main.Topic",
+    )
+    assert opened.ok and opened.value is not None
+    nodes_root = runtime.foundation.layout.nodes_root(
+        FoundationContext(repo_root=tmp_path)
+    )
+    before_nodes = _path_file_bytes(nodes_root)
+    family_path = runtime.decl_graph.graph_store.decl_record_path(
+        tmp_path,
+        node_path=NODE_PATH,
+        decl_name="Family",
+    )
+    before_family = family_path.read_bytes()
+
+    promoted = runtime.node.public_statement_closure.promote_scope_closure(
+        tmp_path,
+        scope_path="Main",
+        roots=[DeclRef(node=NODE_PATH, name="MainResult")],
+    )
+
+    assert not promoted.ok
+    assert "scope_promotion_intermediate_open" in {
+        issue.kind for issue in promoted.issues
+    }
+    assert family_path.read_bytes() == before_family
+    assert _path_file_bytes(nodes_root) == before_nodes
+
+
+def test_scope_promotion_blocks_open_only_intermediate_before_any_mutation(
+    tmp_path: Path,
+) -> None:
+    round_id = _prepare_repo(tmp_path)
+    _seed_definition(tmp_path, round_id=round_id, name="Family", public=False)
+    _seed_definition(
+        tmp_path,
+        round_id=round_id,
+        name="MainResult",
+        public=True,
+        statement_deps=["Family"],
+    )
+    _commit_content_head(tmp_path, "Family", "MainResult")
+    root_ref = DeclRef(node=NODE_PATH, name="MainResult", revision=1)
+    _set_open_scope_exports(tmp_path, scope_path="Main", refs=[root_ref])
+    runtime = make_runtime()
+    family_path = runtime.decl_graph.graph_store.decl_record_path(
+        tmp_path,
+        node_path=NODE_PATH,
+        decl_name="Family",
+    )
+    before_family = family_path.read_bytes()
+
+    promoted = runtime.node.public_statement_closure.promote_scope_closure(
+        tmp_path,
+        scope_path="Main",
+    )
+
+    assert not promoted.ok
+    assert "scope_promotion_intermediate_not_committed" in {
+        issue.kind for issue in promoted.issues
+    }
+    assert family_path.read_bytes() == before_family
+
+
+def test_scope_promotion_ignores_unrelated_open_when_active_intermediate_satisfies_boundary(
+    tmp_path: Path,
+) -> None:
+    round_id = _prepare_repo(tmp_path)
+    _seed_definition(tmp_path, round_id=round_id, name="Family", public=True)
+    _seed_definition(
+        tmp_path,
+        round_id=round_id,
+        name="MainResult",
+        public=True,
+        statement_deps=["Family"],
+    )
+    _commit_content_head(tmp_path, "Family", "MainResult")
+    runtime = make_runtime()
+    for name in ("Family", "MainResult"):
+        assert runtime.node.export.add_scope_export(
+            tmp_path,
+            scope_path="Main.Topic",
+            decl_node=NODE_PATH,
+            decl_name=name,
+        ).ok
+    committed = runtime.node.commit_scope_contract(
+        tmp_path,
+        scope_path="Main.Topic",
+        summary="Commit the complete intermediate boundary.",
+    )
+    assert committed.ok, committed.issues
+    topic_open = _set_open_scope_exports(
+        tmp_path,
+        scope_path="Main.Topic",
+        refs=[DeclRef(node=NODE_PATH, name="MainResult", revision=1)],
+    )
+    topic_open_path = runtime.node.node_tree.node_store.contract_path(
+        tmp_path,
+        node_id=committed.value.node_id,
+        version=topic_open,
+    )
+    before_open = topic_open_path.read_bytes()
+
+    promoted = runtime.node.public_statement_closure.promote_scope_closure(
+        tmp_path,
+        scope_path="Main",
+        roots=[DeclRef(node=NODE_PATH, name="MainResult")],
+    )
+
+    assert promoted.ok and promoted.value is not None
+    assert set(promoted.value.added_exports) == {"Main"}
+    assert topic_open_path.read_bytes() == before_open
+    topic = runtime.node.node_tree.get_node(tmp_path, path="Main.Topic")
+    assert topic.ok and topic.value is not None
+    assert topic.value.active_contract_version == 1
+    assert topic.value.open_contract_version == 2
+
+
+def test_scope_promotion_dedupes_shared_dependency_across_roots(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    round_id = _prepare_repo(tmp_path)
+    _seed_definition(tmp_path, round_id=round_id, name="Family", public=False)
+    for name in ("ResultA", "ResultB"):
+        _seed_definition(
+            tmp_path,
+            round_id=round_id,
+            name=name,
+            public=True,
+            statement_deps=["Family"],
+        )
+    _commit_content_head(tmp_path, "Family", "ResultA", "ResultB")
+    runtime = make_runtime()
+    calls: list[str] = []
+    original_add = runtime.node.export.add_scope_export
+
+    def count_add(*args, **kwargs):
+        calls.append(kwargs["decl_name"])
+        return original_add(*args, **kwargs)
+
+    monkeypatch.setattr(runtime.node.export, "add_scope_export", count_add)
+
+    promoted = runtime.node.public_statement_closure.promote_scope_closure(
+        tmp_path,
+        scope_path="Main.Topic",
+        roots=[
+            DeclRef(node=NODE_PATH, name="ResultA"),
+            DeclRef(node=NODE_PATH, name="ResultB"),
+        ],
+    )
+
+    assert promoted.ok and promoted.value is not None
+    assert [ref.name for ref in promoted.value.promoted_declarations] == [
+        "Family"
+    ]
+    assert calls.count("Family") == 1
+    assert sorted(calls) == ["Family", "ResultA", "ResultB"]
+
+
 def test_scope_explicit_root_must_be_visible_from_a_direct_child_boundary(
     tmp_path: Path,
 ) -> None:
@@ -387,7 +729,7 @@ def test_scope_explicit_root_must_be_visible_from_a_direct_child_boundary(
 
     assert not inspected.ok
     assert {issue.kind for issue in inspected.issues} == {
-        "public_statement_scope_root_not_child_public"
+        "node_committed_contract_missing"
     }
 
 
@@ -450,6 +792,7 @@ def test_node_closure_promotion_rolls_back_on_projection_failure(
         public=True,
         statement_deps=["Family"],
     )
+    _commit_content_head(tmp_path, "Family", "MainResult")
     runtime = make_runtime()
 
     def fail_refresh(*_args, **_kwargs):
@@ -488,6 +831,7 @@ def test_visibility_revision_promotes_and_replays_without_new_revision(
 ) -> None:
     round_id = _prepare_repo(tmp_path)
     _seed_definition(tmp_path, round_id=round_id, name="Helper", public=False)
+    _commit_content_head(tmp_path, "Helper")
     runtime = make_runtime()
 
     revised = runtime.node.public_statement_closure.revise_content_decl_visibility(
@@ -736,6 +1080,7 @@ def test_visibility_revision_rolls_back_incomplete_promotion(
         public=False,
         statement_deps=["PrivateSupport"],
     )
+    _commit_content_head(tmp_path, "CandidateRoot", "PrivateSupport")
     runtime = make_runtime()
 
     revised = runtime.node.public_statement_closure.revise_content_decl_visibility(
