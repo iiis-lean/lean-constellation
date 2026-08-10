@@ -146,6 +146,13 @@ def _create_provider_repo(
         revision,
         mode=WriteMode.OVERWRITE,
     ).ok
+    committed = runtime.node.contract._commit_content_contract_with_head(
+        provider_root,
+        node_path="Main.Core",
+        summary="Commit the provider Content boundary.",
+        decl_graph_head={"provider_result": 1},
+    )
+    assert committed.ok, committed.issues
     assert runtime.node.export.add_scope_export(provider_root, scope_path="Main", decl_node="Main.Core", decl_name="provider_result").ok
     if interface_name is not None:
         assert runtime.node.interface.bind_interface_to_decl(

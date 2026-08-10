@@ -200,33 +200,18 @@ class ExportComponent:
                 )
         for child in children.value:
             if child.kind == NodeKind.CONTENT:
-                child_contract = self.contract.get_current_contract(
+                public = self._list_committed_content_public_decls(
                     repo_root,
                     node_path=child.path,
                 )
-                if not child_contract.ok or child_contract.value is None:
-                    continue
-                provider_target = self.contract.check_provider_completion_target(
-                    repo_root,
-                    node_path=child.path,
-                    contract=child_contract.value,
-                    require_committed=False,
-                )
-                if not provider_target.ok or provider_target.value is None:
-                    return self.runtime.foundation.fail(provider_target.issues)
-                if not provider_target.value.passed:
+                if not public.ok or public.value is None:
                     warnings.extend(
                         issue.model_copy(update={"severity": IssueSeverity.WARNING})
-                        for issue in provider_target.value.issues
+                        for issue in public.issues
                     )
                     continue
-                public = self.list_content_public_decls(repo_root, node_path=child.path)
-                if not public.ok or public.value is None:
-                    return self.runtime.foundation.fail(public.issues)
                 warnings.extend(public.issues)
                 for decl in public.value:
-                    if not decl.public:
-                        continue
                     candidates.append(
                         ScopeExportCandidate(
                             ref=decl.ref,
@@ -559,41 +544,14 @@ class ExportComponent:
                 )
             )
         if child.value.kind == NodeKind.CONTENT:
-            child_contract = self.contract.get_current_contract(
+            public = self._list_committed_content_public_decls(
                 repo_root,
                 node_path=direct_child,
             )
-            if not child_contract.ok or child_contract.value is None:
-                return self.runtime.foundation.fail(
-                    self.runtime.foundation.issue(
-                        "scope_export_child_content_unavailable",
-                        f"Content child boundary is unavailable: {direct_child}",
-                        object_ref=scope_path,
-                    )
-                )
-            provider_target = self.contract.check_provider_completion_target(
-                repo_root,
-                node_path=direct_child,
-                contract=child_contract.value,
-                require_committed=False,
-            )
-            if not provider_target.ok or provider_target.value is None:
-                return self.runtime.foundation.fail(provider_target.issues)
-            if not provider_target.value.passed:
-                return self.runtime.foundation.fail(provider_target.value.issues)
-            public = self.list_content_public_decls(repo_root, node_path=direct_child)
             if not public.ok or public.value is None:
                 return self.runtime.foundation.fail(public.issues)
             for decl in public.value:
-                if (decl.ref.repo, decl.ref.node, decl.ref.name) != (ref.repo, ref.node, ref.name) or not decl.public:
-                    continue
-                compatible_revision = decl.ref.revision == ref.revision
-                if not compatible_revision:
-                    compatible = self._resolve_semantic_ref(repo_root, ref)
-                    if not compatible.ok or compatible.value is None:
-                        return self.runtime.foundation.fail(compatible.issues)
-                    compatible_revision = compatible.value.compatible and compatible.value.resolved_revision == decl.ref.revision
-                if compatible_revision:
+                if self._decl_ref_key(decl.ref) == self._decl_ref_key(ref):
                     return self.runtime.foundation.ok(
                         ScopeExportCandidate(
                             ref=decl.ref,
@@ -678,6 +636,41 @@ class ExportComponent:
                 config.value.config.completion_mode
             ),
         )
+
+    def _list_committed_content_public_decls(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+    ) -> ServiceResult[list[DeclPublicView]]:
+        """Read the exact public declaration set anchored by the active Content contract."""
+
+        visible = self.contract.get_visible_contract(repo_root, node_path=node_path)
+        if not visible.ok or visible.value is None:
+            return self.runtime.foundation.fail(visible.issues)
+        provider_target = self.contract.check_provider_completion_target(
+            repo_root,
+            node_path=node_path,
+            contract=visible.value,
+            require_committed=True,
+        )
+        if not provider_target.ok or provider_target.value is None:
+            return self.runtime.foundation.fail(provider_target.issues)
+        if not provider_target.value.passed:
+            return self.runtime.foundation.fail(provider_target.value.issues)
+        public = self.list_content_public_decls(repo_root, node_path=node_path)
+        if not public.ok or public.value is None:
+            return self.runtime.foundation.fail(public.issues)
+        head = visible.value.contract.decl_graph_head
+        anchored = [
+            decl
+            for decl in public.value
+            if decl.public
+            and decl.ref.repo is None
+            and decl.ref.node == node_path
+            and head.get(decl.ref.name) == decl.ref.revision
+        ]
+        return self.runtime.foundation.ok(anchored, warnings=public.issues)
 
     def _exact_decl_kind(self, repo_root: Path, *, ref: DeclRef) -> ServiceResult[str]:
         """Recover declaration kind from the exact local declaration anchor."""

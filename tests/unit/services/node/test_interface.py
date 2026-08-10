@@ -62,6 +62,21 @@ def _create_content_node(tmp_path: Path, path: str) -> None:
     ).ok
 
 
+def _commit_content_head(
+    repo_root: Path,
+    *,
+    node_path: str,
+    head: dict[str, int],
+) -> None:
+    committed = make_runtime().node.contract._commit_content_contract_with_head(
+        repo_root,
+        node_path=node_path,
+        summary=f"Commit the fixture boundary for {node_path}.",
+        decl_graph_head=head,
+    )
+    assert committed.ok, committed.issues
+
+
 def _contract_path(tmp_path: Path, node_path: str, version: int = 1) -> Path:
     foundation = make_runtime().foundation
     return foundation.node_contract_path(FoundationContext(repo_root=tmp_path), node_path, version)
@@ -943,6 +958,11 @@ def test_interface_kind_compatibility_is_theorem_like_but_other_is_not_wildcard(
 def test_bind_scope_interface_requires_current_scope_export(tmp_path: Path) -> None:
     _init_main(tmp_path, interfaces=[])
     _create_content_node(tmp_path, "Main.Topic.Core")
+    _commit_content_head(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        head={"main_result": 1},
+    )
     component, export = _component_with_public_decls(
         tmp_path,
         {
@@ -1032,6 +1052,11 @@ def test_protected_root_gate_ignores_bound_decl_result(tmp_path: Path) -> None:
     protected = DeclInterface(name="main_result", kind=DeclKind.THEOREM, summary="Main theorem.")
     _init_main(tmp_path, interfaces=[protected])
     _create_content_node(tmp_path, "Main.Core")
+    _commit_content_head(
+        tmp_path,
+        node_path="Main.Core",
+        head={"main_result": 1},
+    )
     component, export = _component_with_public_decls(
         tmp_path,
         {

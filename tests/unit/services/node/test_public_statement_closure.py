@@ -134,6 +134,16 @@ def _seed_definition(
     assert committed.ok, committed.issues
 
 
+def _commit_content_head(repo_root: Path, *names: str) -> None:
+    committed = make_runtime().node.contract._commit_content_contract_with_head(
+        repo_root,
+        node_path=NODE_PATH,
+        summary="Commit the fixture Content boundary.",
+        decl_graph_head={name: 1 for name in names},
+    )
+    assert committed.ok, committed.issues
+
+
 def test_node_closure_reports_and_promotes_private_statement_dependency(
     tmp_path: Path,
 ) -> None:
@@ -232,6 +242,7 @@ def test_main_scope_closure_adds_statement_dependency_to_scope_chain(
         public=True,
         statement_deps=["Family"],
     )
+    _commit_content_head(tmp_path, "Family", "MainResult")
     runtime = make_runtime()
     assert runtime.node.export.add_scope_export(
         tmp_path,
@@ -315,6 +326,7 @@ def test_scope_explicit_root_adds_existing_boundary_and_stops_at_target_scope(
         public=True,
         statement_deps=["Family"],
     )
+    _commit_content_head(tmp_path, "Family", "MainResult")
     runtime = make_runtime()
     batch_calls = 0
     original_batch = runtime.decl_graph.check_decl_proof_policy_batch
@@ -605,6 +617,7 @@ def test_visibility_revision_rejects_scope_and_main_exports(
 ) -> None:
     round_id = _prepare_repo(tmp_path)
     _seed_definition(tmp_path, round_id=round_id, name="PublicResult", public=True)
+    _commit_content_head(tmp_path, "PublicResult")
     runtime = make_runtime()
     assert runtime.node.export.add_scope_export(
         tmp_path,

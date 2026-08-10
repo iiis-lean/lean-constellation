@@ -67,11 +67,6 @@ def _prepare_ready_scope(tmp_path: Path):
     runtime = _runtime_with_provider(provider)
     service = runtime.node
     _create_scope_and_content(service, tmp_path)
-    assert service.commit_content_contract(
-        tmp_path,
-        node_path="Main.Topic.Core",
-        summary="Core content ready.",
-    ).ok
     strategy = runtime.decl_graph.ensure_open_strategy(
         tmp_path,
         node_path="Main.Topic.Core",
@@ -152,6 +147,13 @@ def _prepare_ready_scope(tmp_path: Path):
         round_id=round_record.value.round_id,
         result_kind=DeclRoundResultKind.SUCCESS,
     ).ok
+    committed = runtime.node.contract._commit_content_contract_with_head(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        summary="Core content ready.",
+        decl_graph_head={"core_result": 1},
+    )
+    assert committed.ok, committed.issues
     assert service.interface.add_interface(
         tmp_path,
         node_path="Main.Topic",

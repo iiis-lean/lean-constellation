@@ -47,7 +47,7 @@ class FailingProjection:
         return self.foundation.fail(self.foundation.issue("projection_refresh_failed", "Projection refresh failed.", object_ref=node_path))
 
 
-def _create_tree(tmp_path: Path) -> None:
+def _create_tree(tmp_path: Path, *, commit_core: bool = True) -> None:
     tree = make_runtime().node.node_tree
     assert tree.ensure_root_scope_node(tmp_path).ok
     assert tree.create_scope_node(tmp_path, path="Main.Topic", goal="Topic goal", boundary="Topic boundary").ok
@@ -59,6 +59,12 @@ def _create_tree(tmp_path: Path) -> None:
         objective="Build core.",
         success_criteria="Core ready.",
     ).ok
+    if commit_core:
+        _commit_content_head(
+            tmp_path,
+            node_path="Main.Topic.Core",
+            head={"main_result": 1},
+        )
     assert tree.create_scope_node(tmp_path, path="Main.Topic.Sub", goal="Sub goal", boundary="Sub boundary").ok
     assert tree.create_content_node(
         tmp_path,
@@ -68,6 +74,27 @@ def _create_tree(tmp_path: Path) -> None:
         objective="Build inner declarations.",
         success_criteria="Inner declarations are ready.",
     ).ok
+
+
+def _commit_content_head(
+    repo_root: Path,
+    *,
+    node_path: str,
+    head: dict[str, int],
+) -> None:
+    runtime = make_runtime()
+    opened = runtime.node.contract.ensure_open_contract(
+        repo_root,
+        node_path=node_path,
+    )
+    assert opened.ok, opened.issues
+    committed = runtime.node.contract._commit_content_contract_with_head(
+        repo_root,
+        node_path=node_path,
+        summary=f"Committed fixture boundary for {node_path}.",
+        decl_graph_head=head,
+    )
+    assert committed.ok, committed.issues
 
 
 def _seed_declared_public_decl(
@@ -135,13 +162,7 @@ def _seed_declared_public_decl(
     assert written_revision.ok
     rebuilt = runtime.decl_graph.graph_store.rebuild_index(repo_root, node_path=node_path)
     assert rebuilt.ok
-    contract = runtime.node.contract._commit_content_contract_with_head(
-        repo_root,
-        node_path=node_path,
-        summary=f"{name} boundary ready.",
-        decl_graph_head={name: 1},
-    )
-    assert contract.ok, contract.issues
+    _commit_content_head(repo_root, node_path=node_path, head={name: 1})
 
 
 def _component_with_provider(tmp_path: Path) -> ExportComponent:
@@ -260,6 +281,160 @@ def test_list_scope_export_candidates_from_content_and_child_scope(tmp_path: Pat
     assert child_scope_candidate.kind == "theorem"
     assert child_scope_candidate.ready is True
     assert child_scope_candidate.stale is False
+
+
+def test_parent_scope_rejects_open_only_content_boundary(tmp_path: Path) -> None:
+    _create_tree(tmp_path, commit_core=False)
+    component = _component_with_provider(tmp_path)
+
+    candidates = component.list_scope_export_candidates(
+        tmp_path,
+        scope_path="Main.Topic",
+    )
+    added = component.add_scope_export(
+        tmp_path,
+        scope_path="Main.Topic",
+        decl_node="Main.Topic.Core",
+        decl_name="main_result",
+    )
+
+    assert candidates.ok and candidates.value is not None
+    assert candidates.value.candidates == []
+    assert "node_committed_contract_missing" in {
+        issue.kind for issue in candidates.issues
+    }
+    assert not added.ok
+    assert added.issues[0].kind == "node_committed_contract_missing"
+
+
+def test_parent_scope_reads_active_content_head_while_child_has_open_revision(
+    tmp_path: Path,
+) -> None:
+    _create_tree(tmp_path)
+    runtime = make_runtime()
+    opened = runtime.node.contract.ensure_open_contract(
+        tmp_path,
+        node_path="Main.Topic.Core",
+    )
+    assert opened.ok and opened.value is not None
+    opened.value.contract.decl_graph_head = {"draft_result": 1}
+    saved = runtime.foundation.store.write_json_atomic(
+        runtime.node.node_tree.node_store.contract_path(
+            tmp_path,
+            node_id=opened.value.node_id,
+            version=opened.value.version,
+        ),
+        opened.value.contract,
+        mode=WriteMode.UPDATE_EXISTING,
+    )
+    assert saved.ok
+    component = _component_with_public_decls(
+        {
+            "Main.Topic.Core": [
+                DeclPublicView(
+                    ref=DeclRef(
+                        node="Main.Topic.Core",
+                        name="main_result",
+                        revision=1,
+                    ),
+                    kind="theorem",
+                ),
+                DeclPublicView(
+                    ref=DeclRef(
+                        node="Main.Topic.Core",
+                        name="draft_result",
+                        revision=1,
+                    ),
+                    kind="theorem",
+                ),
+            ]
+        }
+    )
+
+    candidates = component.list_scope_export_candidates(
+        tmp_path,
+        scope_path="Main.Topic",
+    )
+
+    assert candidates.ok and candidates.value is not None
+    assert [item.ref.name for item in candidates.value.candidates] == [
+        "main_result"
+    ]
+
+
+def test_parent_scope_filters_public_content_refs_not_in_active_head(
+    tmp_path: Path,
+) -> None:
+    _create_tree(tmp_path)
+    component = _component_with_public_decls(
+        {
+            "Main.Topic.Core": [
+                DeclPublicView(
+                    ref=DeclRef(
+                        node="Main.Topic.Core",
+                        name="main_result",
+                        revision=1,
+                    ),
+                    kind="theorem",
+                ),
+                DeclPublicView(
+                    ref=DeclRef(
+                        node="Main.Topic.Core",
+                        name="uncommitted_public",
+                        revision=1,
+                    ),
+                    kind="theorem",
+                ),
+            ]
+        }
+    )
+
+    candidates = component.list_scope_export_candidates(
+        tmp_path,
+        scope_path="Main.Topic",
+    )
+    rejected = component.add_scope_export(
+        tmp_path,
+        scope_path="Main.Topic",
+        decl_node="Main.Topic.Core",
+        decl_name="uncommitted_public",
+    )
+
+    assert candidates.ok and candidates.value is not None
+    assert [item.ref.name for item in candidates.value.candidates] == [
+        "main_result"
+    ]
+    assert not rejected.ok
+    assert rejected.issues[0].kind == "scope_export_not_public"
+
+
+def test_scope_commit_rechecks_active_content_head_after_child_commit(
+    tmp_path: Path,
+) -> None:
+    _create_tree(tmp_path)
+    component = _component_with_provider(tmp_path)
+    assert component.add_scope_export(
+        tmp_path,
+        scope_path="Main.Topic",
+        decl_node="Main.Topic.Core",
+        decl_name="main_result",
+    ).ok
+    _commit_content_head(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        head={"replacement": 1},
+    )
+
+    committed = make_runtime().node.commit_scope_contract(
+        tmp_path,
+        scope_path="Main.Topic",
+        summary="Parent must reject the replaced child boundary.",
+    )
+
+    assert not committed.ok
+    assert "scope_export_not_public" in {
+        issue.kind for issue in committed.issues
+    }
 
 
 def test_scope_export_draft_cannot_propagate_an_open_child_scope_boundary(
@@ -577,6 +752,11 @@ def test_scope_export_rejects_content_with_partial_task_target(tmp_path: Path) -
         task_completion_mode=RepoCompletionMode.GRAPH_DECLARED,
     )
     assert lowered.ok, lowered.issues
+    _commit_content_head(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        head={"main_result": 1},
+    )
     component = _component_with_provider(tmp_path)
 
     candidates = component.list_scope_export_candidates(
@@ -682,6 +862,11 @@ def test_add_scope_export_rejects_parse_child_and_readiness_failures(tmp_path: P
                 )
             ]
         }
+    )
+    _commit_content_head(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        head={"draft_result": 1},
     )
     unready = unready_component.add_scope_export(tmp_path, scope_path="Main.Topic", decl_node="Main.Topic.Core", decl_name="draft_result")
     assert not unready.ok
@@ -966,6 +1151,11 @@ def test_list_and_validate_scope_exports_report_invalid_export_view(tmp_path: Pa
 
 def test_validate_scope_exports_reports_duplicate_and_unready_provider_result(tmp_path: Path) -> None:
     _create_tree(tmp_path)
+    _commit_content_head(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        head={"draft_result": 1},
+    )
     foundation = make_runtime().foundation
     component = _component_with_public_decls(
         {
