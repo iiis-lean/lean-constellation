@@ -22,6 +22,7 @@ if TYPE_CHECKING:
 
 BlockLifecycleStatus = Literal["draft", "refs_done", "links_done", "completed"]
 SourceIndexStatus = Literal["draft", "updating", "committed"]
+_MAX_UNCOVERED_RANGES_PER_FILE = 100
 
 
 class SourceBlockRef(StrictModel):
@@ -165,6 +166,22 @@ class SourceIndexView(StrictModel):
     committed_at: str | None = None
     summary: str = "Source index draft."
 
+
+class SourceUncoveredRangeView(StrictModel):
+    start_line: int
+    end_line: int
+
+
+class SourceFileCoverageView(StrictModel):
+    path: str
+    line_count: int
+    covered_line_count: int
+    uncovered_line_count: int
+    uncovered_range_count: int
+    uncovered_ranges: list[SourceUncoveredRangeView] = Field(default_factory=list)
+    uncovered_ranges_truncated: bool = False
+
+
 class SourceIndexCoverageView(StrictModel):
     file_count: int
     surveyed_file_count: int
@@ -175,6 +192,8 @@ class SourceIndexCoverageView(StrictModel):
     link_count: int
     unfinished_block_ids: list[str] = Field(default_factory=list)
     pending_file_paths: list[str] = Field(default_factory=list)
+    uncovered_file_count: int = 0
+    file_coverage: list[SourceFileCoverageView] = Field(default_factory=list)
     summary: str
 
 
@@ -1437,6 +1456,11 @@ class SourceIndexComponent:
             for file in files
             if file.readable_text and (file.survey_status == "pending" or file.indexing_status == "pending")
         ]
+        file_coverage = [
+            self._source_file_coverage(index, file)
+            for file in sorted(files, key=lambda item: item.path)
+            if file.readable_text
+        ]
         coverage = SourceIndexCoverageView(
             file_count=len(files),
             surveyed_file_count=sum(1 for file in files if file.survey_status in {"surveyed", "skipped"}),
@@ -1447,9 +1471,66 @@ class SourceIndexComponent:
             link_count=len(index.links),
             unfinished_block_ids=unfinished,
             pending_file_paths=pending,
+            uncovered_file_count=sum(1 for item in file_coverage if item.uncovered_line_count > 0),
+            file_coverage=file_coverage,
             summary=f"{len(blocks) - len(unfinished)}/{len(blocks)} blocks completed; {len(files) - len(pending)}/{len(files)} files non-pending.",
         )
         return self.runtime.foundation.ok(coverage)
+
+    @staticmethod
+    def _source_file_coverage(index: SourceIndex, file: SourceFileIndex) -> SourceFileCoverageView:
+        ranges: list[tuple[int, int]] = []
+        for block in index.blocks.values():
+            if not block.active or block.block_id == index.root_block_id:
+                continue
+            for block_ref in block.refs:
+                source_ref = block_ref.material_ref.ref
+                if block_ref.material_ref.kind != "source" or not isinstance(source_ref, SourceRef):
+                    continue
+                start_line = source_ref.start_line
+                end_line = source_ref.end_line
+                if (
+                    source_ref.path != file.path
+                    or start_line is None
+                    or end_line is None
+                    or start_line < 1
+                    or start_line > end_line
+                    or end_line > file.line_count
+                ):
+                    continue
+                ranges.append((start_line, end_line))
+
+        merged: list[tuple[int, int]] = []
+        for start_line, end_line in sorted(ranges):
+            if merged and start_line <= merged[-1][1] + 1:
+                previous_start, previous_end = merged[-1]
+                merged[-1] = (previous_start, max(previous_end, end_line))
+            else:
+                merged.append((start_line, end_line))
+
+        uncovered: list[tuple[int, int]] = []
+        next_line = 1
+        for start_line, end_line in merged:
+            if next_line < start_line:
+                uncovered.append((next_line, start_line - 1))
+            next_line = end_line + 1
+        if next_line <= file.line_count:
+            uncovered.append((next_line, file.line_count))
+
+        covered_line_count = sum(end_line - start_line + 1 for start_line, end_line in merged)
+        materialized = uncovered[:_MAX_UNCOVERED_RANGES_PER_FILE]
+        return SourceFileCoverageView(
+            path=file.path,
+            line_count=file.line_count,
+            covered_line_count=covered_line_count,
+            uncovered_line_count=max(file.line_count - covered_line_count, 0),
+            uncovered_range_count=len(uncovered),
+            uncovered_ranges=[
+                SourceUncoveredRangeView(start_line=start_line, end_line=end_line)
+                for start_line, end_line in materialized
+            ],
+            uncovered_ranges_truncated=len(uncovered) > len(materialized),
+        )
 
     def submit_source_index_builder_round(
         self,

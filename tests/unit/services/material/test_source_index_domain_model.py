@@ -9,8 +9,15 @@ from pydantic import ValidationError
 from tests.unit_services_helpers import make_runtime
 
 from lean_constellation.domain.repo_run import SourceScope
+from lean_constellation.domain.refs import MaterialRef, SourceRef
 from lean_constellation.services.material.source_corpus import SourceCorpusManifestView
-from lean_constellation.services.material.source_index import SourceIndexView
+from lean_constellation.services.material.source_index import (
+    SourceBlock,
+    SourceBlockRef,
+    SourceFileIndex,
+    SourceIndex,
+    SourceIndexView,
+)
 
 
 def _prepare_source(repo_root: Path) -> None:
@@ -145,3 +152,113 @@ def test_source_index_persists_domain_model_and_returns_view(tmp_path: Path) -> 
 
     limited = service.list_source_blocks(tmp_path, limit=0)
     assert not limited.ok
+
+
+def test_source_index_coverage_reports_compact_uncovered_ranges() -> None:
+    runtime = make_runtime()
+
+    def source_ref(ref_id: str, path: str, start_line: int, end_line: int) -> SourceBlockRef:
+        return SourceBlockRef(
+            ref_id=ref_id,
+            material_ref=MaterialRef(
+                kind="source",
+                ref=SourceRef(path=path, start_line=start_line, end_line=end_line),
+            ),
+            role="primary",
+        )
+
+    index = SourceIndex(
+        files={
+            "chapter.md": SourceFileIndex(path="chapter.md", line_count=10, readable_text=True),
+            "notes.md": SourceFileIndex(path="notes.md", line_count=3, readable_text=True),
+            "artifact.bin": SourceFileIndex(path="artifact.bin", line_count=4, readable_text=False),
+        },
+        blocks={
+            "active": SourceBlock(
+                block_id="active",
+                kind="section",
+                title="Active",
+                summary="Active refs.",
+                refs=[
+                    source_ref("ref_1", "chapter.md", 2, 4),
+                    source_ref("ref_2", "chapter.md", 4, 5),
+                    source_ref("ref_3", "chapter.md", 7, 7),
+                    source_ref("ref_invalid", "chapter.md", 11, 12),
+                ],
+            ),
+            "inactive": SourceBlock(
+                block_id="inactive",
+                kind="section",
+                title="Inactive",
+                summary="Inactive refs do not count.",
+                refs=[source_ref("ref_inactive", "chapter.md", 8, 10)],
+                active=False,
+            ),
+        },
+    )
+
+    coverage = runtime.material.source_index._source_index_coverage(index)
+
+    assert coverage.ok and coverage.value is not None
+    assert coverage.value.uncovered_file_count == 2
+    assert [item.path for item in coverage.value.file_coverage] == ["chapter.md", "notes.md"]
+    chapter = coverage.value.file_coverage[0]
+    assert chapter.covered_line_count == 5
+    assert chapter.uncovered_line_count == 5
+    assert chapter.uncovered_range_count == 3
+    assert [(item.start_line, item.end_line) for item in chapter.uncovered_ranges] == [
+        (1, 1),
+        (6, 6),
+        (8, 10),
+    ]
+    notes = coverage.value.file_coverage[1]
+    assert notes.covered_line_count == 0
+    assert notes.uncovered_line_count == 3
+    assert [(item.start_line, item.end_line) for item in notes.uncovered_ranges] == [(1, 3)]
+
+    scoped = runtime.material.source_index._source_index_coverage(index, scope=["notes.md"])
+    assert scoped.ok and scoped.value is not None
+    assert [item.path for item in scoped.value.file_coverage] == ["notes.md"]
+
+
+def test_source_index_coverage_truncates_only_materialized_gap_ranges() -> None:
+    runtime = make_runtime()
+    refs = [
+        SourceBlockRef(
+            ref_id=f"ref_{line}",
+            material_ref=MaterialRef(
+                kind="source",
+                ref=SourceRef(path="fragmented.md", start_line=line, end_line=line),
+            ),
+            role="primary",
+        )
+        for line in range(1, 202, 2)
+    ]
+    index = SourceIndex(
+        files={
+            "fragmented.md": SourceFileIndex(
+                path="fragmented.md",
+                line_count=202,
+                readable_text=True,
+            )
+        },
+        blocks={
+            "active": SourceBlock(
+                block_id="active",
+                kind="section",
+                title="Fragmented",
+                summary="Many small refs.",
+                refs=refs,
+            )
+        },
+    )
+
+    coverage = runtime.material.source_index._source_index_coverage(index)
+
+    assert coverage.ok and coverage.value is not None
+    item = coverage.value.file_coverage[0]
+    assert item.covered_line_count == 101
+    assert item.uncovered_line_count == 101
+    assert item.uncovered_range_count == 101
+    assert len(item.uncovered_ranges) == 100
+    assert item.uncovered_ranges_truncated

@@ -305,6 +305,7 @@ def test_source_index_instructions_match_builder_reviewer_boundaries() -> None:
     assert "set_source_index_overview" not in reviewer
     assert "get_source_index" in reviewer
     assert "get_source_index_coverage" in reviewer
+    assert "uncovered source ranges" in reviewer
     assert "validate_source_index" in reviewer
     assert "validate_source_range" in reviewer
     assert "preview_source_ref" in reviewer
