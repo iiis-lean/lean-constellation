@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 from agent_runtime_kit.flow.models import BaseSubmission, FlowStatus
 
+from lean_constellation.domain.interface import DeclKind
 from lean_constellation.domain.preparation import (
     AdapterProviderRoute,
     AutoProviderRoute,
@@ -1362,7 +1363,8 @@ def test_submit_repo_requirement_schema_documents_business_field_contracts() -> 
     assert "independent repository dependency" in (fields["reason"].description or "")
     assert "Minimal stable public API" in (fields["interfaces"].description or "")
     assert "public interface identity" in (interface_fields["name"].description or "")
-    assert "supported DeclKind" in (interface_fields["kind"].description or "")
+    assert interface_fields["kind"].annotation is DeclKind
+    assert "public declaration kind" in (interface_fields["kind"].description or "")
     assert "informal" in (interface_fields["statement_hint"].description or "")
     assert "preserve and satisfy verbatim" in (interface_fields["expected_statement_lean_code"].description or "")
     assert "affected_node_paths" not in fields
@@ -1509,7 +1511,7 @@ def test_submit_repo_requirement_rejects_invalid_or_duplicate_interfaces(tmp_pat
     cases = [
         (
             [{"name": "main_result", "kind": "not_a_decl_kind", "summary": "Main result."}],
-            "requirement_interface_kind_invalid",
+            "tool_arguments_invalid",
         ),
         (
             [
@@ -1546,6 +1548,8 @@ def test_submit_repo_requirement_rejects_invalid_or_duplicate_interfaces(tmp_pat
 
         assert result.ok and result.value is not None and result.value.ok is False
         assert result.value.issues[0].kind == expected_issue
+        if expected_issue == "tool_arguments_invalid":
+            assert result.value.issues[0].field == "interfaces[0].kind"
         assert gateway.accepted == []
 
 

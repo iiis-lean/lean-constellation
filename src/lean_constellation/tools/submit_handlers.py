@@ -18,7 +18,6 @@ from lean_constellation.flows.common.flow_requests import (
     repo_scope_id,
 )
 from lean_constellation.flows.common.submissions import new_submission_id, submission_agent_id
-from lean_constellation.domain.interface import DeclKind
 from lean_constellation.domain.preparation import (
     AdapterProviderRoute,
     AutoProviderRoute,
@@ -1156,10 +1155,6 @@ def _submit_repo_requirement(
     interfaces = []
     interface_names: set[str] = set()
     for item in args.interfaces:
-        try:
-            kind = DeclKind(item.kind)
-        except ValueError as exc:
-            return runtime.foundation.fail(runtime.foundation.issue("requirement_interface_kind_invalid", str(exc), field="interfaces.kind"))
         if not item.name.strip() or not item.summary.strip():
             return runtime.foundation.fail(
                 runtime.foundation.issue(
@@ -1182,7 +1177,7 @@ def _submit_repo_requirement(
         interfaces.append(
             {
                 "name": interface_name,
-                "kind": kind.value,
+                "kind": item.kind.value,
                 "summary": item.summary.strip(),
                 **({"statement_hint": item.statement_hint.strip()} if item.statement_hint and item.statement_hint.strip() else {}),
                 **(

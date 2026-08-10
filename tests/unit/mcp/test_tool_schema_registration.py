@@ -92,6 +92,30 @@ def test_nested_tool_input_schemas_are_materialized_for_all_discovery_surfaces()
     }
 
 
+def test_requirement_interface_kind_is_a_self_contained_decl_kind_enum() -> None:
+    runtime = make_mcp_runtime()
+
+    expected = [
+        "definition",
+        "theorem",
+        "lemma",
+        "instance",
+        "structure",
+        "class",
+        "other",
+    ]
+    for tool_name in (
+        "submit_repo_requirement",
+        "submit_adapter_repo_requirement",
+        "submit_native_repo_requirement",
+    ):
+        tool = _tool(runtime, "native_repo_coordinator_submit", tool_name)
+        _assert_self_contained(tool.input_schema)
+        interface = tool.input_schema["properties"]["interfaces"]["items"]
+        assert interface["additionalProperties"] is False
+        assert interface["properties"]["kind"]["enum"] == expected
+
+
 def test_every_tool_in_repo_discovery_agent_views_has_self_contained_schema() -> None:
     runtime = make_mcp_runtime()
     reports = build_agent_surface_reports()
