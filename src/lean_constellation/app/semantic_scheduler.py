@@ -130,11 +130,15 @@ def _build_logic_policy(runtime, request: RuntimeSemanticAdvanceInput) -> Schedu
     )
 
     def created_agent_steps() -> list[str]:
-        return [
-            step_id
-            for step_id in step_service.list_created_steps(scope_id=scope_id)
-            if isinstance(step_service.store.get_step(step_id), AgentStep)
-        ]
+        blocking: list[str] = []
+        for step_id in step_service.list_created_steps(scope_id=scope_id):
+            step = step_service.store.get_step(step_id)
+            if not isinstance(step, AgentStep):
+                continue
+            if _is_reopened_child_callback(runtime, step):
+                continue
+            blocking.append(step_id)
+        return blocking
 
     def decide(_scheduler) -> SchedulerRunDecision:  # noqa: ANN001
         agent_ids = created_agent_steps()
@@ -345,6 +349,64 @@ def _content_task(runtime, flow_id: str | None):  # noqa: ANN001, ANN202
     if flow.flow_type != "content_node_task":
         raise SemanticAdvancePolicyError(f"target flow is not content_node_task: {flow_id}")
     return flow
+
+
+def _is_reopened_child_callback(runtime, step: AgentStep) -> bool:  # noqa: ANN001
+    """Return whether a created parent callback is stale while its child is reopened.
+
+    A failed child AgentStep can be restarted after its parent has already
+    consumed the failed child result and created its callback AgentStep.  The
+    callback is durable truth and must remain available, but it cannot block
+    the reopened child from progressing.  Once the child is terminal again,
+    refresh the parent's cached callback outcome from the child and let the
+    callback become a normal semantic boundary.
+    """
+
+    if step.step_type != "content_plan_agent_step":
+        return False
+    state = step.state
+    if getattr(state, "prompt_mode", None) != "callback":
+        return False
+    flow_service = _flow_service(runtime)
+    parent = flow_service.get_flow(step.flow_id)
+    if parent.flow_type != "content_node_task" or not isinstance(parent.state, ContentNodeTaskState):
+        return False
+    parent_state = parent.state
+    child_id = parent_state.completed_child_flow_id
+    dispatch_step_id = parent_state.waiting_dispatch_step_id
+    if (
+        parent_state.position.phase != "callback_plan_agent"
+        or not child_id
+        or not dispatch_step_id
+        or getattr(state, "callback_dispatch_step_id", None) != dispatch_step_id
+    ):
+        return False
+    child = flow_service.get_flow(child_id)
+    if child.parent_flow_id != parent.flow_id or child.parent_dispatch_step_id != dispatch_step_id:
+        return False
+    if child.status not in {FlowStatus.COMPLETED, FlowStatus.FAILED}:
+        return True
+
+    outcome = "failed" if child.status is FlowStatus.FAILED else "completed"
+    summary = None
+    if child.status is FlowStatus.FAILED and child.error is not None:
+        summary = child.error.message
+    elif child.result is not None:
+        summary = child.result.summary or getattr(child.result, "outcome", None)
+
+    if parent_state.completed_child_outcome != outcome or (
+        summary is not None and parent_state.latest_callback_summary != summary
+    ):
+        def patch(parent_flow) -> None:  # noqa: ANN001
+            current = parent_flow.state
+            if not isinstance(current, ContentNodeTaskState):
+                return
+            current.completed_child_outcome = outcome
+            if summary is not None:
+                current.latest_callback_summary = summary
+
+        flow_service.store.update_flow_record(parent.flow_id, patch)
+    return False
 
 
 def _content_state(flow) -> ContentNodeTaskState:  # noqa: ANN001

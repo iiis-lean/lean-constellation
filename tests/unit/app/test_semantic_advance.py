@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from agent_runtime_kit.agent.provider_contracts import ProviderHomeSpec
@@ -14,7 +15,9 @@ from lean_constellation.app import (
     StartFlowInput,
     create_app_runtime_services,
 )
-from lean_constellation.flows.common.agent_steps import RepoFormatDiscoveryAgentStep
+from lean_constellation.app.semantic_scheduler import build_semantic_run_policy
+from lean_constellation.flows.common.agent_steps import ContentPlanAgentStep, RepoFormatDiscoveryAgentStep
+from lean_constellation.flows.content_node_task.flows import ContentNodeTaskState
 
 
 def _start_coordinator(admin: LeanAdminApi, repo_root: Path) -> str:
@@ -70,6 +73,98 @@ def test_production_step_logic_runs_to_agent_boundary_and_auto_pauses(tmp_path: 
     assert step.status is StepStatus.CREATED
     assert tick.run_control is not None
     assert tick.run_control.pause_reason == f"agent_step_created:{step.step_id}"
+
+
+def test_step_logic_does_not_let_reopened_child_callback_block_child_progress() -> None:
+    scope_id = "repo:Repo:node:Main.Core"
+    parent_flow_id = "parent_flow"
+    child_flow_id = "reopened_child"
+    dispatch_step_id = "dispatch_child"
+    callback_step = ContentPlanAgentStep(
+        step_id="stale_callback",
+        flow_id=parent_flow_id,
+        scope_id=scope_id,
+        state=AgentStepState(
+            agent_role="content_plan",
+            agent_type="ContentPlanAgent",
+            prompt_mode="callback",
+            callback_dispatch_step_id=dispatch_step_id,
+        ),
+    )
+    parent = SimpleNamespace(
+        flow_id=parent_flow_id,
+        flow_type="content_node_task",
+        scope_id=scope_id,
+        status=FlowStatus.RUNNING,
+        state=ContentNodeTaskState(
+            position={"phase": "callback_plan_agent", "round_index": 1},
+            waiting_dispatch_step_id=dispatch_step_id,
+            waiting_child_kind="decl_graph_round",
+            completed_child_flow_id=child_flow_id,
+            completed_child_outcome="failed",
+            progress_checkpoint_repo_scope_captured=False,
+        ),
+    )
+    child = SimpleNamespace(
+        flow_id=child_flow_id,
+        flow_type="decl_graph_round",
+        scope_id=scope_id,
+        status=FlowStatus.RUNNING,
+        parent_flow_id=parent_flow_id,
+        parent_dispatch_step_id=dispatch_step_id,
+        result=None,
+        error=None,
+    )
+
+    class Store:
+        def get_step(self, step_id: str):
+            assert step_id == callback_step.step_id
+            return callback_step
+
+        def update_flow_record(self, flow_id: str, mutator) -> None:  # noqa: ANN001
+            assert flow_id == parent_flow_id
+            mutator(parent)
+
+    store = Store()
+
+    class FlowService:
+        def __init__(self) -> None:
+            self.store = store
+
+        def list_non_terminal_flows(self, *, scope_id: str):
+            assert scope_id == "repo:Repo:node:Main.Core"
+            return [parent, child]
+
+        def get_flow(self, flow_id: str):
+            return {parent_flow_id: parent, child_flow_id: child}[flow_id]
+
+    class StepService:
+        def __init__(self) -> None:
+            self.store = store
+
+        def list_created_steps(self, *, scope_id: str):
+            assert scope_id == "repo:Repo:node:Main.Core"
+            return [callback_step.step_id]
+
+    runtime = SimpleNamespace(
+        ark=SimpleNamespace(flow_service=FlowService(), step_service=StepService())
+    )
+    policy = build_semantic_run_policy(
+        runtime,
+        RuntimeSemanticAdvanceInput(granularity="step", action="logic", scope_id=scope_id),
+    )
+
+    assert policy.allow_flow_advance(child) is True
+    assert policy.decide(None).action == "continue"
+
+    child.status = FlowStatus.COMPLETED
+    child.result = SimpleNamespace(summary="Reopened child completed.", outcome="completed")
+    decision = policy.decide(None)
+
+    assert decision.action == "pause"
+    assert decision.reason == f"agent_step_created:{callback_step.step_id}"
+    assert parent.state.completed_child_outcome == "completed"
+    assert parent.state.latest_callback_summary == "Reopened child completed."
 
 
 def test_production_step_logic_reports_flow_terminal_before_idle_fallback(tmp_path: Path) -> None:
