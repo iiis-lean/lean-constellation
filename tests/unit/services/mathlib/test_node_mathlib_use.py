@@ -368,7 +368,7 @@ def test_decl_use_invalid_input_and_missing_remove(tmp_path: Path) -> None:
     assert missing.issues[0].kind == "mathlib_decl_use_missing"
 
 
-def test_validate_node_mathlib_uses_reports_import_hint_and_invalid_entries(tmp_path: Path) -> None:
+def test_validate_node_mathlib_uses_accepts_decl_implicit_import_and_invalid_entries(tmp_path: Path) -> None:
     service = make_runtime().mathlib
     _create_content_node(tmp_path, service)
     assert service.upsert_mathlib_module_entry(tmp_path, module="Mathlib.Data.Finset.Basic").ok
@@ -393,7 +393,7 @@ def test_validate_node_mathlib_uses_reports_import_hint_and_invalid_entries(tmp_
     assert checked.ok
     assert checked.value is not None
     assert checked.value.passed is True
-    assert [issue.kind for issue in checked.value.issues] == ["mathlib_decl_module_not_imported"]
+    assert checked.value.issues == []
 
     foundation = make_runtime().foundation
     contract_path = foundation.node_contract_path(FoundationContext(repo_root=tmp_path), "Main.Topic.Core", 1)
@@ -408,6 +408,48 @@ def test_validate_node_mathlib_uses_reports_import_hint_and_invalid_entries(tmp_
     assert invalid.value is not None
     assert invalid.value.passed is False
     assert invalid.value.issues[0].kind == "mathlib_module_name_invalid"
+
+
+def test_validate_node_mathlib_uses_rejects_module_drift_and_warns_on_kind_drift(tmp_path: Path) -> None:
+    service = make_runtime().mathlib
+    _create_content_node(tmp_path, service)
+    assert service.upsert_mathlib_decl_entry(
+        tmp_path,
+        name="Finset.sum_congr",
+        module="Mathlib.Data.Finset.Basic",
+        kind="theorem",
+        signature="Finset.sum_congr : ...",
+        summary="Congruence for finite sums.",
+    ).ok
+    assert service.add_mathlib_decl_use(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        decl_name="Finset.sum_congr",
+        reason=None,
+        actor="worker",
+    ).ok
+
+    assert service.upsert_mathlib_decl_entry(
+        tmp_path,
+        name="Finset.sum_congr",
+        module="Mathlib.Data.Finset.Advanced",
+        kind="theorem",
+    ).ok
+    module_drift = service.validate_node_mathlib_uses(tmp_path, node_path="Main.Topic.Core")
+    assert module_drift.ok and module_drift.value is not None
+    assert module_drift.value.passed is False
+    assert [issue.kind for issue in module_drift.value.issues] == ["mathlib_decl_module_mismatch"]
+
+    assert service.upsert_mathlib_decl_entry(
+        tmp_path,
+        name="Finset.sum_congr",
+        module="Mathlib.Data.Finset.Basic",
+        kind="lemma",
+    ).ok
+    kind_drift = service.validate_node_mathlib_uses(tmp_path, node_path="Main.Topic.Core")
+    assert kind_drift.ok and kind_drift.value is not None
+    assert kind_drift.value.passed is True
+    assert [issue.kind for issue in kind_drift.value.issues] == ["mathlib_decl_kind_mismatch"]
 
 
 def test_missing_decl_index_is_rejected_on_add_and_by_validation_gate(tmp_path: Path) -> None:

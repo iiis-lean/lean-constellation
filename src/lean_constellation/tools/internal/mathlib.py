@@ -425,7 +425,11 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="validate_current_node_mathlib_hints",
-            description="Validate that current-node Mathlib hints refer to entries recorded in the repo-level MathlibIndex.",
+            description=(
+                "Validate current-node Mathlib hints against repo-level MathlibIndex truth. Declaration hints contribute "
+                "their stored module import implicitly; validation rejects a defining-module mismatch and reports cached "
+                "kind drift as a warning."
+            ),
             args_model=NoArgs,
             capability=ToolCapability.READ,
             result_view="gate_report",

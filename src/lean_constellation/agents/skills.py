@@ -1267,10 +1267,10 @@ Either readiness remains unresolved and the Coordinator returns to its next-acti
             "current-node-mathlib-hint-maintenance",
             "Use this skill after relevant Mathlib entries are known or recorded in MathlibIndex.",
             (
-                "Understand whether a module hint or declaration hint is appropriate.",
+                "Use a declaration hint for a verified reusable declaration; its stored defining module is imported automatically. Use a module hint for broader module-level context that is not already represented by a declaration hint, rather than duplicating a module solely to enable that declaration.",
                 "Add already-verified module and declaration hints in one `add_current_mathlib_hints` batch, then reread current hints once.",
                 "Remove stale hints conservatively with `remove_current_mathlib_module_hint` or `remove_current_mathlib_decl_hint`.",
-                "Validate current hints with `validate_current_node_mathlib_hints`.",
+                "Validate current hints with `validate_current_node_mathlib_hints`. A defining-module mismatch is stale identity evidence and must be repaired by removing and re-adding the declaration hint from current MathlibIndex truth; a cached-kind mismatch is a review warning rather than a hard gate.",
             ),
             (
                 "Do not add broad imports only because they compile.",

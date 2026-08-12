@@ -642,7 +642,6 @@ class NodeMathlibUseComponent:
                 )
             )
 
-        module_set = set(module_names)
         for item in modules.value:
             module_entry = self.mathlib_index.get_mathlib_module_entry(repo_root, module=item.module)
             if not module_entry.ok:
@@ -674,16 +673,29 @@ class NodeMathlibUseComponent:
                     continue
                 issues.extend(decl_entry.issues)
                 continue
-            module = decl_entry.value.module
-            if module not in module_set:
+            if item.module != decl_entry.value.module:
+                issues.append(
+                    self.runtime.foundation.issue(
+                        "mathlib_decl_module_mismatch",
+                        "The declaration hint's stored defining module no longer matches MathlibIndex.",
+                        object_ref=item.name,
+                        field="mathlib_decls.module",
+                        current=item.module or "<missing>",
+                        expected=decl_entry.value.module,
+                        suggested_action="Remove the stale declaration hint and add it again from current MathlibIndex truth.",
+                    )
+                )
+            if item.kind != decl_entry.value.kind:
                 warnings.append(
                     self.runtime.foundation.issue(
-                        "mathlib_decl_module_not_imported",
-                        f"Mathlib declaration {item.name} is indexed in module {module}, but the node does not import that module.",
+                        "mathlib_decl_kind_mismatch",
+                        "The declaration hint's cached kind differs from current MathlibIndex metadata.",
                         severity=IssueSeverity.WARNING,
-                        object_ref=node_path,
-                        field="mathlib_decls",
-                        suggested_action=f"Add Mathlib module use {module}.",
+                        object_ref=item.name,
+                        field="mathlib_decls.kind",
+                        current=item.kind or "<missing>",
+                        expected=decl_entry.value.kind or "<missing>",
+                        suggested_action="Review the current MathlibIndex entry and refresh the hint when appropriate.",
                     )
                 )
 
