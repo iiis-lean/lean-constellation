@@ -118,6 +118,7 @@ def test_scope_export_anchor_remains_valid_after_proof_only_progression(tmp_path
         tmp_path,
         node_path="Main",
         actor_role="coordinator",
+        stable_boundary=True,
     )
     assert public.ok and public.value is not None
     assert public.value[0].ref.revision == 1

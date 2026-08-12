@@ -297,6 +297,7 @@ def _validate_proof_dep(
                 repo_root,
                 node_path=dep_node,
                 actor_role="worker",
+                stable_boundary=True,
                 current_node_path=node_path,
             )
             if visibility_cache is not None:

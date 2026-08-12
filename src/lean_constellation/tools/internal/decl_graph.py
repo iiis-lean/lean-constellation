@@ -724,6 +724,7 @@ def _list_current_node_public_decls(runtime, ctx, args: NoArgs):
         ctx.repo_root,
         node_path=_node(ctx),
         actor_role=_actor_role(ctx),
+        stable_boundary=False,
         current_node_path=_maybe_node(ctx),
     )
     if not result.ok or result.value is None:
@@ -739,6 +740,7 @@ def _list_node_public_decls(runtime, ctx, args: NodePublicDeclListArgs):
         ctx.repo_root,
         node_path=args.node_path,
         actor_role=_actor_role(ctx),
+        stable_boundary=True,
         current_node_path=_maybe_node(ctx),
     )
     if not result.ok or result.value is None:
@@ -767,14 +769,21 @@ def _list_repo_public_decls(runtime, ctx, args: RepoPublicDeclListArgs):
 
 def _inspect_current_node_public_decl(runtime, ctx, args: DeclInspectArgs):
     node_args = NodePublicDeclInspectArgs(node_path=_node(ctx), **args.model_dump())
-    return _inspect_node_public_decl(runtime, ctx, node_args)
+    return _inspect_node_public_decl(runtime, ctx, node_args, stable_boundary=False)
 
 
-def _inspect_node_public_decl(runtime, ctx, args: NodePublicDeclInspectArgs):
+def _inspect_node_public_decl(
+    runtime,
+    ctx,
+    args: NodePublicDeclInspectArgs,
+    *,
+    stable_boundary: bool = True,
+):
     public = runtime.node.public_decl_access.list_node_public_decls(
         ctx.repo_root,
         node_path=args.node_path,
         actor_role=_actor_role(ctx),
+        stable_boundary=stable_boundary,
         current_node_path=_maybe_node(ctx),
     )
     if not public.ok or public.value is None:
@@ -893,6 +902,7 @@ def _read_visible_decl_lean_file(runtime, ctx, args: VisibleDeclLeanFileArgs):
             ctx.repo_root,
             node_path=args.node_path,
             actor_role=role,
+            stable_boundary=True,
             current_node_path=_maybe_node(ctx),
         )
         if not public.ok or public.value is None:
@@ -1206,7 +1216,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="revise_current_decl_visibility",
-            description="Compare-and-swap one current Content declaration between public and private visibility with deterministic boundary gates and an audit reason; interfaces and exports are never removed automatically.",
+            description="Compare-and-swap one current Content declaration between public and private using its exact current committed Decl revision and an audit reason; this changes no Decl revision or Content contract version, and interfaces or exports are never removed automatically.",
             args_model=CurrentDeclVisibilityRevisionArgs,
             capability=ToolCapability.WRITE,
             result_view="decl_visibility_revision_receipt",
@@ -1216,7 +1226,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="promote_current_node_public_statement_closure",
-            description="Atomically promote ready same-node formal Statement dependencies whose exact revisions are anchored by the active committed Content contract.",
+            description="Atomically promote ready same-node formal Statement dependencies at their exact current committed Decl revisions without creating or committing a Content contract version.",
             args_model=PublicStatementClosureArgs,
             capability=ToolCapability.WRITE,
             result_view="public_statement_promotion_receipt",
@@ -1248,7 +1258,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="revise_content_decl_visibility",
-            description="Compare-and-swap one selected current-repository Content declaration between public and private visibility with deterministic boundary gates and an audit reason; interfaces and exports are never removed automatically.",
+            description="Compare-and-swap one selected current-repository Content declaration between public and private using its exact current committed Decl revision and an audit reason; this changes no Decl revision or Content contract version, and interfaces or exports are never removed automatically.",
             args_model=NodeDeclVisibilityRevisionArgs,
             capability=ToolCapability.WRITE,
             result_view="decl_visibility_revision_receipt",
@@ -1259,7 +1269,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="promote_public_statement_closure",
-            description="Atomically repair a committed Content/Scope formal Statement boundary; intermediate Scopes require committed ownership without open edits, while the requested target remains open.",
+            description="Atomically repair formal Statement visibility: Content targets use exact current committed Decl revisions; Scope targets use stable committed child boundaries, require an existing caller-owned open target, and create or commit only fresh intermediate Scope revisions.",
             args_model=PublicStatementBoundaryArgs,
             capability=ToolCapability.WRITE,
             result_view="public_statement_promotion_receipt",
@@ -1381,7 +1391,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="list_visible_nodes",
-            description="List visible current-repo nodes in the current context with each node's complete compact public declaration list.",
+            description="List current-repo nodes visible in the current context: repo-wide planning reads live node truth, while node-local planning reads its current node live and provider nodes through stable committed boundaries.",
             args_model=NoArgs,
             capability=ToolCapability.READ,
             result_view="visible_nodes",
@@ -1423,7 +1433,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="list_node_public_decls",
-            description="List compact public declarations exposed by a visible current-repo node.",
+            description="List a visible current-repo node's stable consumable public API from its active committed Content head or Scope exports; use current-node or DeclGraph tools for live planning truth.",
             args_model=NodePublicDeclListArgs,
             capability=ToolCapability.READ,
             result_view="public_decls",

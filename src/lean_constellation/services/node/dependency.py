@@ -148,7 +148,10 @@ class DependencyComponent:
                 return self.runtime.foundation.fail(identity.value.issues)
             exported_decl_refs = self._public_decl_refs(contract.value.contract)
             if node.kind == NodeKind.CONTENT and self.public_decl_provider is not None:
-                public = self.public_decl_provider.list_content_public_decls(repo_root, node_path=node.path)
+                public = self.runtime.node.export.list_committed_content_public_decls(
+                    repo_root,
+                    node_path=node.path,
+                )
                 if not public.ok or public.value is None:
                     return self.runtime.foundation.fail(public.issues)
                 exported_decl_refs = self._merge_decl_refs(
@@ -464,7 +467,7 @@ class DependencyComponent:
                 continue
             target_public_refs = self._public_decl_refs(target_contract.value.contract)
             if target_node.value.kind == NodeKind.CONTENT and self.public_decl_provider is not None:
-                public = self.public_decl_provider.list_content_public_decls(
+                public = self.runtime.node.export.list_committed_content_public_decls(
                     repo_root,
                     node_path=dep.target.node,
                 )

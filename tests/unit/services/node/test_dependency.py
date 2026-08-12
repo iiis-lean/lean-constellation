@@ -2,26 +2,29 @@ import json
 
 from pathlib import Path
 
-from tests.unit_services_helpers import make_runtime, publish_native_provider_release
+from tests.unit_services_helpers import (
+    initialize_native_test_repo,
+    lean_check_payload,
+    make_runtime,
+    publish_native_provider_release,
+)
 
 from lean_constellation.domain.refs import DeclRef
 from lean_constellation.domain.refs import NodeRef
 from lean_constellation.domain.repo import RepoCompletionMode
 from lean_constellation.services.foundation import FoundationContext, WriteMode
-from lean_constellation.services import LeanProviderOverrides
+from lean_constellation.services.decl_graph import DeclState
+from lean_constellation.services.decl_graph.models import (
+    Decl,
+    DeclFormalSection,
+    DeclRevision,
+    DeclRevisionStatus,
+    DeclStatement,
+)
 from lean_constellation.services.foundation import FoundationService, ServiceResult
-from lean_constellation.services.node import ContractVersionStatus, DeclPublicView, NodeContractSnapshot
+from lean_constellation.services.node import ContractVersionStatus, NodeContractSnapshot
 from lean_constellation.services.node.contract_fields import NodeDep, NodeDepActor
 from lean_constellation.services.node.dependency import DependencyComponent
-
-
-class FakePublicDeclProvider:
-    def __init__(self, foundation: FoundationService, decls: dict[str, list[DeclPublicView]]) -> None:
-        self.foundation = foundation
-        self.decls = decls
-
-    def list_content_public_decls(self, repo_root: Path, *, node_path: str) -> ServiceResult[list[DeclPublicView]]:
-        return self.foundation.ok(self.decls.get(node_path, []))
 
 
 class RejectingInterfaceIdentityProvider:
@@ -110,6 +113,131 @@ def _prelude_text(tmp_path: Path, node_path: str) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def _seed_committed_content_boundary(
+    repo_root: Path,
+    *,
+    node_path: str,
+    decl_name: str,
+) -> None:
+    runtime = make_runtime()
+    assert runtime.decl_graph.ensure_decl_graph(
+        repo_root,
+        node_path=node_path,
+    ).ok
+    decl = Decl(
+        name=decl_name,
+        node_path=node_path,
+        kind="definition",
+        public=True,
+        current_revision=1,
+        revision_ids=[1],
+        module=f"{node_path}.Defs.{decl_name}",
+        summary="Stable provider result.",
+    )
+    revision = DeclRevision(
+        revision=1,
+        lean_decl_name=decl_name,
+        state=DeclState.DECLARED,
+        status=DeclRevisionStatus.COMMITTED,
+        statement=DeclStatement(
+            formal=DeclFormalSection(
+                code=f"def {decl_name} : Nat := 1",
+                check=lean_check_payload(),
+            )
+        ),
+    )
+    assert runtime.foundation.store.write_json_atomic(
+        runtime.decl_graph.graph_store.decl_record_path(
+            repo_root,
+            node_path=node_path,
+            decl_name=decl_name,
+        ),
+        decl,
+    ).ok
+    assert runtime.foundation.store.write_json_atomic(
+        runtime.decl_graph.graph_store.revision_path(
+            repo_root,
+            node_path=node_path,
+            decl_name=decl_name,
+            revision=1,
+        ),
+        revision,
+    ).ok
+    assert runtime.decl_graph.graph_store.rebuild_index(
+        repo_root,
+        node_path=node_path,
+    ).ok
+    committed = runtime.node.contract._commit_content_contract_with_head(
+        repo_root,
+        node_path=node_path,
+        summary="Commit provider revision one.",
+        decl_graph_head={decl_name: 1},
+    )
+    assert committed.ok, committed.issues
+
+
+def _advance_content_candidate(
+    repo_root: Path,
+    *,
+    node_path: str,
+    decl_name: str,
+) -> None:
+    runtime = make_runtime()
+    decl = runtime.decl_graph.get_decl(
+        repo_root,
+        node_path=node_path,
+        name=decl_name,
+    )
+    assert decl.ok and decl.value is not None
+    revision = DeclRevision(
+        revision=2,
+        lean_decl_name=decl_name,
+        state=DeclState.DECLARED,
+        status=DeclRevisionStatus.COMMITTED,
+        statement=DeclStatement(
+            formal=DeclFormalSection(
+                code=f"def {decl_name} : Nat := 2",
+                check=lean_check_payload(),
+            )
+        ),
+    )
+    assert runtime.foundation.store.write_json_atomic(
+        runtime.decl_graph.graph_store.revision_path(
+            repo_root,
+            node_path=node_path,
+            decl_name=decl_name,
+            revision=2,
+        ),
+        revision,
+    ).ok
+    decl.value.current_revision = 2
+    decl.value.revision_ids.append(2)
+    assert runtime.foundation.store.write_json_atomic(
+        runtime.decl_graph.graph_store.decl_record_path(
+            repo_root,
+            node_path=node_path,
+            decl_name=decl_name,
+        ),
+        decl.value,
+        mode=WriteMode.UPDATE_EXISTING,
+    ).ok
+    opened = runtime.node.contract.ensure_open_contract(
+        repo_root,
+        node_path=node_path,
+    )
+    assert opened.ok and opened.value is not None
+    opened.value.contract.decl_graph_head[decl_name] = 2
+    assert runtime.foundation.store.write_json_atomic(
+        runtime.node.node_tree.node_store.contract_path(
+            repo_root,
+            node_id=opened.value.node_id,
+            version=opened.value.version,
+        ),
+        opened.value.contract,
+        mode=WriteMode.UPDATE_EXISTING,
+    ).ok
+
+
 def test_list_visible_node_boundaries_only_shows_committed_boundaries(tmp_path: Path) -> None:
     _create_base_tree(tmp_path)
     _commit_provider_scope(tmp_path)
@@ -143,27 +271,15 @@ def test_visible_boundary_fails_closed_on_invalid_interface_identity(tmp_path: P
 
 
 def test_visible_content_boundary_includes_ready_public_declarations(tmp_path: Path) -> None:
+    initialize_native_test_repo(tmp_path)
     _create_base_tree(tmp_path)
-    base = make_runtime()
     public_ref = DeclRef(repo=None, node="Main.Topic.A", name="content_helper", revision=1)
-    runtime = make_runtime(
-        providers=LeanProviderOverrides(
-            content_public_decl_provider=FakePublicDeclProvider(
-                base.foundation,
-                {
-                    "Main.Topic.A": [
-                        DeclPublicView(ref=public_ref, kind="definition", ready=True, stale=False)
-                    ]
-                },
-            )
-        )
-    )
-    committed = runtime.node.commit_content_contract(
+    _seed_committed_content_boundary(
         tmp_path,
         node_path="Main.Topic.A",
-        summary="Expose the ready content declaration.",
+        decl_name="content_helper",
     )
-    assert committed.ok, committed.issues
+    runtime = make_runtime()
 
     visible = runtime.node.dependency.list_visible_node_boundaries(
         tmp_path,
@@ -189,6 +305,58 @@ def test_visible_content_boundary_includes_ready_public_declarations(tmp_path: P
     )
     assert validated.ok, validated.issues
     assert validated.value is not None
+    assert validated.value.passed is True
+
+
+def test_visible_content_boundary_uses_active_head_not_open_candidate(
+    tmp_path: Path,
+) -> None:
+    initialize_native_test_repo(tmp_path)
+    _create_base_tree(tmp_path)
+    _seed_committed_content_boundary(
+        tmp_path,
+        node_path="Main.Topic.A",
+        decl_name="provider_result",
+    )
+    _advance_content_candidate(
+        tmp_path,
+        node_path="Main.Topic.A",
+        decl_name="provider_result",
+    )
+
+    visible = make_runtime().node.dependency.list_visible_node_boundaries(
+        tmp_path,
+        node_path="Main.Topic.Consumer",
+    )
+
+    assert visible.ok, visible.issues
+    assert visible.value is not None
+    boundary = next(
+        item
+        for item in visible.value.boundaries
+        if item.node_path == "Main.Topic.A"
+    )
+    assert boundary.exported_decl_refs == [
+        DeclRef(node="Main.Topic.A", name="provider_result", revision=1)
+    ]
+    added = make_runtime().node.dependency.add_node_dep(
+        tmp_path,
+        node_path="Main.Topic.Consumer",
+        target_node="Main.Topic.A",
+        expected_decl_names=["provider_result"],
+        reason="Consume the active provider boundary.",
+        actor="coordinator",
+    )
+    validated = make_runtime().node.dependency.validate_node_deps(
+        tmp_path,
+        node_path="Main.Topic.Consumer",
+    )
+    assert added.ok, added.issues
+    assert added.value is not None
+    assert added.value.added[0].expected_decl_refs == [
+        DeclRef(node="Main.Topic.A", name="provider_result", revision=1)
+    ]
+    assert validated.ok and validated.value is not None
     assert validated.value.passed is True
 
 

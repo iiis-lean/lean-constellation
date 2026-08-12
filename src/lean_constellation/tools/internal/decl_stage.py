@@ -302,6 +302,7 @@ def _assert_statement_decl_dep_visible(
             ctx.repo_root,
             node_path=dep_node,
             actor_role=_actor_role(ctx),
+            stable_boundary=True,
             current_node_path=current_node,
         )
         if not public.ok or public.value is None:
@@ -576,6 +577,7 @@ def _assert_proof_decl_dep_visible(
             ctx.repo_root,
             node_path=dep_node,
             actor_role=_actor_role(ctx),
+            stable_boundary=True,
             current_node_path=current_node,
         )
         if not public.ok or public.value is None:
@@ -641,6 +643,7 @@ def _resolve_proof_decl_deps_batch(runtime, ctx, dependencies):
                     ctx.repo_root,
                     node_path=dep_node,
                     actor_role=actor_role,
+                    stable_boundary=True,
                     current_node_path=current_node,
                 )
                 if not public.ok or public.value is None:

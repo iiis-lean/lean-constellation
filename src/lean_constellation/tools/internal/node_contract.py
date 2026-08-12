@@ -997,7 +997,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="add_current_node_dep",
-            description="Add a visible ready node boundary as a dependency of the current node and report any generated Prelude file change.",
+            description="Add a stable committed visible node boundary as a dependency of the current node and report any generated Prelude file change.",
             args_model=CurrentNodeDependencyAddArgs,
             capability=ToolCapability.WRITE,
             result_view="node_dependency_mutation",
@@ -1017,7 +1017,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="add_node_dep",
-            description="Add a visible ready node boundary as a dependency of the target node contract and report any generated Prelude file change.",
+            description="Add a stable committed visible node boundary as a dependency of the target node contract and report any generated Prelude file change.",
             args_model=NodeDependencyAddArgs,
             capability=ToolCapability.WRITE,
             result_view="node_dependency_mutation",
@@ -1229,7 +1229,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         direct_tool(
             name="list_scope_export_candidates",
-            description="List public declarations visible for export from a Scope child boundary.",
+            description="List exact public declarations from active committed direct-child Content heads or Scope exports that may be added to the current Scope candidate.",
             args_model=ScopePathArgs,
             capability=ToolCapability.READ,
             backing_service="node",
@@ -1251,7 +1251,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="add_scope_export",
-            description="Add one declaration to a Scope export list and return only the mutation receipt.",
+            description="Add one exact declaration from an active committed direct-child boundary to the current Scope candidate and return only the mutation receipt.",
             args_model=ScopeExportAddArgs,
             capability=ToolCapability.WRITE,
             result_view="scope_export_mutation_receipt",

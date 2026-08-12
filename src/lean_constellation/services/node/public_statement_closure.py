@@ -99,6 +99,7 @@ class _ScopePromotionPlan:
     refs: tuple[DeclRef, ...]
     is_target: bool
     expected_active_version: int | None
+    expected_open_version: int | None
 
 
 class _PathSnapshot:
@@ -771,7 +772,15 @@ class PublicStatementClosureComponent:
                         expected=f"revision={ref.revision}, visibility=private",
                     )
                 )
-        anchors = self._validate_committed_promotion_anchors(repo_root, promoted)
+        anchors = (
+            self._validate_content_promotion_owners(
+                repo_root,
+                node_path=node_path,
+                promoted=promoted,
+            )
+            if boundary == PublicStatementClosureBoundary.CONTENT
+            else self._validate_committed_promotion_anchors(repo_root, promoted)
+        )
         if not anchors.ok:
             preflight_issues.extend(anchors.issues)
         config = self.runtime.repo_workspace.metadata.get_repo_config(repo_root)
@@ -871,11 +880,32 @@ class PublicStatementClosureComponent:
                     break
         if not mutation_issues:
             for plan in scope_plans.value:
-                if not plan.is_target:
-                    current = self.runtime.node.node_tree.get_node(
-                        repo_root,
-                        path=plan.scope_path,
-                    )
+                current = self.runtime.node.node_tree.get_node(
+                    repo_root,
+                    path=plan.scope_path,
+                )
+                if plan.is_target:
+                    if (
+                        not current.ok
+                        or current.value is None
+                        or current.value.active_contract_version
+                        != plan.expected_active_version
+                        or current.value.open_contract_version
+                        != plan.expected_open_version
+                    ):
+                        mutation_issues.append(
+                            self.runtime.foundation.issue(
+                                "scope_promotion_target_cas_mismatch",
+                                "Target Scope ownership changed after promotion preflight.",
+                                object_ref=plan.scope_path,
+                                expected=(
+                                    f"active={plan.expected_active_version}, "
+                                    f"open={plan.expected_open_version}"
+                                ),
+                            )
+                        )
+                        break
+                else:
                     if (
                         not current.ok
                         or current.value is None
@@ -1044,6 +1074,40 @@ class PublicStatementClosureComponent:
             return self.runtime.foundation.fail(self._unique_issues(issues))
         return self.runtime.foundation.ok(None)
 
+    def _validate_content_promotion_owners(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        promoted: list[DeclRef],
+    ) -> ServiceResult[None]:
+        issues: list[ServiceIssue] = []
+        owner = self.runtime.node.node_tree.get_node(repo_root, path=node_path)
+        if not owner.ok or owner.value is None:
+            return self.runtime.foundation.fail(owner.issues)
+        if owner.value.kind != NodeKind.CONTENT:
+            issues.append(
+                self.runtime.foundation.issue(
+                    "public_statement_promotion_owner_not_content",
+                    "Content-local visibility promotion requires a Content owner.",
+                    object_ref=node_path,
+                )
+            )
+        for ref in promoted:
+            if ref.node != node_path:
+                issues.append(
+                    self.runtime.foundation.issue(
+                        "public_statement_promotion_owner_mismatch",
+                        "Content-local visibility promotion cannot mutate a declaration owned by another node.",
+                        object_ref=f"{ref.node}:{ref.name}@{ref.revision}",
+                        current=ref.node,
+                        expected=node_path,
+                    )
+                )
+        if issues:
+            return self.runtime.foundation.fail(self._unique_issues(issues))
+        return self.runtime.foundation.ok(None)
+
     def _build_scope_promotion_plans(
         self,
         repo_root: Path,
@@ -1059,12 +1123,49 @@ class PublicStatementClosureComponent:
         ):
             refs = tuple(export_additions[scope_path])
             if scope_path == target_scope:
+                node = self.runtime.node.node_tree.get_node(
+                    repo_root,
+                    path=scope_path,
+                )
+                if not node.ok or node.value is None:
+                    issues.extend(node.issues)
+                    continue
+                if node.value.kind != NodeKind.SCOPE:
+                    issues.append(
+                        self.runtime.foundation.issue(
+                            "scope_promotion_target_not_scope",
+                            "Public closure propagation can target only a Scope node.",
+                            object_ref=scope_path,
+                        )
+                    )
+                    continue
+                if node.value.open_contract_version is None:
+                    issues.append(
+                        self.runtime.foundation.issue(
+                            "scope_promotion_target_open_required",
+                            "Target Scope promotion requires an existing caller-owned open revision.",
+                            object_ref=scope_path,
+                            current=(
+                                f"active={node.value.active_contract_version}, open=None"
+                            ),
+                            expected="existing open Scope revision",
+                        )
+                    )
+                    continue
+                opened = self.runtime.node.contract.get_open_contract(
+                    repo_root,
+                    node_path=scope_path,
+                )
+                if not opened.ok or opened.value is None:
+                    issues.extend(opened.issues)
+                    continue
                 plans.append(
                     _ScopePromotionPlan(
                         scope_path=scope_path,
                         refs=refs,
                         is_target=True,
-                        expected_active_version=None,
+                        expected_active_version=node.value.active_contract_version,
+                        expected_open_version=node.value.open_contract_version,
                     )
                 )
                 continue
@@ -1119,6 +1220,7 @@ class PublicStatementClosureComponent:
                     refs=refs,
                     is_target=False,
                     expected_active_version=node.value.active_contract_version,
+                    expected_open_version=None,
                 )
             )
         if issues:
@@ -1258,18 +1360,14 @@ class PublicStatementClosureComponent:
             )
         if ref.node != child.path:
             return self.runtime.foundation.ok(False)
-        public = self.runtime.node.export._list_committed_content_public_decls(
+        public = self.runtime.node.export.contains_committed_content_public_decl(
             repo_root,
             node_path=child.path,
+            ref=ref,
         )
         if not public.ok or public.value is None:
             return self.runtime.foundation.fail(public.issues)
-        return self.runtime.foundation.ok(
-            any(
-                self._ref_key(candidate.ref) == self._ref_key(ref)
-                for candidate in public.value
-            )
-        )
+        return public
 
     def _load_exact_decl(
         self,

@@ -137,7 +137,9 @@ class PublicDeclAccessResolver:
             items: list[VisibleNodeAccessItem] = []
             for node in tree.value.nodes:
                 public = self._list_node_public_decls_unchecked(
-                    repo_root, node_path=node.path
+                    repo_root,
+                    node_path=node.path,
+                    stable_boundary=False,
                 )
                 if not public.ok or public.value is None:
                     return self.runtime.foundation.fail(public.issues)
@@ -171,7 +173,9 @@ class PublicDeclAccessResolver:
         if not visible.ok or visible.value is None:
             return self.runtime.foundation.fail(visible.issues)
         current_public = self._list_node_public_decls_unchecked(
-            repo_root, node_path=current.value
+            repo_root,
+            node_path=current.value,
+            stable_boundary=False,
         )
         if not current_public.ok or current_public.value is None:
             return self.runtime.foundation.fail(current_public.issues)
@@ -195,7 +199,9 @@ class PublicDeclAccessResolver:
             if boundary.repo is not None:
                 continue
             public = self._list_node_public_decls_unchecked(
-                repo_root, node_path=boundary.node_path
+                repo_root,
+                node_path=boundary.node_path,
+                stable_boundary=True,
             )
             if not public.ok or public.value is None:
                 return self.runtime.foundation.fail(public.issues)
@@ -286,12 +292,17 @@ class PublicDeclAccessResolver:
         *,
         node_path: str,
         actor_role: str,
+        stable_boundary: bool,
         current_node_path: str | None = None,
     ) -> ServiceResult[list[DeclPublicView]]:
         visible = self.assert_node_visible(repo_root, node_path=node_path, actor_role=actor_role, current_node_path=current_node_path)
         if not visible.ok:
             return self.runtime.foundation.fail(visible.issues)
-        return self._list_node_public_decls_unchecked(repo_root, node_path=node_path)
+        return self._list_node_public_decls_unchecked(
+            repo_root,
+            node_path=node_path,
+            stable_boundary=stable_boundary,
+        )
 
     def list_node_public_decl_items(
         self,
@@ -299,12 +310,14 @@ class PublicDeclAccessResolver:
         *,
         node_path: str,
         actor_role: str,
+        stable_boundary: bool,
         current_node_path: str | None = None,
     ) -> ServiceResult[list[PublicDeclListItem]]:
         public = self.list_node_public_decls(
             repo_root,
             node_path=node_path,
             actor_role=actor_role,
+            stable_boundary=stable_boundary,
             current_node_path=current_node_path,
         )
         if not public.ok or public.value is None:
@@ -419,14 +432,30 @@ class PublicDeclAccessResolver:
         )
 
     def _list_node_public_decls_unchecked(
-        self, repo_root: Path, *, node_path: str
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        stable_boundary: bool = False,
     ) -> ServiceResult[list[DeclPublicView]]:
         node = self.node_tree.get_node(repo_root, path=node_path)
         if not node.ok or node.value is None:
             return self.runtime.foundation.fail(node.issues)
         if node.value.kind == NodeKind.CONTENT:
+            if stable_boundary:
+                return self.export.list_committed_content_public_decls(
+                    repo_root,
+                    node_path=node_path,
+                )
             return self.export.list_content_public_decls(repo_root, node_path=node_path)
-        exports = self.export.list_scope_exports(repo_root, scope_path=node_path)
+        exports = (
+            self.export.list_committed_scope_exports(
+                repo_root,
+                scope_path=node_path,
+            )
+            if stable_boundary
+            else self.export.list_scope_exports(repo_root, scope_path=node_path)
+        )
         if not exports.ok or exports.value is None:
             return self.runtime.foundation.fail(exports.issues)
         values: list[DeclPublicView] = []

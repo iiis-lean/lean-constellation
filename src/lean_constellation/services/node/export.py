@@ -11,6 +11,10 @@ from pydantic import Field
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.domain.repo import RepoFormat, proof_availability_for_completion_mode
 from lean_constellation.domain.refs import DeclRef
+from lean_constellation.services.decl_graph.models import (
+    DeclLifecycle,
+    DeclRevisionStatus,
+)
 from lean_constellation.services.foundation import GateReport, IssueSeverity, ServiceIssue, ServiceResult
 from lean_constellation.services.node.contract import ContractComponent
 from lean_constellation.services.node.node_tree import NodeKind, NodeTreeComponent, NodeView
@@ -200,7 +204,7 @@ class ExportComponent:
                 )
         for child in children.value:
             if child.kind == NodeKind.CONTENT:
-                public = self._list_committed_content_public_decls(
+                public = self.list_committed_content_public_decls(
                     repo_root,
                     node_path=child.path,
                 )
@@ -392,7 +396,43 @@ class ExportComponent:
         current = self.contract.get_current_contract(repo_root, node_path=scope_path)
         if not current.ok or current.value is None:
             return self.runtime.foundation.fail(current.issues)
-        views = [self._decl_ref_view(repo_root, scope_path, ref, index=-1) for ref in current.value.contract.exports]
+        return self._scope_export_views(
+            repo_root,
+            scope_path=scope_path,
+            refs=current.value.contract.exports,
+        )
+
+    def list_committed_scope_exports(
+        self,
+        repo_root: Path,
+        *,
+        scope_path: str,
+    ) -> ServiceResult[list[DeclRefView]]:
+        """Read exports from the active committed Scope boundary."""
+
+        scope = self._require_scope(repo_root, scope_path)
+        if not scope.ok or scope.value is None:
+            return self.runtime.foundation.fail(scope.issues)
+        visible = self.contract.get_visible_contract(repo_root, node_path=scope_path)
+        if not visible.ok or visible.value is None:
+            return self.runtime.foundation.fail(visible.issues)
+        return self._scope_export_views(
+            repo_root,
+            scope_path=scope_path,
+            refs=visible.value.contract.exports,
+        )
+
+    def _scope_export_views(
+        self,
+        repo_root: Path,
+        *,
+        scope_path: str,
+        refs: list[DeclRef],
+    ) -> ServiceResult[list[DeclRefView]]:
+        views = [
+            self._decl_ref_view(repo_root, scope_path, ref, index=-1)
+            for ref in refs
+        ]
         views.sort(key=lambda item: (item.ref.node, item.ref.name, item.ref.revision))
         views = [view.model_copy(update={"index": index}) for index, view in enumerate(views)]
         return self.runtime.foundation.ok(views)
@@ -544,14 +584,44 @@ class ExportComponent:
                 )
             )
         if child.value.kind == NodeKind.CONTENT:
-            public = self._list_committed_content_public_decls(
+            public = self.list_committed_content_public_decls(
                 repo_root,
                 node_path=direct_child,
             )
             if not public.ok or public.value is None:
                 return self.runtime.foundation.fail(public.issues)
             for decl in public.value:
-                if self._decl_ref_key(decl.ref) == self._decl_ref_key(ref):
+                if (decl.ref.repo, decl.ref.node, decl.ref.name) != (
+                    ref.repo,
+                    ref.node,
+                    ref.name,
+                ):
+                    continue
+                if decl.ref.revision == ref.revision:
+                    return self.runtime.foundation.ok(
+                        ScopeExportCandidate(
+                            ref=decl.ref,
+                            source_child=direct_child,
+                            source_kind=NodeKind.CONTENT.value,
+                            kind=decl.kind,
+                            module=decl.module,
+                            summary=decl.summary,
+                            ready=decl.ready,
+                            stale=decl.stale,
+                        )
+                    )
+                requested = self._resolve_semantic_ref(repo_root, ref)
+                boundary = self._resolve_semantic_ref(repo_root, decl.ref)
+                if not requested.ok or requested.value is None:
+                    return self.runtime.foundation.fail(requested.issues)
+                if not boundary.ok or boundary.value is None:
+                    return self.runtime.foundation.fail(boundary.issues)
+                if (
+                    requested.value.compatible
+                    and boundary.value.compatible
+                    and requested.value.resolved_revision
+                    == boundary.value.resolved_revision
+                ):
                     return self.runtime.foundation.ok(
                         ScopeExportCandidate(
                             ref=decl.ref,
@@ -637,7 +707,7 @@ class ExportComponent:
             ),
         )
 
-    def _list_committed_content_public_decls(
+    def list_committed_content_public_decls(
         self,
         repo_root: Path,
         *,
@@ -658,19 +728,196 @@ class ExportComponent:
             return self.runtime.foundation.fail(provider_target.issues)
         if not provider_target.value.passed:
             return self.runtime.foundation.fail(provider_target.value.issues)
-        public = self.list_content_public_decls(repo_root, node_path=node_path)
-        if not public.ok or public.value is None:
-            return self.runtime.foundation.fail(public.issues)
         head = visible.value.contract.decl_graph_head
-        anchored = [
-            decl
-            for decl in public.value
-            if decl.public
-            and decl.ref.repo is None
-            and decl.ref.node == node_path
-            and head.get(decl.ref.name) == decl.ref.revision
-        ]
-        return self.runtime.foundation.ok(anchored, warnings=public.issues)
+        provider = self.list_content_public_decls(
+            repo_root,
+            node_path=node_path,
+        )
+        if not provider.ok or provider.value is None:
+            return self.runtime.foundation.fail(provider.issues)
+        provider_exact = {
+            (item.ref.name, item.ref.revision): item
+            for item in provider.value
+            if item.public
+            and item.ref.repo is None
+            and item.ref.node == node_path
+        }
+        anchored: list[DeclPublicView] = []
+        exact_entries = {}
+        public_names: set[str] = set()
+        matched_provider_view = False
+        for name, revision_id in sorted(head.items()):
+            provider_view = provider_exact.get((name, revision_id))
+            if provider_view is not None:
+                anchored.append(provider_view)
+                matched_provider_view = True
+            decl = self.runtime.decl_graph.get_decl(
+                repo_root,
+                node_path=node_path,
+                name=name,
+            )
+            revision = self.runtime.decl_graph.get_decl_revision(
+                repo_root,
+                node_path=node_path,
+                name=name,
+                revision=revision_id,
+            )
+            if (
+                not decl.ok
+                or decl.value is None
+                or not revision.ok
+                or revision.value is None
+            ):
+                continue
+            if decl.value.lifecycle != DeclLifecycle.ACTIVE:
+                continue
+            if revision.value.status != DeclRevisionStatus.COMMITTED:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "content_boundary_decl_revision_not_committed",
+                        "A committed Content boundary must reference a committed declaration revision.",
+                        object_ref=f"{node_path}:{name}@{revision_id}",
+                        current=revision.value.status.value,
+                        expected=DeclRevisionStatus.COMMITTED.value,
+                    )
+                )
+            exact_entries[name] = (decl.value, revision.value)
+            if decl.value.public and provider_view is None:
+                public_names.add(name)
+
+        warnings: list[ServiceIssue] = (
+            list(provider.issues) if matched_provider_view else []
+        )
+        if public_names:
+            config = self.runtime.repo_workspace.metadata.get_repo_config(repo_root)
+            if not config.ok or config.value is None:
+                return self.runtime.foundation.fail(config.issues)
+            target = proof_availability_for_completion_mode(
+                config.value.config.completion_mode
+            )
+            readiness = self.runtime.decl_graph.check_decl_proof_policy_batch(
+                repo_root,
+                roots=[
+                    (node_path, name, target)
+                    for name in sorted(public_names)
+                ],
+                round_overlay=exact_entries,
+            )
+            if not readiness.ok or readiness.value is None:
+                return self.runtime.foundation.fail(readiness.issues)
+            readiness_by_name = {
+                name: report
+                for name, report in zip(
+                    sorted(public_names),
+                    readiness.value,
+                    strict=True,
+                )
+            }
+        else:
+            readiness_by_name = {}
+
+        for name in sorted(public_names):
+            decl, revision = exact_entries[name]
+            report = readiness_by_name[name]
+            release_status = (
+                self.runtime.repo_workspace.release.get_decl_release_status(
+                    repo_root,
+                    node_path=node_path,
+                    decl_name=name,
+                )
+            )
+            if not release_status.ok or release_status.value is None:
+                return self.runtime.foundation.fail(release_status.issues)
+            anchored.append(
+                DeclPublicView(
+                    ref=DeclRef(
+                        repo=None,
+                        node=node_path,
+                        name=name,
+                        revision=revision.revision,
+                    ),
+                    resolved_revision=revision.revision,
+                    resolution_reason="active_content_contract_head",
+                    kind=decl.kind,
+                    module=decl.module,
+                    summary=decl.summary,
+                    public=True,
+                    ready=report.ready,
+                    stale=False,
+                    source="active_content_contract_head",
+                    released_state=release_status.value.released_state,
+                    release_protected=release_status.value.release_protected,
+                )
+            )
+            if not report.ready:
+                warnings.append(
+                    self.runtime.foundation.issue(
+                        "public_decl_proof_policy_unsatisfied",
+                        "Committed Content boundary declaration no longer satisfies the current proof availability policy.",
+                        severity=IssueSeverity.WARNING,
+                        object_ref=f"{node_path}:{name}@{revision.revision}",
+                        details={"summary": report.summary},
+                    )
+                )
+
+        return self.runtime.foundation.ok(
+            sorted(
+                anchored,
+                key=lambda item: (
+                    item.ref.node,
+                    item.ref.name,
+                    item.ref.revision,
+                ),
+            ),
+            warnings=warnings,
+        )
+
+    def contains_committed_content_public_decl(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        ref: DeclRef,
+    ) -> ServiceResult[bool]:
+        """Check exact stable-boundary membership without recomputing readiness."""
+
+        if ref.repo is not None or ref.node != node_path:
+            return self.runtime.foundation.ok(False)
+        visible = self.contract.get_visible_contract(repo_root, node_path=node_path)
+        if not visible.ok or visible.value is None:
+            return self.runtime.foundation.fail(visible.issues)
+        provider_target = self.contract.check_provider_completion_target(
+            repo_root,
+            node_path=node_path,
+            contract=visible.value,
+            require_committed=True,
+        )
+        if not provider_target.ok or provider_target.value is None:
+            return self.runtime.foundation.fail(provider_target.issues)
+        if not provider_target.value.passed:
+            return self.runtime.foundation.fail(provider_target.value.issues)
+        if visible.value.contract.decl_graph_head.get(ref.name) != ref.revision:
+            return self.runtime.foundation.ok(False)
+        decl = self.runtime.decl_graph.get_decl(
+            repo_root,
+            node_path=node_path,
+            name=ref.name,
+        )
+        revision = self.runtime.decl_graph.get_decl_revision(
+            repo_root,
+            node_path=node_path,
+            name=ref.name,
+            revision=ref.revision,
+        )
+        if not decl.ok or decl.value is None:
+            return self.runtime.foundation.fail(decl.issues)
+        if not revision.ok or revision.value is None:
+            return self.runtime.foundation.fail(revision.issues)
+        return self.runtime.foundation.ok(
+            decl.value.lifecycle == DeclLifecycle.ACTIVE
+            and decl.value.public
+            and revision.value.status == DeclRevisionStatus.COMMITTED
+        )
 
     def _exact_decl_kind(self, repo_root: Path, *, ref: DeclRef) -> ServiceResult[str]:
         """Recover declaration kind from the exact local declaration anchor."""

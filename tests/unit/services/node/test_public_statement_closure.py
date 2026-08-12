@@ -315,27 +315,63 @@ def test_node_closure_reports_and_promotes_private_statement_dependency(
     assert replay.value.changed is False
 
 
-def test_content_promotion_requires_active_committed_head(tmp_path: Path) -> None:
+def test_open_only_content_can_promote_exact_current_revision_then_commit(
+    tmp_path: Path,
+) -> None:
     round_id = _prepare_repo(tmp_path)
     _seed_definition(tmp_path, round_id=round_id, name="Helper", public=False)
+    runtime = make_runtime()
 
-    promoted = make_runtime().node.public_statement_closure.promote_content_closure(
+    before = runtime.node.contract.list_contract_versions(
+        tmp_path,
+        node_path=NODE_PATH,
+    )
+    promoted = runtime.node.public_statement_closure.promote_content_closure(
         tmp_path,
         node_path=NODE_PATH,
         root_decl_names=["Helper"],
     )
 
-    assert not promoted.ok
-    assert "node_committed_contract_missing" in {
-        issue.kind for issue in promoted.issues
-    }
-    helper = make_runtime().decl_graph.get_decl(
+    assert before.ok and before.value is not None
+    assert [(item.version, item.status.value) for item in before.value] == [(1, "open")]
+    assert promoted.ok and promoted.value is not None
+    assert promoted.value.changed is True
+    assert promoted.value.promoted_declarations == [
+        DeclRef(node=NODE_PATH, name="Helper", revision=1)
+    ]
+    helper = runtime.decl_graph.get_decl(
         tmp_path,
         node_path=NODE_PATH,
         name="Helper",
     )
     assert helper.ok and helper.value is not None
-    assert helper.value.public is False
+    assert helper.value.public is True
+
+    closure = runtime.node.public_statement_closure.check_content(
+        tmp_path,
+        node_path=NODE_PATH,
+    )
+    committed = runtime.node.contract._commit_content_contract_with_head(
+        tmp_path,
+        node_path=NODE_PATH,
+        summary="Publish the first Content boundary.",
+        decl_graph_head={"Helper": 1},
+    )
+    after = runtime.node.contract.list_contract_versions(
+        tmp_path,
+        node_path=NODE_PATH,
+    )
+
+    assert closure.ok and closure.value is not None
+    assert closure.value.passed is True
+    assert committed.ok, committed.issues
+    assert committed.value is not None
+    assert committed.value.version == 1
+    assert committed.value.contract.decl_graph_head == {"Helper": 1}
+    assert after.ok and after.value is not None
+    assert [(item.version, item.status.value) for item in after.value] == [
+        (1, "committed")
+    ]
 
 
 def test_content_commit_rejects_private_public_statement_dependency(
@@ -733,6 +769,57 @@ def test_scope_promotion_reuses_active_target_open_without_committing_it(
         "Family",
         "MainResult",
     }
+
+
+def test_scope_promotion_requires_existing_open_target_without_mutation(
+    tmp_path: Path,
+) -> None:
+    round_id = _prepare_repo(tmp_path)
+    _seed_definition(tmp_path, round_id=round_id, name="Family", public=False)
+    _seed_definition(
+        tmp_path,
+        round_id=round_id,
+        name="MainResult",
+        public=True,
+        statement_deps=["Family"],
+    )
+    _commit_content_head(tmp_path, "Family", "MainResult")
+    runtime = make_runtime()
+    assert runtime.node.export.add_scope_export(
+        tmp_path,
+        scope_path="Main.Topic",
+        decl_node=NODE_PATH,
+        decl_name="MainResult",
+    ).ok
+    committed = runtime.node.contract._commit_scope_contract_after_guard(
+        tmp_path,
+        scope_path="Main.Topic",
+        summary="Commit the target boundary without opening a new owner edit.",
+    )
+    assert committed.ok, committed.issues
+    nodes_root = runtime.foundation.layout.nodes_root(
+        FoundationContext(repo_root=tmp_path)
+    )
+    before_nodes = _path_file_bytes(nodes_root)
+    family_path = runtime.decl_graph.graph_store.decl_record_path(
+        tmp_path,
+        node_path=NODE_PATH,
+        decl_name="Family",
+    )
+    before_family = family_path.read_bytes()
+
+    promoted = runtime.node.public_statement_closure.promote_scope_closure(
+        tmp_path,
+        scope_path="Main.Topic",
+        roots=[DeclRef(node=NODE_PATH, name="MainResult")],
+    )
+
+    assert not promoted.ok
+    assert "scope_promotion_target_open_required" in {
+        issue.kind for issue in promoted.issues
+    }
+    assert family_path.read_bytes() == before_family
+    assert _path_file_bytes(nodes_root) == before_nodes
 
 
 def test_scope_promotion_blocks_intermediate_active_open_before_any_mutation(

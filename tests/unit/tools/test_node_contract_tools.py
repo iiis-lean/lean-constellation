@@ -122,3 +122,18 @@ def test_node_contract_mutation_result_views_match_receipts() -> None:
         "remove_node_interface",
     }:
         assert specs[name].result_view == "interface_mutation"
+
+
+def test_dependency_and_scope_tool_descriptions_require_stable_child_boundaries() -> None:
+    specs = {spec.name: spec for spec in build_application_tool_specs()}
+
+    assert "stable committed visible node boundary" in specs[
+        "add_current_node_dep"
+    ].description
+    assert "stable committed visible node boundary" in specs["add_node_dep"].description
+    assert "active committed direct-child Content heads or Scope exports" in specs[
+        "list_scope_export_candidates"
+    ].description
+    assert "active committed direct-child boundary" in specs[
+        "add_scope_export"
+    ].description

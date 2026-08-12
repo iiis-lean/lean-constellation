@@ -61,6 +61,129 @@ def _create_consumer_tree(repo_root: Path) -> None:
     ).ok
 
 
+def _seed_local_content_boundary(
+    repo_root: Path,
+    *,
+    node_path: str,
+    decl_name: str,
+) -> None:
+    runtime = make_runtime()
+    assert runtime.decl_graph.ensure_decl_graph(
+        repo_root,
+        node_path=node_path,
+    ).ok
+    decl = Decl(
+        name=decl_name,
+        node_path=node_path,
+        kind="definition",
+        public=True,
+        current_revision=1,
+        revision_ids=[1],
+        module=f"{node_path}.Defs.{decl_name}",
+        summary="Stable local provider.",
+    )
+    revision = DeclRevision(
+        revision=1,
+        lean_decl_name=decl_name,
+        state=DeclState.DECLARED,
+        status=DeclRevisionStatus.COMMITTED,
+        statement=DeclStatement(
+            formal=DeclFormalSection(
+                code=f"def {decl_name} : Nat := 1",
+                check=lean_check_payload(),
+            )
+        ),
+    )
+    assert runtime.foundation.store.write_json_atomic(
+        runtime.decl_graph.graph_store.decl_record_path(
+            repo_root,
+            node_path=node_path,
+            decl_name=decl_name,
+        ),
+        decl,
+    ).ok
+    assert runtime.foundation.store.write_json_atomic(
+        runtime.decl_graph.graph_store.revision_path(
+            repo_root,
+            node_path=node_path,
+            decl_name=decl_name,
+            revision=1,
+        ),
+        revision,
+    ).ok
+    assert runtime.decl_graph.graph_store.rebuild_index(
+        repo_root,
+        node_path=node_path,
+    ).ok
+    committed = runtime.node.contract._commit_content_contract_with_head(
+        repo_root,
+        node_path=node_path,
+        summary="Commit local provider revision one.",
+        decl_graph_head={decl_name: 1},
+    )
+    assert committed.ok, committed.issues
+
+
+def _advance_local_content_candidate(
+    repo_root: Path,
+    *,
+    node_path: str,
+    decl_name: str,
+) -> None:
+    runtime = make_runtime()
+    decl = runtime.decl_graph.get_decl(
+        repo_root,
+        node_path=node_path,
+        name=decl_name,
+    )
+    assert decl.ok and decl.value is not None
+    revision = DeclRevision(
+        revision=2,
+        lean_decl_name=decl_name,
+        state=DeclState.DECLARED,
+        status=DeclRevisionStatus.COMMITTED,
+        statement=DeclStatement(
+            formal=DeclFormalSection(
+                code=f"def {decl_name} : Nat := 2",
+                check=lean_check_payload(),
+            )
+        ),
+    )
+    assert runtime.foundation.store.write_json_atomic(
+        runtime.decl_graph.graph_store.revision_path(
+            repo_root,
+            node_path=node_path,
+            decl_name=decl_name,
+            revision=2,
+        ),
+        revision,
+    ).ok
+    decl.value.current_revision = 2
+    decl.value.revision_ids.append(2)
+    assert runtime.foundation.store.write_json_atomic(
+        runtime.decl_graph.graph_store.decl_record_path(
+            repo_root,
+            node_path=node_path,
+            decl_name=decl_name,
+        ),
+        decl.value,
+        mode=WriteMode.UPDATE_EXISTING,
+    ).ok
+    opened = runtime.node.contract.ensure_open_contract(
+        repo_root,
+        node_path=node_path,
+    )
+    assert opened.ok and opened.value is not None
+    opened.value.contract.decl_graph_head[decl_name] = 2
+    assert runtime.foundation.store.write_json_atomic(
+        runtime.node.node_tree.node_store.contract_path(
+            repo_root,
+            node_id=opened.value.node_id,
+            version=opened.value.version,
+        ),
+        opened.value.contract,
+        mode=WriteMode.UPDATE_EXISTING,
+    ).ok
 def _create_provider_repo(
     provider_root: Path,
     *,
@@ -203,12 +326,14 @@ def test_node_scoped_actor_can_only_read_current_or_visible_node_public_decls(tm
         tmp_path,
         node_path="Main.Topic.Consumer",
         actor_role="plan",
+        stable_boundary=False,
         current_node_path="Main.Topic.Consumer",
     )
     hidden = runtime.node.public_decl_access.list_node_public_decls(
         tmp_path,
         node_path="Main.Topic.Hidden",
         actor_role="plan",
+        stable_boundary=True,
         current_node_path="Main.Topic.Consumer",
     )
 
@@ -216,6 +341,104 @@ def test_node_scoped_actor_can_only_read_current_or_visible_node_public_decls(tm
     assert [decl.ref.name for decl in current.value] == ["consumer_result"]
     assert not hidden.ok
     assert hidden.issues[0].kind == "node_public_decl_not_visible"
+
+
+def test_node_scoped_public_read_uses_provider_active_content_head(
+    tmp_path: Path,
+) -> None:
+    initialize_native_test_repo(tmp_path)
+    _create_consumer_tree(tmp_path)
+    _seed_local_content_boundary(
+        tmp_path,
+        node_path="Main.Topic.Hidden",
+        decl_name="provider_result",
+    )
+    runtime = make_runtime()
+    added = runtime.node.dependency.add_node_dep(
+        tmp_path,
+        node_path="Main.Topic.Consumer",
+        target_node="Main.Topic.Hidden",
+        expected_decl_names=["provider_result"],
+        reason="Consume the stable local provider.",
+        actor="coordinator",
+    )
+    assert added.ok, added.issues
+    _advance_local_content_candidate(
+        tmp_path,
+        node_path="Main.Topic.Hidden",
+        decl_name="provider_result",
+    )
+
+    public = runtime.node.public_decl_access.list_node_public_decls(
+        tmp_path,
+        node_path="Main.Topic.Hidden",
+        actor_role="plan",
+        stable_boundary=True,
+        current_node_path="Main.Topic.Consumer",
+    )
+
+    assert public.ok, public.issues
+    assert public.value is not None
+    assert [item.ref for item in public.value] == [
+        DeclRef(
+            node="Main.Topic.Hidden",
+            name="provider_result",
+            revision=1,
+        )
+    ]
+
+
+def test_node_public_read_uses_active_scope_exports_not_open_candidate(
+    tmp_path: Path,
+) -> None:
+    initialize_native_test_repo(tmp_path)
+    _create_consumer_tree(tmp_path)
+    _seed_local_content_boundary(
+        tmp_path,
+        node_path="Main.Topic.Hidden",
+        decl_name="provider_result",
+    )
+    runtime = make_runtime()
+    added = runtime.node.export.add_scope_export(
+        tmp_path,
+        scope_path="Main.Topic",
+        decl_node="Main.Topic.Hidden",
+        decl_name="provider_result",
+    )
+    assert added.ok, added.issues
+    committed = runtime.node.contract._commit_scope_contract_after_guard(
+        tmp_path,
+        scope_path="Main.Topic",
+        summary="Commit the stable Scope API.",
+    )
+    assert committed.ok, committed.issues
+    removed = runtime.node.export.remove_scope_export(
+        tmp_path,
+        scope_path="Main.Topic",
+        ref=DeclRef(
+            node="Main.Topic.Hidden",
+            name="provider_result",
+            revision=1,
+        ),
+    )
+    assert removed.ok, removed.issues
+
+    stable = runtime.node.public_decl_access.list_node_public_decls(
+        tmp_path,
+        node_path="Main.Topic",
+        actor_role="coordinator",
+        stable_boundary=True,
+    )
+    live = runtime.node.public_decl_access.list_node_public_decls(
+        tmp_path,
+        node_path="Main.Topic",
+        actor_role="coordinator",
+        stable_boundary=False,
+    )
+
+    assert stable.ok and stable.value is not None
+    assert [item.ref.name for item in stable.value] == ["provider_result"]
+    assert live.ok and live.value == []
 
 
 def test_coordinator_reads_stable_provider_repo_main_exports(tmp_path: Path) -> None:

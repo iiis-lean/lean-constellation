@@ -1521,6 +1521,13 @@ def test_repo_public_decl_tools_read_stable_provider_repo(tmp_path: Path) -> Non
         revision.value,
         mode=WriteMode.OVERWRITE,
     ).ok
+    committed_content = runtime.node.contract._commit_content_contract_with_head(
+        provider,
+        node_path="Main.Core",
+        summary="Commit the stable provider Content boundary.",
+        decl_graph_head={"provider_result": created_decl.target_revision},
+    )
+    assert committed_content.ok, committed_content.issues
     assert runtime.node.export.add_scope_export(provider, scope_path="Main", decl_node="Main.Core", decl_name="provider_result").ok
     publish_native_provider_release(runtime, provider, summary="Provider stable.")
     decl = runtime.decl_graph.decl_catalog.get_decl(provider, node_path="Main.Core", name="provider_result")

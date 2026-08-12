@@ -183,6 +183,35 @@ def test_visibility_revision_tools_replace_single_promotion_tools() -> None:
         assert "never removed" in specs[name].description
         assert "automatically" in specs[name].description
         assert specs[name].result_view == "decl_visibility_revision_receipt"
+    assert "exact current committed Decl revisions" in specs[
+        "promote_current_node_public_statement_closure"
+    ].description
+    assert "without creating or committing a Content contract version" in specs[
+        "promote_current_node_public_statement_closure"
+    ].description
+    assert "Scope targets use stable committed child boundaries" in specs[
+        "promote_public_statement_closure"
+    ].description
+    assert "existing caller-owned open target" in specs[
+        "promote_public_statement_closure"
+    ].description
+
+
+def test_visible_node_descriptions_distinguish_live_current_and_stable_provider_truth() -> None:
+    specs = {spec.name: spec for spec in build_application_tool_specs()}
+
+    assert "repo-wide planning reads live node truth" in specs[
+        "list_visible_nodes"
+    ].description
+    assert "provider nodes through stable committed boundaries" in specs[
+        "list_visible_nodes"
+    ].description
+    assert "stable consumable public API" in specs[
+        "list_node_public_decls"
+    ].description
+    assert "use current-node or DeclGraph tools for live planning truth" in specs[
+        "list_node_public_decls"
+    ].description
 
 
 def test_visibility_revision_args_require_cas_and_reason() -> None:
