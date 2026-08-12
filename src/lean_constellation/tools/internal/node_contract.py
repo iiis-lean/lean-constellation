@@ -361,8 +361,7 @@ def _remove_current_material_ref(runtime, ctx, args: CurrentMaterialRefRemoveArg
     return runtime.node.remove_current_material_ref(
         ctx.repo_root,
         node_path=current_node_path(ctx),
-        ref_scope=args.ref_scope,
-        index=args.index,
+        ref=args.ref,
         actor=actor_for_write(ctx),
     )
 
@@ -385,8 +384,7 @@ def _remove_node_material_ref(runtime, ctx, args: NodeMaterialRefRemoveArgs):
     return runtime.node.remove_current_material_ref(
         ctx.repo_root,
         node_path=args.node_path,
-        ref_scope=args.ref_scope,
-        index=args.index,
+        ref=args.ref,
         actor="coordinator",
     )
 
@@ -1047,7 +1045,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="remove_current_material_ref",
-            description="Remove a material ref from the current node contract by list index.",
+            description="Remove an exact material ref from the current node contract using the copyable ref returned by the list view.",
             args_model=CurrentMaterialRefRemoveArgs,
             capability=ToolCapability.WRITE,
             result_view="current_node_material_mutation",
@@ -1067,7 +1065,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="remove_node_material_ref",
-            description="Remove a material ref from the target node contract by list index.",
+            description="Remove an exact material ref from the target node contract using the copyable ref returned by the list view.",
             args_model=NodeMaterialRefRemoveArgs,
             capability=ToolCapability.WRITE,
             result_view="current_node_material_mutation",

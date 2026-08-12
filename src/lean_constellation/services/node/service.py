@@ -666,32 +666,36 @@ class NodeService:
         repo_root: Path,
         *,
         node_path: str,
-        ref_scope: Literal["owned", "context"],
-        index: int,
+        ref: str,
         actor: str,
     ) -> ServiceResult[CurrentNodeMaterialMutationReceipt]:
         before = self.contract.get_edit_contract(repo_root, node_path=node_path)
         if not before.ok or before.value is None:
             return self.runtime.foundation.fail(before.issues)
-        previous = list(
-            before.value.contract.owned_refs
-            if ref_scope == "owned"
-            else before.value.contract.context_refs
+        previous_owned = list(before.value.contract.owned_refs)
+        previous_context = list(before.value.contract.context_refs)
+        mutation = self.material_ref.remove_ref(
+            repo_root,
+            node_path=node_path,
+            ref=ref,
+            actor=actor,
         )
-        if ref_scope == "owned":
-            mutation = self.material_ref.remove_owned_ref(repo_root, node_path=node_path, index=index, actor=actor)
-        elif ref_scope == "context":
-            mutation = self.material_ref.remove_context_ref(repo_root, node_path=node_path, index=index, actor=actor)
-        else:
+        if not mutation.ok or mutation.value is None:
+            return self.runtime.foundation.fail(mutation.issues)
+        removed_owned = [item for item in previous_owned if item not in mutation.value.contract.owned_refs]
+        removed_context = [item for item in previous_context if item not in mutation.value.contract.context_refs]
+        if len(removed_owned) + len(removed_context) != 1:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
-                    "current_material_ref_scope_invalid",
-                    "ref_scope must be owned or context.",
+                    "material_ref_remove_invariant_failed",
+                    "Exact material removal did not remove exactly one current ref.",
                     object_ref=node_path,
-                    field="ref_scope",
-                    current=str(ref_scope),
+                    field="ref",
+                    current=ref,
                 )
             )
+        ref_scope: Literal["owned", "context"] = "owned" if removed_owned else "context"
+        previous = previous_owned if removed_owned else previous_context
         return self._current_node_material_receipt(
             node_path=node_path,
             ref_scope=ref_scope,

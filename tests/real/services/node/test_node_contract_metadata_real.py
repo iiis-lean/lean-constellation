@@ -219,21 +219,23 @@ def test_node_contract_scope_content_metadata_real(tmp_path: Path) -> None:
     refs = service.material_ref.list_node_material_refs(repo_root, node_path="Main.Topic.Consumer")
     assert refs.ok
     assert refs.value is not None
-    owned_index = refs.value.owned_refs[0].index
-    worker_context_index = refs.value.context_refs[0].index
+    owned_ref = refs.value.owned_refs[0].ref
+    worker_context_ref = refs.value.context_refs[0].ref
+    assert owned_ref is not None
+    assert worker_context_ref is not None
 
-    denied_ref_remove = service.material_ref.remove_owned_ref(
+    denied_ref_remove = service.material_ref.remove_ref(
         repo_root,
         node_path="Main.Topic.Consumer",
-        index=owned_index,
+        ref=owned_ref,
         actor="worker",
     )
     assert not denied_ref_remove.ok
     assert denied_ref_remove.issues[0].kind == "material_ref_permission_denied"
-    removed_worker_ref = service.material_ref.remove_context_ref(
+    removed_worker_ref = service.material_ref.remove_ref(
         repo_root,
         node_path="Main.Topic.Consumer",
-        index=worker_context_index,
+        ref=worker_context_ref,
         actor="worker",
     )
     assert removed_worker_ref.ok, removed_worker_ref.issues

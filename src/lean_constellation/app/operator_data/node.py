@@ -159,8 +159,8 @@ class AddMaterialRefInput(ContractMutationInput):
     reason: str | None = None
 
 
-class RemoveMaterialRefInput(RemoveIndexedInput):
-    ref_scope: Literal["owned", "context"]
+class RemoveMaterialRefInput(ContractMutationInput):
+    ref: str
 
 
 class MathlibModuleMutationInput(ContractMutationInput):
@@ -411,8 +411,7 @@ class NodeOperatorApi:
             lambda ctx: ctx.runtime.node.remove_current_material_ref(
                 ctx.repo_root,
                 node_path=request.node_path,
-                ref_scope=request.ref_scope,
-                index=request.index,
+                ref=request.ref,
                 actor=MaterialRefActor.OPERATOR,
             ),
         )

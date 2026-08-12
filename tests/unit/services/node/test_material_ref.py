@@ -4,7 +4,9 @@ from pathlib import Path
 
 from lean_constellation.services.foundation import FoundationContext, FoundationService
 from lean_constellation.services.material import MaterialService, ResourceMetadataInput
+from lean_constellation.services.material.ref_codec import format_material_ref, parse_material_ref
 from lean_constellation.services.node import MaterialRefActor, MaterialRefComponent, NodeContractSnapshot, NodeTreeComponent
+from lean_constellation.domain.refs import MaterialRef, ResourceRef, SourceRef
 
 
 def _create_content_node(tmp_path: Path) -> None:
@@ -47,6 +49,32 @@ def _register_resource(tmp_path: Path, service: MaterialService) -> str:
 
 def _component() -> MaterialRefComponent:
     return make_runtime().node.material_ref
+
+
+def test_material_ref_codec_round_trips_reserved_characters() -> None:
+    refs = [
+        MaterialRef(
+            kind="source",
+            ref=SourceRef(path="article/a # b.md", start_line=2, end_line=4),
+        ),
+        MaterialRef(
+            kind="resource",
+            ref=ResourceRef(
+                resource_key="r/key",
+                locator="normalized/a # b.md",
+                start_line=1,
+                end_line=1,
+            ),
+        ),
+    ]
+
+    encoded = [format_material_ref(ref) for ref in refs]
+
+    assert encoded == [
+        "source:article/a%20%23%20b.md#L2-L4",
+        "resource:r%2Fkey/normalized/a%20%23%20b.md#L1-L1",
+    ]
+    assert [parse_material_ref(ref) for ref in encoded] == refs
 
 
 def test_add_source_and_resource_refs_and_list_view(tmp_path: Path) -> None:
@@ -178,6 +206,103 @@ def test_context_duplicate_add_is_idempotent_warning(tmp_path: Path) -> None:
     assert len(duplicate.value.contract.context_refs) == 1
 
 
+def test_exact_material_cannot_be_added_to_both_roles(tmp_path: Path) -> None:
+    _create_content_node(tmp_path)
+    _write_source(tmp_path)
+    component = _component()
+    assert component.add_owned_source_ref(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        path="notes.md",
+        start_line=1,
+        end_line=2,
+        actor="coordinator",
+    ).ok
+
+    conflict = component.add_context_source_ref(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        path="notes.md",
+        start_line=1,
+        end_line=2,
+        actor="worker",
+    )
+
+    assert not conflict.ok
+    assert conflict.issues[0].kind == "material_role_conflict"
+    current = component.contract.get_current_contract(tmp_path, node_path="Main.Topic.Core")
+    assert current.ok and current.value is not None
+    assert len(current.value.contract.owned_refs) == 1
+    assert current.value.contract.context_refs == []
+
+
+def test_list_view_exposes_copyable_ref_and_exact_remove_survives_reordering(tmp_path: Path) -> None:
+    _create_content_node(tmp_path)
+    _write_source(tmp_path)
+    component = _component()
+    for line in (1, 2):
+        assert component.add_owned_source_ref(
+            tmp_path,
+            node_path="Main.Topic.Core",
+            path="notes.md",
+            start_line=line,
+            end_line=line,
+            actor="coordinator",
+        ).ok
+
+    listed = component.list_node_material_refs(tmp_path, node_path="Main.Topic.Core")
+    assert listed.ok and listed.value is not None
+    target_ref = listed.value.owned_refs[1].ref
+    first_ref = listed.value.owned_refs[0].ref
+    assert target_ref == "source:notes.md#L2-L2"
+
+    removed_first = component.remove_ref(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        ref=first_ref,
+        actor="coordinator",
+    )
+    assert removed_first.ok
+    removed_target = component.remove_ref(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        ref=target_ref,
+        actor="coordinator",
+    )
+
+    assert removed_target.ok and removed_target.value is not None
+    assert removed_target.value.contract.owned_refs == []
+
+
+def test_invalid_exact_remove_does_not_mutate_contract(tmp_path: Path) -> None:
+    _create_content_node(tmp_path)
+    _write_source(tmp_path)
+    component = _component()
+    assert component.add_owned_source_ref(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        path="notes.md",
+        start_line=1,
+        end_line=1,
+        actor="coordinator",
+    ).ok
+    before = component.contract.get_current_contract(tmp_path, node_path="Main.Topic.Core")
+    assert before.ok and before.value is not None
+
+    missing = component.remove_ref(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        ref="source:notes.md#L3-L3",
+        actor="coordinator",
+    )
+
+    assert not missing.ok
+    assert missing.issues[0].kind == "material_ref_not_found"
+    after = component.contract.get_current_contract(tmp_path, node_path="Main.Topic.Core")
+    assert after.ok and after.value is not None
+    assert after.value.contract == before.value.contract
+
+
 def test_refs_without_range_validate_first_line_and_store_open_range(tmp_path: Path) -> None:
     _create_content_node(tmp_path)
     _write_source(tmp_path)
@@ -240,13 +365,23 @@ def test_worker_delete_permission_and_missing_ref(tmp_path: Path) -> None:
     )
     assert coordinator_ref.ok and coordinator_ref.value is not None
 
-    denied = component.remove_owned_ref(tmp_path, node_path="Main.Topic.Core", index=0, actor="worker")
+    denied = component.remove_ref(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        ref="source:notes.md#L1-L1",
+        actor="worker",
+    )
     assert not denied.ok
     assert denied.issues[0].kind == "material_ref_permission_denied"
 
-    missing = component.remove_owned_ref(tmp_path, node_path="Main.Topic.Core", index=99, actor="coordinator")
+    missing = component.remove_ref(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        ref="source:notes.md#L3-L3",
+        actor="coordinator",
+    )
     assert not missing.ok
-    assert missing.issues[0].kind == "material_ref_index_out_of_range"
+    assert missing.issues[0].kind == "material_ref_not_found"
 
     worker_ref = component.add_context_source_ref(
         tmp_path,
@@ -258,13 +393,18 @@ def test_worker_delete_permission_and_missing_ref(tmp_path: Path) -> None:
     )
     assert worker_ref.ok and worker_ref.value is not None
 
-    removed = component.remove_context_ref(tmp_path, node_path="Main.Topic.Core", index=0, actor="worker")
+    removed = component.remove_ref(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        ref="source:notes.md#L2-L2",
+        actor="worker",
+    )
     assert removed.ok
     assert removed.value is not None
     assert removed.value.contract.context_refs == []
 
 
-def test_coordinator_can_remove_owned_ref_by_index_and_bad_index_is_rejected(tmp_path: Path) -> None:
+def test_coordinator_can_remove_owned_ref_by_exact_selector_and_bad_selector_is_rejected(tmp_path: Path) -> None:
     _create_content_node(tmp_path)
     _write_source(tmp_path)
     component = _component()
@@ -278,11 +418,21 @@ def test_coordinator_can_remove_owned_ref_by_index_and_bad_index_is_rejected(tmp
     )
     assert added.ok and added.value is not None
 
-    negative = component.remove_owned_ref(tmp_path, node_path="Main.Topic.Core", index=-1, actor="coordinator")
-    assert not negative.ok
-    assert negative.issues[0].kind == "material_ref_index_out_of_range"
+    malformed = component.remove_ref(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        ref="source:notes.md#L0-L1",
+        actor="coordinator",
+    )
+    assert not malformed.ok
+    assert malformed.issues[0].kind == "material_ref_selector_invalid"
 
-    removed = component.remove_owned_ref(tmp_path, node_path="Main.Topic.Core", index=0, actor="coordinator")
+    removed = component.remove_ref(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        ref="source:notes.md#L1-L1",
+        actor="coordinator",
+    )
     assert removed.ok
     assert removed.value is not None
     assert removed.value.contract.owned_refs == []
@@ -302,13 +452,23 @@ def test_context_remove_permission_and_missing_ref(tmp_path: Path) -> None:
     )
     assert added.ok and added.value is not None
 
-    denied = component.remove_context_ref(tmp_path, node_path="Main.Topic.Core", index=0, actor="worker")
+    denied = component.remove_ref(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        ref="source:notes.md#L1-L1",
+        actor="worker",
+    )
     assert not denied.ok
     assert denied.issues[0].kind == "material_ref_permission_denied"
 
-    missing = component.remove_context_ref(tmp_path, node_path="Main.Topic.Core", index=99, actor="coordinator")
+    missing = component.remove_ref(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        ref="source:notes.md#L2-L2",
+        actor="coordinator",
+    )
     assert not missing.ok
-    assert missing.issues[0].kind == "material_ref_index_out_of_range"
+    assert missing.issues[0].kind == "material_ref_not_found"
 
 
 def test_actor_and_range_shape_validation(tmp_path: Path) -> None:

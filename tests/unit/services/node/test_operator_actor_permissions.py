@@ -94,13 +94,13 @@ def test_operator_owned_material_ref_is_protected_from_agents(tmp_path) -> None:
     assert added.ok and added.value is not None
     assert added.value.contract.owned_refs[0].added_by == MaterialRefActor.OPERATOR
     for actor in (MaterialRefActor.WORKER, MaterialRefActor.COORDINATOR):
-        denied = refs.remove_owned_ref(
-            tmp_path, node_path="Main.Consumer", index=0, actor=actor
+        denied = refs.remove_ref(
+            tmp_path, node_path="Main.Consumer", ref="source:notes.md", actor=actor
         )
         assert not denied.ok
         assert denied.issues[0].kind == "material_ref_permission_denied"
-    assert refs.remove_owned_ref(
-        tmp_path, node_path="Main.Consumer", index=0, actor=MaterialRefActor.OPERATOR
+    assert refs.remove_ref(
+        tmp_path, node_path="Main.Consumer", ref="source:notes.md", actor=MaterialRefActor.OPERATOR
     ).ok
 
 

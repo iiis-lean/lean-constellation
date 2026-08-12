@@ -515,8 +515,7 @@ class CurrentMaterialRefAddArgs(StrictModel):
 
 
 class CurrentMaterialRefRemoveArgs(StrictModel):
-    ref_scope: Literal["owned", "context"] = Field(description="Which material ref list to remove from.")
-    index: int = Field(ge=0, description="0-based index from the current material ref list.")
+    ref: str = Field(description="Exact copyable material ref returned by list_current_node_material_refs.")
     reason: str | None = Field(default=None, description="Optional removal reason.")
 
 
@@ -530,8 +529,7 @@ class NodeMaterialRefAddArgs(NodePathArgs):
 
 
 class NodeMaterialRefRemoveArgs(NodePathArgs):
-    ref_scope: Literal["owned", "context"] = Field(description="Which material ref list to remove from.")
-    index: int = Field(ge=0, description="0-based index from the target node material ref list.")
+    ref: str = Field(description="Exact copyable material ref returned by list_node_material_refs.")
     reason: str | None = Field(default=None, description="Optional removal reason.")
 
 

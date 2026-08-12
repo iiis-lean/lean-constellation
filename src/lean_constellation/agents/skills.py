@@ -420,7 +420,7 @@ Deterministic manifests and checks verify paths, bytes, readability, and require
                 "Record that a shallower task target is partial progress: it cannot become another node's dependency, feed a Scope export, or close its parent Scope until a later contract version reaches the repo target.",
                 "Before adding or changing a source ref, call `validate_source_range` and `preview_source_ref`, read the excerpt, and confirm that it supports the ref reason, target interface, and node boundary; a structurally valid range is not semantic evidence.",
                 "Treat SourceCorpus locators such as `article/sections/...` as semantic-tool identities, not paths relative to the current workdir.",
-                "Attach durable source or resource context to a target node with `add_node_material_ref` or remove stale entries with `remove_node_material_ref`.",
+                "Attach durable source or resource context to a target node with `add_node_material_ref`. To remove stale material, first read `list_node_material_refs`, then pass its system-generated exact `ref` to `remove_node_material_ref`; list indices are display-only.",
                 "Record visible same-repo or provider node dependencies with `add_node_dep`, and remove stale dependency entries with `remove_node_dep`.",
                 "Record target-node Mathlib module or declaration hints with `add_node_mathlib_module_hint` and `add_node_mathlib_decl_hint` after the candidates are verified or recorded in the repo MathlibIndex.",
                 "Prepare content tasks with enough objective, material, dependency, and interface context for node-local work.",

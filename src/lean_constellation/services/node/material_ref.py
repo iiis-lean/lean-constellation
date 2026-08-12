@@ -15,8 +15,8 @@ from lean_constellation.services.foundation import (
     IssueSeverity,
     ServiceIssue,
     ServiceResult,
-    WriteMode,
 )
+from lean_constellation.services.material.ref_codec import format_material_ref, parse_material_ref
 from lean_constellation.services.node.contract import ContractComponent, NodeContractView
 from lean_constellation.services.node.contract_fields import ContractMaterialRef, MaterialRefActor
 
@@ -26,9 +26,11 @@ if TYPE_CHECKING:
 
 class NodeMaterialRefView(StrictModel):
     index: int
+    ref: str | None = None
     material_kind: Literal["source", "resource"]
     path: str | None = None
     resource_key: str | None = None
+    resource_locator: str | None = None
     start_line: int | None = None
     end_line: int | None = None
     reason: str | None = None
@@ -149,25 +151,15 @@ class MaterialRefComponent:
             actor=actor,
         )
 
-    def remove_owned_ref(
+    def remove_ref(
         self,
         repo_root: Path,
         *,
         node_path: str,
-        index: int,
+        ref: str,
         actor: str | MaterialRefActor,
     ) -> ServiceResult[NodeContractView]:
-        return self._remove_ref(repo_root, node_path=node_path, field_name="owned_refs", index=index, actor=actor)
-
-    def remove_context_ref(
-        self,
-        repo_root: Path,
-        *,
-        node_path: str,
-        index: int,
-        actor: str | MaterialRefActor,
-    ) -> ServiceResult[NodeContractView]:
-        return self._remove_ref(repo_root, node_path=node_path, field_name="context_refs", index=index, actor=actor)
+        return self._remove_ref(repo_root, node_path=node_path, selector=ref, actor=actor)
 
     def list_node_material_refs(self, repo_root: Path, *, node_path: str) -> ServiceResult[NodeMaterialRefsView]:
         current = self.contract.get_current_contract(repo_root, node_path=node_path)
@@ -217,19 +209,40 @@ class MaterialRefComponent:
         valid = self._validate_material_ref(repo_root, material_ref.value)
         if not valid.ok:
             return self.runtime.foundation.fail(valid.issues)
-        opened = self.contract.ensure_open_contract(repo_root, node_path=node_path)
-        if not opened.ok or opened.value is None:
-            return self.runtime.foundation.fail(opened.issues)
-        current = self._normalize_ref_list(getattr(opened.value.contract, field_name))
-        if not current.ok or current.value is None:
-            return self.runtime.foundation.fail(current.issues)
-        existing = self._find_duplicate(current.value, material_ref.value)
+        candidate = self.contract.get_edit_contract(repo_root, node_path=node_path)
+        if not candidate.ok or candidate.value is None:
+            return self.runtime.foundation.fail(candidate.issues)
+        owned = self._normalize_ref_list(candidate.value.contract.owned_refs)
+        context = self._normalize_ref_list(candidate.value.contract.context_refs)
+        if not owned.ok or owned.value is None:
+            return self.runtime.foundation.fail(owned.issues)
+        if not context.ok or context.value is None:
+            return self.runtime.foundation.fail(context.issues)
+        target_refs = owned.value if field_name == "owned_refs" else context.value
+        other_refs = context.value if field_name == "owned_refs" else owned.value
+        conflicting = self._find_duplicate(other_refs, material_ref.value)
+        if conflicting is not None:
+            existing_role = "context" if field_name == "owned_refs" else "owned"
+            requested_role = "owned" if field_name == "owned_refs" else "context"
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "material_role_conflict",
+                    "The exact material ref already exists under a different role.",
+                    object_ref=node_path,
+                    field=field_name,
+                    current=existing_role,
+                    expected=requested_role,
+                    details={
+                        "ref": format_material_ref(material_ref.value),
+                        "existing_role": existing_role,
+                        "requested_role": requested_role,
+                    },
+                )
+            )
+        existing = self._find_duplicate(target_refs, material_ref.value)
         if existing is not None:
-            view = self.contract.get_current_contract(repo_root, node_path=node_path)
-            if not view.ok:
-                return self.runtime.foundation.fail(view.issues)
             return self.runtime.foundation.ok(
-                view.value,
+                candidate.value,
                 warnings=[
                     self.runtime.foundation.issue(
                         "material_ref_duplicate",
@@ -246,48 +259,75 @@ class MaterialRefComponent:
             reason=reason.strip() if reason and reason.strip() else None,
             added_by=normalized_actor.value,
         )
-        item = self._deduplicate_ref_id(item, current.value)
-        current.value.append(item)
-        setattr(opened.value.contract, field_name, list(current.value))
-        saved = self._save_contract(repo_root, node_path, opened.value.contract)
-        if not saved.ok:
+        item = self._deduplicate_ref_id(item, [*owned.value, *context.value])
+        target_refs.append(item)
+        setattr(candidate.value.contract, field_name, list(target_refs))
+        saved = self._save_contract(repo_root, node_path, candidate.value.contract)
+        if not saved.ok or saved.value is None:
             return self.runtime.foundation.fail(saved.issues)
-        return self.contract.get_current_contract(repo_root, node_path=node_path)
+        return saved
 
     def _remove_ref(
         self,
         repo_root: Path,
         *,
         node_path: str,
-        field_name: Literal["owned_refs", "context_refs"],
-        index: int,
+        selector: str,
         actor: str | MaterialRefActor,
     ) -> ServiceResult[NodeContractView]:
         normalized_actor = self._normalize_actor(actor)
         if not normalized_actor.ok or normalized_actor.value is None:
             return self.runtime.foundation.fail(normalized_actor.issues)
-        if index < 0:
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue("material_ref_index_out_of_range", "Material ref index is out of range.", field="index", current=str(index))
-            )
-        opened = self.contract.ensure_open_contract(repo_root, node_path=node_path)
-        if not opened.ok or opened.value is None:
-            return self.runtime.foundation.fail(opened.issues)
-        current = self._normalize_ref_list(getattr(opened.value.contract, field_name))
-        if not current.ok or current.value is None:
-            return self.runtime.foundation.fail(current.issues)
-        if index >= len(current.value):
+        try:
+            parsed = parse_material_ref(selector)
+        except ValueError as exc:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
-                    "material_ref_index_out_of_range",
-                    "Material ref index is out of range.",
+                    "material_ref_selector_invalid",
+                    str(exc),
                     object_ref=node_path,
-                    field=field_name,
-                    current=str(index),
-                    expected=f"0-{len(current.value) - 1}" if current.value else "no items",
+                    field="ref",
+                    current=str(selector),
                 )
             )
-        target = current.value[index]
+        candidate = self.contract.get_edit_contract(repo_root, node_path=node_path)
+        if not candidate.ok or candidate.value is None:
+            return self.runtime.foundation.fail(candidate.issues)
+        owned = self._normalize_ref_list(candidate.value.contract.owned_refs)
+        context = self._normalize_ref_list(candidate.value.contract.context_refs)
+        if not owned.ok or owned.value is None:
+            return self.runtime.foundation.fail(owned.issues)
+        if not context.ok or context.value is None:
+            return self.runtime.foundation.fail(context.issues)
+        matches: list[tuple[Literal["owned_refs", "context_refs"], int, ContractMaterialRef]] = []
+        for field_name, items in (("owned_refs", owned.value), ("context_refs", context.value)):
+            matches.extend(
+                (field_name, index, item)
+                for index, item in enumerate(items)
+                if self._same_ref(item.ref, parsed)
+            )
+        if not matches:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "material_ref_not_found",
+                    "No current material ref matches the exact selector.",
+                    object_ref=node_path,
+                    field="ref",
+                    current=selector,
+                )
+            )
+        if len(matches) > 1:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "material_ref_selector_ambiguous",
+                    "The exact selector matches more than one current material ref.",
+                    object_ref=node_path,
+                    field="ref",
+                    current=selector,
+                    details={"match_count": str(len(matches))},
+                )
+            )
+        field_name, index, target = matches[0]
         if not self._actor_can_manage(normalized_actor.value, target.added_by):
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
@@ -300,14 +340,20 @@ class MaterialRefComponent:
                 )
             )
         setattr(
-            opened.value.contract,
+            candidate.value.contract,
             field_name,
-            [item for item_index, item in enumerate(current.value) if item_index != index],
+            [
+                item
+                for item_index, item in enumerate(
+                    owned.value if field_name == "owned_refs" else context.value
+                )
+                if item_index != index
+            ],
         )
-        saved = self._save_contract(repo_root, node_path, opened.value.contract)
-        if not saved.ok:
+        saved = self._save_contract(repo_root, node_path, candidate.value.contract)
+        if not saved.ok or saved.value is None:
             return self.runtime.foundation.fail(saved.issues)
-        return self.contract.get_current_contract(repo_root, node_path=node_path)
+        return saved
 
     def _build_material_ref(
         self,
@@ -384,9 +430,14 @@ class MaterialRefComponent:
 
     def _material_ref_view(self, repo_root: Path, index: int, item: ContractMaterialRef) -> NodeMaterialRefView:
         start_line, end_line = self._stored_range(item.ref)
+        try:
+            selector = format_material_ref(item.ref)
+        except ValueError:
+            selector = None
         if item.ref.kind == "source" and isinstance(item.ref.ref, SourceRef):
             path = item.ref.ref.path
             resource_key = None
+            resource_locator = None
             preview = self._material_service().material_read.preview_source_ref(
                 repo_root,
                 path=path,
@@ -396,6 +447,7 @@ class MaterialRefComponent:
         elif item.ref.kind == "resource" and isinstance(item.ref.ref, ResourceRef):
             path = None
             resource_key = item.ref.ref.resource_key
+            resource_locator = item.ref.ref.locator
             preview = self._material_service().material_read.preview_resource_ref(
                 repo_root,
                 resource_key=resource_key,
@@ -405,14 +457,17 @@ class MaterialRefComponent:
         else:
             path = None
             resource_key = None
+            resource_locator = None
             preview = self.runtime.foundation.fail(self.runtime.foundation.issue("material_ref_invalid", "Material ref shape is invalid."))
         valid = preview.ok
         preview_summary = preview.value.summary if preview.ok and preview.value is not None else "; ".join(issue.message for issue in preview.issues)
         return NodeMaterialRefView(
             index=index,
+            ref=selector,
             material_kind=item.ref.kind,  # type: ignore[arg-type]
             path=path,
             resource_key=resource_key,
+            resource_locator=resource_locator,
             start_line=start_line,
             end_line=end_line,
             reason=item.reason,
@@ -470,12 +525,8 @@ class MaterialRefComponent:
             return target != MaterialRefActor.OPERATOR
         return target == MaterialRefActor.OPERATOR
 
-    def _save_contract(self, repo_root: Path, node_path: str, contract: object) -> ServiceResult[object]:
-        node = self.runtime.node.node_tree.node_store.resolve_active_node(repo_root, path=node_path)
-        if not node.ok or node.value is None:
-            return self.runtime.foundation.fail(node.issues)
-        path = self.runtime.node.node_tree.node_store.contract_path(repo_root, node_id=node.value.node_id, version=getattr(contract, "version"))
-        return self.runtime.foundation.store.write_json_atomic(path, contract, mode=WriteMode.UPDATE_EXISTING)
+    def _save_contract(self, repo_root: Path, node_path: str, contract: object) -> ServiceResult[NodeContractView]:
+        return self.contract._persist_open_candidate(repo_root, node_path=node_path, candidate=contract)
 
     def _stable_ref_id(self, ref: MaterialRef) -> str:
         payload = json.dumps(ref.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)
@@ -500,6 +551,10 @@ class MaterialRefComponent:
             if item.ref.model_dump(mode="json") == ref_dump:
                 return item
         return None
+
+    @staticmethod
+    def _same_ref(left: MaterialRef, right: MaterialRef) -> bool:
+        return left.model_dump(mode="json") == right.model_dump(mode="json")
 
     def _locator(self, ref: MaterialRef) -> str:
         if ref.kind == "source" and isinstance(ref.ref, SourceRef):

@@ -159,8 +159,7 @@ def test_current_material_ref_wrapper_adds_and_removes_refs(tmp_path: Path) -> N
     removed = service.remove_current_material_ref(
         tmp_path,
         node_path="Main.Topic.Consumer",
-        ref_scope="owned",
-        index=0,
+        ref="source:notes.md#L1-L2",
         actor="coordinator",
     )
 

@@ -9,6 +9,7 @@ from lean_constellation.services.material.material_read import (
     MaterialSearchHit,
     MaterialSearchView,
 )
+from lean_constellation.services.material.ref_codec import format_material_ref, parse_material_ref
 from lean_constellation.services.material.resource_curation import (
     ResourceCurationComponent,
     ResourceCurationDecisionView,
@@ -85,6 +86,8 @@ __all__ = [
     "MaterialRefPreviewView",
     "MaterialSearchHit",
     "MaterialSearchView",
+    "format_material_ref",
+    "parse_material_ref",
     "MaterialService",
     "ResourceCurationComponent",
     "ResourceCurationDecisionView",

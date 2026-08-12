@@ -575,7 +575,7 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
         server,
         "content_plan",
         "remove_current_material_ref",
-        {"ref_scope": "owned", "index": 0, "reason": "Strict ToolSweep material ref removal."},
+        {"ref": material_refs.value["owned_refs"][0]["ref"], "reason": "Strict ToolSweep material ref removal."},
         runtime_context=plan_ctx,
         recorder=evidence_recorder,
         assertion_summary="Current node material ref was removed.",
