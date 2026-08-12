@@ -245,6 +245,8 @@ def test_visible_node_dependency_recon_skill_spells_out_dependency_evidence_poli
     assert "worker-owned dependencies that are clearly stale" in body
     assert "unresolved_within_visible_boundaries" in body
     assert "structured evidence" in body
+    assert "active committed contract head" in body
+    assert "Open-only or newer open candidates are not dependency evidence" in body
 
 
 def test_source_and_resource_acquisition_skills_reference_visible_tools() -> None:
@@ -335,6 +337,19 @@ def test_content_plan_specialized_skills_spell_out_operational_flow() -> None:
     assert "submit_content_node_ready" in completion
     assert "submit_content_node_blocked" in completion
     assert "submit_content_node_failed" in completion
+
+    public_boundary = specs["current-node-public-boundary-curation"].body
+    assert "exact current committed revision" in public_boundary
+    assert "first open-only Content task" in public_boundary
+    assert "do not create a Decl revision, Round, or Content contract version" in public_boundary
+    assert "active committed Content head" not in public_boundary
+
+    scope_boundary = specs["scope-export-interface-curation"].body
+    assert "active committed contract head" in scope_boundary
+    assert "Open child candidates are not export sources" in scope_boundary
+    assert "must already have a caller-owned open revision" in scope_boundary
+    assert "never creates or commits the target" in scope_boundary
+    assert "intermediate active-plus-open or open-only Scope is blocked" in scope_boundary
 
     completion_policy = specs["content-plan-completion-policy"].body
     assert "interface_declared:" in completion_policy

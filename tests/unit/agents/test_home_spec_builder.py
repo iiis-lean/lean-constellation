@@ -22,6 +22,29 @@ def test_home_bootstrap_spec_contains_instruction_skills_and_tool_views() -> Non
     assert spec.fixed_env["LEAN_CONSTELLATION_APPLICATION_TOOL_VIEW"] == "content_plan"
 
 
+def test_generated_homes_distinguish_local_visibility_from_stable_scope_inputs() -> None:
+    content_plan = build_agent_home_bootstrap_spec(
+        "ContentPlanAgent",
+        mcp_http_base_url="http://127.0.0.1:8765",
+    )
+    coordinator = build_agent_home_bootstrap_spec(
+        "CoordinatorAgent",
+        mcp_http_base_url="http://127.0.0.1:8765",
+    )
+
+    local = content_plan.skill_specs[
+        "current-node-public-boundary-curation"
+    ].body
+    scope = coordinator.skill_specs["scope-export-interface-curation"].body
+    assert "exact current committed revision" in local
+    assert "first open-only Content task" in local
+    assert "active committed Content head" not in local
+    assert "active committed contract head" in scope
+    assert "Open child candidates are not export sources" in scope
+    assert "must already have a caller-owned open revision" in scope
+    assert "never creates or commits the target" in scope
+
+
 def test_home_bootstrap_spec_embeds_provider_home_spec() -> None:
     spec = build_agent_home_bootstrap_spec(
         "ProofFormalWorkerAgent",
