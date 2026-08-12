@@ -29,6 +29,31 @@ def _register_resource(service: MaterialService, repo_root: Path) -> str:
     return registered.value.resource.resource_key
 
 
+def _register_multifile_resource(service: MaterialService, repo_root: Path) -> str:
+    target = service.normalize_resource_target("https://example.com/multifile-resource")
+    assert target.ok and target.value is not None
+    temp = repo_root / "multifile_resource_tmp"
+    (temp / "normalized").mkdir(parents=True)
+    (temp / "normalized" / "main.md").write_text("canonical-only token\n", encoding="utf-8")
+    (temp / "normalized" / "appendix.md").write_text("appendix-only token\n", encoding="utf-8")
+    selected = service.resource_library._refresh_material_manifest(
+        temp,
+        canonical_normalized_entry="normalized/main.md",
+    )
+    assert selected.ok and selected.value is not None
+    registered = service.register_local_resource(
+        repo_root,
+        target=target.value,
+        temp_dir=temp,
+        metadata=ResourceMetadataInput(
+            title="Multifile resource",
+            source_url="https://example.com/multifile-resource",
+        ),
+    )
+    assert registered.ok and registered.value is not None
+    return registered.value.resource.resource_key
+
+
 def test_list_material_files_source_resource_all_and_invalid_kind(tmp_path: Path) -> None:
     service = make_runtime().material
     _prepare_source(tmp_path)
@@ -115,6 +140,37 @@ def test_search_material_text_literal_regex_limit_and_errors(tmp_path: Path) -> 
     assert bad_limit.issues[0].kind == "invalid_search_limit"
     assert not bad_scope.ok
     assert bad_scope.issues[0].kind == "invalid_material_kind"
+
+
+def test_resource_search_scans_each_manifest_file_once_and_preserves_path(tmp_path: Path) -> None:
+    service = make_runtime().material
+    resource_key = _register_multifile_resource(service, tmp_path)
+
+    searched = service.search_material_text(
+        tmp_path,
+        query=r"(?:canonical|appendix)-only",
+        scope="resource",
+        regex=True,
+        limit=None,
+    )
+
+    assert searched.ok and searched.value is not None
+    assert searched.value.total_matching_count == 2
+    assert {
+        (hit.resource_locator, hit.line_text, hit.ref)
+        for hit in searched.value.hits
+    } == {
+        (
+            "normalized/main.md",
+            "canonical-only token",
+            f"resource:{resource_key}/normalized/main.md#L1-L1",
+        ),
+        (
+            "normalized/appendix.md",
+            "appendix-only token",
+            f"resource:{resource_key}/normalized/appendix.md#L1-L1",
+        ),
+    }
 
 
 def test_validate_and_preview_material_ref_source_resource_and_malformed(tmp_path: Path) -> None:

@@ -983,6 +983,10 @@ def test_source_and_resource_text_search_tools_enforce_material_boundary(tmp_pat
     assert {hit["material_kind"] for hit in resource_hits["hits"]} == {"resource"}
     assert source_hits["hits"][0]["line_text"] == "shared needle from source"
     assert resource_hits["hits"][0]["line_text"] == "shared needle from resource"
+    assert resource_hits["hits"][0]["resource_locator"] == "normalized/resource.md"
+    assert resource_hits["hits"][0]["ref"] == (
+        f"resource:{registered.value.resource.resource_key}/normalized/resource.md#L1-L1"
+    )
 
 
 def test_resource_target_tool_invokes_material_service(tmp_path: Path) -> None:

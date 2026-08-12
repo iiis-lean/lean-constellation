@@ -9,7 +9,9 @@ from typing import TYPE_CHECKING, Any, Literal
 from pydantic import Field
 
 from lean_constellation.domain.common import StrictModel
+from lean_constellation.domain.refs import MaterialRef, ResourceRef, SourceRef
 from lean_constellation.services.foundation import FoundationContext, ServiceResult
+from lean_constellation.services.material.ref_codec import format_material_ref
 
 if TYPE_CHECKING:
     from lean_constellation.services.runtime import LeanRuntimeServices
@@ -18,6 +20,8 @@ if TYPE_CHECKING:
 class MaterialFileEntry(StrictModel):
     kind: str
     locator: str
+    resource_key: str | None = None
+    resource_locator: str | None = None
     line_count: int
     readable: bool
 
@@ -43,8 +47,10 @@ class MaterialRangeView(StrictModel):
 
 class MaterialSearchHit(StrictModel):
     material_kind: Literal["source", "resource"]
+    ref: str
     path: str | None = None
     resource_key: str | None = None
+    resource_locator: str | None = None
     line_number: int
     line_text: str
     reusable_ref_fields: dict[str, str | int] = Field(default_factory=dict)
@@ -76,7 +82,13 @@ class MaterialReadComponent:
         self.source_corpus = source_corpus
         self.resource_library = resource_library
 
-    def list_material_files(self, repo_root: Path, *, material_kind: str) -> ServiceResult[MaterialFileTreeView]:
+    def list_material_files(
+        self,
+        repo_root: Path,
+        *,
+        material_kind: str,
+        _count_resource_lines: bool = True,
+    ) -> ServiceResult[MaterialFileTreeView]:
         material_kind = material_kind.lower()
         if material_kind not in {"source", "resource", "all"}:
             return self.runtime.foundation.fail(self.runtime.foundation.issue("invalid_material_kind", "material_kind must be source, resource, or all."))
@@ -96,14 +108,48 @@ class MaterialReadComponent:
                             )
                         )
         if material_kind in {"resource", "all"}:
-            resource_root = self.runtime.foundation.layout.resources_root(FoundationContext(repo_root=Path(repo_root))) / "items"
-            if resource_root.exists():
-                for path in sorted(resource_root.glob("*/normalized/**/*")):
-                    if path.is_file():
-                        readable, line_count = self._readable_line_count(path)
-                        key = path.relative_to(resource_root).parts[0]
-                        locator = f"{key}:{path.relative_to(resource_root / key).as_posix()}"
-                        files.append(MaterialFileEntry(kind="resource", locator=locator, line_count=line_count, readable=readable))
+            if self.resource_library is None:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "resource_library_unavailable",
+                        "ResourceLibraryComponent is not configured.",
+                    )
+                )
+            resources = self.resource_library.list_resources(repo_root)
+            if not resources.ok or resources.value is None:
+                return self.runtime.foundation.fail(resources.issues)
+            for resource in resources.value:
+                manifest = self.resource_library.get_resource_material_manifest(
+                    repo_root,
+                    resource_key=resource.resource_key,
+                )
+                if not manifest.ok or manifest.value is None:
+                    return self.runtime.foundation.fail(manifest.issues)
+                for item in sorted(manifest.value.files, key=lambda value: value.path):
+                    if item.category != "normalized" or item.readable_kind is None:
+                        continue
+                    resolved = self._resource_file_path(
+                        repo_root,
+                        resource_key=resource.resource_key,
+                        resource_locator=item.path,
+                    )
+                    if not resolved.ok or resolved.value is None:
+                        return self.runtime.foundation.fail(resolved.issues)
+                    readable, line_count = (
+                        self._readable_line_count(resolved.value)
+                        if _count_resource_lines
+                        else (True, 0)
+                    )
+                    files.append(
+                        MaterialFileEntry(
+                            kind="resource",
+                            locator=f"{resource.resource_key}:{item.path}",
+                            resource_key=resource.resource_key,
+                            resource_locator=item.path,
+                            line_count=line_count,
+                            readable=readable,
+                        )
+                    )
         return self.runtime.foundation.ok(
             MaterialFileTreeView(
                 repo_root=str(Path(repo_root)),
@@ -182,7 +228,11 @@ class MaterialReadComponent:
             return self.runtime.foundation.fail(self.runtime.foundation.issue("empty_query", "Search query must be non-empty."))
         if limit is not None and limit < 1:
             return self.runtime.foundation.fail(self.runtime.foundation.issue("invalid_search_limit", "Search limit must be >= 1."))
-        files = self.list_material_files(repo_root, material_kind=scope)
+        files = self.list_material_files(
+            repo_root,
+            material_kind=scope,
+            _count_resource_lines=False,
+        )
         if not files.ok or files.value is None:
             return self.runtime.foundation.fail(files.issues)
         try:
@@ -197,23 +247,57 @@ class MaterialReadComponent:
                 if item.kind == "source":
                     path = self._source_root(repo_root) / item.locator
                     reusable_key = {"path": item.locator}
+                    ref = MaterialRef(
+                        kind="source",
+                        ref=SourceRef(path=item.locator),
+                    )
+                    resource_key = None
+                    resource_locator = None
                 else:
-                    resource_key = item.locator.split(":", 1)[0]
-                    if self.resource_library is None:
+                    resource_key = item.resource_key
+                    resource_locator = item.resource_locator
+                    if resource_key is None or resource_locator is None:
                         continue
-                    entry = self.resource_library.normalized_entry_path(repo_root, resource_key)
-                    if not entry.ok or entry.value is None:
+                    resolved = self._resource_file_path(
+                        repo_root,
+                        resource_key=resource_key,
+                        resource_locator=resource_locator,
+                    )
+                    if not resolved.ok or resolved.value is None:
                         continue
-                    path = entry.value
-                    reusable_key = {"resource_key": resource_key}
+                    path = resolved.value
+                    reusable_key = {
+                        "resource_key": resource_key,
+                        "locator": resource_locator,
+                    }
+                    ref = MaterialRef(
+                        kind="resource",
+                        ref=ResourceRef(
+                            resource_key=resource_key,
+                            locator=resource_locator,
+                        ),
+                    )
                 for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
                     matched = bool(pattern.search(line)) if pattern else query.lower() in line.lower()
                     if matched:
                         hits.append(
                             MaterialSearchHit(
                                 material_kind=item.kind,  # type: ignore[arg-type]
+                                ref=format_material_ref(
+                                    ref.model_copy(
+                                        update={
+                                            "ref": ref.ref.model_copy(
+                                                update={
+                                                    "start_line": line_number,
+                                                    "end_line": line_number,
+                                                }
+                                            )
+                                        }
+                                    )
+                                ),
                                 path=item.locator if item.kind == "source" else None,
                                 resource_key=resource_key if item.kind == "resource" else None,
+                                resource_locator=resource_locator if item.kind == "resource" else None,
                                 line_number=line_number,
                                 line_text=line,
                                 reusable_ref_fields={**reusable_key, "start_line": line_number, "end_line": line_number},
@@ -396,6 +480,43 @@ class MaterialReadComponent:
 
     def _source_root(self, repo_root: Path) -> Path:
         return self.runtime.foundation.layout.source_corpus_root(FoundationContext(repo_root=Path(repo_root)))
+
+    def _resource_file_path(
+        self,
+        repo_root: Path,
+        *,
+        resource_key: str,
+        resource_locator: str,
+    ) -> ServiceResult[Path]:
+        if self.resource_library is None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "resource_library_unavailable",
+                    "ResourceLibraryComponent is not configured.",
+                )
+            )
+        resource = self.resource_library.get_resource(repo_root, resource_key=resource_key)
+        if not resource.ok or resource.value is None:
+            return self.runtime.foundation.fail(resource.issues)
+        try:
+            target = self._resolve_inside(Path(resource.value.resource_root), resource_locator)
+        except ValueError as exc:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "resource_material_path_invalid",
+                    str(exc),
+                    object_ref=f"{resource_key}:{resource_locator}",
+                )
+            )
+        if not target.is_file():
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "resource_material_file_missing",
+                    "Resource manifest file is missing from the finalized package.",
+                    object_ref=f"{resource_key}:{resource_locator}",
+                )
+            )
+        return self.runtime.foundation.ok(target)
 
     def _resolve_inside(self, root: Path, path: str) -> Path:
         relative = self.runtime.foundation.layout.ensure_relative_path(path)

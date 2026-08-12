@@ -871,7 +871,10 @@ def build_material_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="search_resource_text",
-            description="Search registered resource library text in the current repo.",
+            description=(
+                "Search every readable normalized file recorded by each finalized resource manifest in the current repo. "
+                "Each hit includes the resource key, exact internal locator, line number, and a copyable material ref."
+            ),
             args_model=TextSearchArgs,
             capability=ToolCapability.READ,
             result_view="material_search",

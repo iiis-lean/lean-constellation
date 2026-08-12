@@ -675,6 +675,17 @@ class ResourceLibraryComponent:
             return self.runtime.foundation.fail(resource.issues)
         return self.runtime.foundation.ok(Path(resource.value.resource_root) / resource.value.resource.normalized_entry)
 
+    def get_resource_material_manifest(
+        self,
+        repo_root: Path,
+        *,
+        resource_key: str,
+    ) -> ServiceResult[ResourceMaterialManifest]:
+        resource = self.get_resource(repo_root, resource_key=resource_key)
+        if not resource.ok or resource.value is None:
+            return self.runtime.foundation.fail(resource.issues)
+        return self._load_material_manifest(Path(resource.value.resource_root))
+
     def _coerce_target_model(self, target: str | ResourceTarget | ResourceTargetView) -> ServiceResult[ResourceTarget]:
         if isinstance(target, ResourceTarget):
             return self.runtime.foundation.ok(target)
