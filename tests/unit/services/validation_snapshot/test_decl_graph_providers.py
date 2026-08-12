@@ -271,6 +271,13 @@ def _export_main_result_from_provider_main(runtime: LeanRuntimeServices, repo_ro
             repo_root
         )
         assert synchronized.ok, synchronized.issues
+    content_commit = runtime.node.contract._commit_content_contract_with_head(
+        repo_root,
+        node_path=NODE_PATH,
+        summary="Publish the stable Content provider boundary.",
+        decl_graph_head={"main_result": 1},
+    )
+    assert content_commit.ok, content_commit.issues
     topic_export = runtime.node.export.add_scope_export(
         repo_root,
         scope_path="Main.Topic",
