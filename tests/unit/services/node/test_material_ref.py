@@ -94,6 +94,42 @@ def test_source_ref_and_selector_require_exact_line_range() -> None:
     assert parse_material_ref("resource:notes") == resource
 
 
+def test_material_ref_kind_must_match_structured_payload() -> None:
+    source = MaterialRef.model_validate(
+        {
+            "kind": "source",
+            "ref": {"path": "article.md", "start_line": 1, "end_line": 2},
+        }
+    )
+    resource = MaterialRef.model_validate(
+        {"kind": "resource", "ref": {"resource_key": "notes"}}
+    )
+
+    assert isinstance(source.ref, SourceRef)
+    assert isinstance(resource.ref, ResourceRef)
+    assert MaterialRef.model_validate(source.model_dump()) == source
+    assert MaterialRef.model_validate(resource.model_dump()) == resource
+
+    with pytest.raises(ValidationError, match="source material ref requires SourceRef"):
+        MaterialRef.model_validate(
+            {"kind": "source", "ref": {"resource_key": "escape"}}
+        )
+    with pytest.raises(ValidationError, match="resource material ref requires ResourceRef"):
+        MaterialRef.model_validate(
+            {
+                "kind": "resource",
+                "ref": {"path": "article.md", "start_line": 1, "end_line": 1},
+            }
+        )
+    with pytest.raises(ValidationError, match="literal_error"):
+        MaterialRef.model_validate(
+            {
+                "kind": "unknown",
+                "ref": {"path": "article.md", "start_line": 1, "end_line": 1},
+            }
+        )
+
+
 def test_material_add_tool_args_require_ranges_only_for_source() -> None:
     with pytest.raises(ValidationError, match="explicit"):
         CurrentMaterialRefAddArgs(

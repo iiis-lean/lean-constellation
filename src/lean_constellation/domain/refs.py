@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import Field, model_validator
 
 from lean_constellation.domain.common import StrictModel
@@ -44,5 +46,13 @@ class MathlibRef(StrictModel):
 
 
 class MaterialRef(StrictModel):
-    kind: str
+    kind: Literal["source", "resource"]
     ref: SourceRef | ResourceRef
+
+    @model_validator(mode="after")
+    def _validate_kind_matches_ref(self) -> MaterialRef:
+        if self.kind == "source" and not isinstance(self.ref, SourceRef):
+            raise ValueError("source material ref requires SourceRef payload")
+        if self.kind == "resource" and not isinstance(self.ref, ResourceRef):
+            raise ValueError("resource material ref requires ResourceRef payload")
+        return self

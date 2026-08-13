@@ -903,10 +903,12 @@ class SourceCorpusComponent:
         manifest = self.get_source_corpus_manifest(repo_root)
         if not manifest.ok or manifest.value is None:
             return self.runtime.foundation.fail(manifest.issues)
+        manifest_by_path = {item.path: item for item in manifest.value.files}
         return self.runtime.foundation.ok(
             self._validate_source_ref_against_manifest(
                 repo_root,
-                manifest=manifest.value,
+                manifest_by_path=manifest_by_path,
+                line_count_by_path={},
                 path=path,
                 start_line=start_line,
                 end_line=end_line,
@@ -924,11 +926,14 @@ class SourceCorpusComponent:
         manifest = self.get_source_corpus_manifest(repo_root)
         if not manifest.ok or manifest.value is None:
             return self.runtime.foundation.fail(manifest.issues)
+        manifest_by_path = {item.path: item for item in manifest.value.files}
+        line_count_by_path: dict[str, int] = {}
         return self.runtime.foundation.ok(
             [
                 self._validate_source_ref_against_manifest(
                     repo_root,
-                    manifest=manifest.value,
+                    manifest_by_path=manifest_by_path,
+                    line_count_by_path=line_count_by_path,
                     path=ref.path,
                     start_line=ref.start_line,
                     end_line=ref.end_line,
@@ -941,7 +946,8 @@ class SourceCorpusComponent:
         self,
         repo_root: Path,
         *,
-        manifest: SourceCorpusManifestView,
+        manifest_by_path: dict[str, SourceCorpusFileView],
+        line_count_by_path: dict[str, int],
         path: str,
         start_line: int,
         end_line: int,
@@ -968,10 +974,7 @@ class SourceCorpusComponent:
                 summary="Source file not found.",
                 issue_code="source_ref_file_missing",
             )
-        manifest_entry = next(
-            (item for item in manifest.files if item.path == canonical_path),
-            None,
-        )
+        manifest_entry = manifest_by_path.get(canonical_path)
         if manifest_entry is None:
             return SourceRefValidationView(
                 valid=False,
@@ -991,7 +994,9 @@ class SourceCorpusComponent:
                 summary="Source file is not readable UTF-8 text in the current SourceCorpus manifest.",
                 issue_code="source_ref_not_readable",
             )
-        line_count = self._line_count(target)
+        if canonical_path not in line_count_by_path:
+            line_count_by_path[canonical_path] = self._line_count(target)
+        line_count = line_count_by_path[canonical_path]
         valid = 1 <= start_line <= end_line <= line_count
         return SourceRefValidationView(
             valid=valid,

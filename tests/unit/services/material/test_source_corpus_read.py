@@ -13,6 +13,7 @@ from lean_constellation.services.external_clients import (
 )
 from lean_constellation.services.material import MaterialService
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
+from lean_constellation.domain.refs import SourceRef
 
 
 class FakeMaterialClient:
@@ -593,6 +594,41 @@ def test_validate_source_ref_requires_current_manifest_membership_and_readable_t
     assert absent.value.issue_code == "source_ref_not_in_corpus"
     assert binary.ok and binary.value is not None
     assert binary.value.issue_code == "source_ref_not_readable"
+
+
+def test_validate_source_refs_reuses_manifest_lookup_and_actual_line_count_per_file(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _write_source(tmp_path)
+    service = make_runtime().material
+    scanned = service.source_corpus.scan_source_corpus(tmp_path)
+    assert scanned.ok and scanned.value is not None
+    assert service.runtime.foundation.store.write_json_atomic(
+        service.source_corpus._manifest_path(tmp_path),
+        scanned.value,
+    ).ok
+    target = tmp_path / ".lean_constellation" / "source" / "notes" / "section.md"
+    calls: list[Path] = []
+    original_line_count = service.source_corpus._line_count
+
+    def counted_line_count(path: Path) -> int:
+        calls.append(path)
+        return original_line_count(path)
+
+    monkeypatch.setattr(service.source_corpus, "_line_count", counted_line_count)
+    validated = service.source_corpus.validate_source_refs(
+        tmp_path,
+        refs=[
+            SourceRef(path="notes/section.md", start_line=1, end_line=1),
+            SourceRef(path="notes/section.md", start_line=2, end_line=2),
+            SourceRef(path="notes/section.md", start_line=2, end_line=3),
+        ],
+    )
+
+    assert validated.ok and validated.value is not None
+    assert [item.valid for item in validated.value] == [True, True, True]
+    assert calls == [target]
 
 
 def test_check_target_in_source_corpus_matches_path_and_sha(tmp_path: Path) -> None:

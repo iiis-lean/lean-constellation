@@ -2,6 +2,9 @@ from tests.unit_services_helpers import initialize_native_test_repo, lean_check_
 
 from pathlib import Path
 
+import pytest
+from pydantic import ValidationError
+
 from lean_constellation.domain.interface import DeclInterface, DeclKind
 from lean_constellation.domain.lean_check import LeanCheck
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
@@ -33,6 +36,20 @@ def _write_preparation_input(tmp_path: Path, *, interfaces: list[DeclInterface])
     path = foundation.layout.preparation_input_path(FoundationContext(repo_root=tmp_path))
     result = foundation.store.write_json_atomic(path, input_value)
     assert result.ok
+
+
+def test_decl_interface_rejects_mismatched_material_ref_payload() -> None:
+    with pytest.raises(ValidationError, match="source material ref requires SourceRef"):
+        DeclInterface.model_validate(
+            {
+                "name": "main_result",
+                "kind": "theorem",
+                "summary": "Main theorem.",
+                "source_refs": [
+                    {"kind": "source", "ref": {"resource_key": "not-source"}}
+                ],
+            }
+        )
 
 
 def _init_main(tmp_path: Path, *, interfaces: list[DeclInterface]) -> None:
