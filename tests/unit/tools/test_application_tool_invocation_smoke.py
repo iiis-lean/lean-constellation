@@ -803,6 +803,96 @@ def test_source_range_validation_and_preview_tools_invoke_material_service(tmp_p
     assert invalid["issue_code"] == "source_ref_range_invalid"
 
 
+def test_source_reads_separate_corpus_validity_from_node_material_authorization(
+    tmp_path: Path,
+) -> None:
+    runtime = create_test_runtime_services(register_application_tools=True)
+    source_root = tmp_path / ".lean_constellation" / "source"
+    source_root.mkdir(parents=True)
+    (source_root / "source.md").write_text(
+        "outside before\nassigned one\nassigned two\noutside after\n",
+        encoding="utf-8",
+    )
+    assert runtime.node.node_tree.ensure_root_scope_node(tmp_path).ok
+    assert runtime.node.create_content_node(
+        tmp_path,
+        path="Main.Consumer",
+        goal="Consumer goal.",
+        boundary="Consumer boundary.",
+        objective="Use assigned evidence.",
+        success_criteria="Evidence is used.",
+    ).ok
+    assert runtime.node.material_ref.add_owned_source_ref(
+        tmp_path,
+        node_path="Main.Consumer",
+        path="source.md",
+        start_line=2,
+        end_line=3,
+        actor="coordinator",
+    ).ok
+
+    worker = _raw(
+        tmp_path,
+        view="statement_nl_worker",
+        agent_type="StatementNlWorkerAgent",
+        node_path="Main.Consumer",
+        stage="statement_nl",
+    )
+    accepted = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(
+            worker,
+            tool_name="read_source_range",
+            flat_args={"path": "source.md", "start_line": 2, "end_line": 3},
+        )
+    )
+    context_failure = _unwrap_tool_failure(
+        runtime.tool_facade.invoke_agent_tool(
+            worker,
+            tool_name="read_source_range",
+            flat_args={
+                "path": "source.md",
+                "start_line": 2,
+                "end_line": 2,
+                "context_lines": 1,
+            },
+        )
+    )
+    preview_failure = _unwrap_tool_failure(
+        runtime.tool_facade.invoke_agent_tool(
+            worker,
+            tool_name="preview_source_ref",
+            flat_args={"path": "source.md", "start_line": 4, "end_line": 4},
+        )
+    )
+    search = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(
+            worker,
+            tool_name="search_source_text",
+            flat_args={"query": "outside", "limit": 10},
+        )
+    )
+    coordinator = _raw(
+        tmp_path,
+        view="native_repo_coordinator",
+        agent_type="NativeRepoCoordinatorAgent",
+        role="coordinator",
+        node_path="Main.Consumer",
+    )
+    discovery_read = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(
+            coordinator,
+            tool_name="read_source_range",
+            flat_args={"path": "source.md", "start_line": 4, "end_line": 4},
+        )
+    )
+
+    assert "2: assigned one" in accepted["text_with_line_numbers"]
+    assert context_failure[0].kind == "source_range_outside_node_material"
+    assert preview_failure[0].kind == "source_range_outside_node_material"
+    assert search["hits"] == []
+    assert "4: outside after" in discovery_read["text_with_line_numbers"]
+
+
 def test_source_index_write_tools_authorize_flow_context_and_reject_nonowner_steps(tmp_path: Path) -> None:
     runtime = create_test_runtime_services(register_application_tools=True)
     source_root = tmp_path / ".lean_constellation" / "source"
@@ -1949,7 +2039,7 @@ def test_source_range_read_uses_role_appropriate_node_material_boundary(tmp_path
             flat_args={"path": "chapter.md", "start_line": 1, "end_line": 5},
         )
     )
-    plan_outside_committed_index = _unwrap_tool_failure(
+    plan_outside_corpus = _unwrap_tool_failure(
         runtime.tool_facade.invoke_agent_tool(
             raw,
             tool_name="read_source_range",
@@ -1994,10 +2084,10 @@ def test_source_range_read_uses_role_appropriate_node_material_boundary(tmp_path
 
     assert "1: one" in plan_outside_node_material["text_with_line_numbers"]
     assert "1: one" in recon_outside_node_material["text_with_line_numbers"]
-    assert plan_outside_committed_index[0].kind == "source_range_outside_committed_index"
+    assert plan_outside_corpus[0].kind == "source_ref_range_invalid"
     for inside, outside in downstream_results:
         assert "2: two" in inside["text_with_line_numbers"]
-        assert outside[0].kind == "source_range_outside_committed_index"
+        assert outside[0].kind == "source_range_outside_node_material"
     assert "1: one" in repo_level["text_with_line_numbers"]
 
 

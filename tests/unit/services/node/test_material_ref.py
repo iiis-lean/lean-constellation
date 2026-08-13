@@ -2,11 +2,15 @@ from tests.unit_services_helpers import make_runtime
 
 from pathlib import Path
 
+import pytest
+from pydantic import ValidationError
+
 from lean_constellation.services.foundation import FoundationContext, FoundationService
 from lean_constellation.services.material import MaterialService, ResourceMetadataInput
 from lean_constellation.services.material.ref_codec import format_material_ref, parse_material_ref
 from lean_constellation.services.node import MaterialRefActor, MaterialRefComponent, NodeContractSnapshot, NodeTreeComponent
 from lean_constellation.domain.refs import MaterialRef, ResourceRef, SourceRef
+from lean_constellation.tools.args import CurrentMaterialRefAddArgs, NodeMaterialRefAddArgs
 
 
 def _create_content_node(tmp_path: Path) -> None:
@@ -75,6 +79,44 @@ def test_material_ref_codec_round_trips_reserved_characters() -> None:
         "resource:r%2Fkey/normalized/a%20%23%20b.md#L1-L1",
     ]
     assert [parse_material_ref(ref) for ref in encoded] == refs
+
+
+def test_source_ref_and_selector_require_exact_line_range() -> None:
+    with pytest.raises(ValidationError, match="start_line"):
+        SourceRef(path="article.md")
+    with pytest.raises(ValidationError, match="start_line"):
+        SourceRef(path="article.md", start_line=3, end_line=2)
+    with pytest.raises(ValueError, match="explicit"):
+        parse_material_ref("source:article.md")
+
+    resource = MaterialRef(kind="resource", ref=ResourceRef(resource_key="notes"))
+    assert format_material_ref(resource) == "resource:notes"
+    assert parse_material_ref("resource:notes") == resource
+
+
+def test_material_add_tool_args_require_ranges_only_for_source() -> None:
+    with pytest.raises(ValidationError, match="explicit"):
+        CurrentMaterialRefAddArgs(
+            ref_scope="owned",
+            material_kind="source",
+            locator="article.md",
+        )
+    with pytest.raises(ValidationError, match="provided together"):
+        NodeMaterialRefAddArgs(
+            node_path="Main.Topic",
+            ref_scope="context",
+            material_kind="resource",
+            locator="resource-key",
+            start_line=1,
+        )
+
+    resource_args = CurrentMaterialRefAddArgs(
+        ref_scope="context",
+        material_kind="resource",
+        locator="resource-key",
+    )
+    assert resource_args.start_line is None
+    assert resource_args.end_line is None
 
 
 def test_add_source_and_resource_refs_and_list_view(tmp_path: Path) -> None:
@@ -303,7 +345,7 @@ def test_invalid_exact_remove_does_not_mutate_contract(tmp_path: Path) -> None:
     assert after.value.contract == before.value.contract
 
 
-def test_refs_without_range_validate_first_line_and_store_open_range(tmp_path: Path) -> None:
+def test_source_refs_require_exact_range_while_resource_range_remains_optional(tmp_path: Path) -> None:
     _create_content_node(tmp_path)
     _write_source(tmp_path)
     component = _component()
@@ -322,20 +364,19 @@ def test_refs_without_range_validate_first_line_and_store_open_range(tmp_path: P
         actor="worker",
     )
 
-    assert source.ok, source.issues
+    assert not source.ok
+    assert source.issues[0].kind == "source_ref_range_required"
     assert resource.ok, resource.issues
     listed = component.list_node_material_refs(tmp_path, node_path="Main.Topic.Core")
     assert listed.ok
     assert listed.value is not None
-    assert listed.value.owned_refs[0].start_line is None
-    assert listed.value.owned_refs[0].end_line is None
-    assert listed.value.owned_refs[0].valid is True
+    assert listed.value.owned_refs == []
     assert listed.value.context_refs[0].start_line is None
     assert listed.value.context_refs[0].end_line is None
     assert listed.value.context_refs[0].valid is True
 
 
-def test_ref_without_range_rejects_empty_source_file(tmp_path: Path) -> None:
+def test_ref_without_range_is_rejected_before_empty_source_validation(tmp_path: Path) -> None:
     _create_content_node(tmp_path)
     _write_source(tmp_path, relative_path="empty.md", text="")
     component = _component()
@@ -348,7 +389,7 @@ def test_ref_without_range_rejects_empty_source_file(tmp_path: Path) -> None:
     )
 
     assert not result.ok
-    assert result.issues[0].kind == "source_ref_range_invalid"
+    assert result.issues[0].kind == "source_ref_range_required"
 
 
 def test_worker_delete_permission_and_missing_ref(tmp_path: Path) -> None:
@@ -534,4 +575,4 @@ def test_list_view_reports_invalid_preview_without_revalidating_gate(tmp_path: P
     assert listed.ok
     assert listed.value is not None
     assert listed.value.owned_refs[0].valid is False
-    assert "Material file not found" in (listed.value.owned_refs[0].preview_summary or "")
+    assert "Source file not found" in (listed.value.owned_refs[0].preview_summary or "")

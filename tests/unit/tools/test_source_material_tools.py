@@ -51,7 +51,7 @@ def test_source_range_reads_are_exact_by_default() -> None:
 
     spec = next(spec for spec in build_application_tool_specs() if spec.name == "read_source_range")
     assert "context_lines=0 by default" in spec.description
-    assert "ContentPlan and ResourceRecon may inspect any committed range" in spec.description
+    assert "SourceIndex blocks help locate evidence but do not authorize it" in spec.description
     assert "current node material assignment" in spec.description
 
 

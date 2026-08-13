@@ -7,7 +7,7 @@ from typing import Literal
 from pydantic import Field
 
 from lean_constellation.domain.common import StrictModel
-from lean_constellation.services.material import SourceBlockAdjacentLinkView
+from lean_constellation.services.material import MaterialSearchView, SourceBlockAdjacentLinkView
 from lean_constellation.services.material.source_index import SourceBlockRefView
 from lean_constellation.services.tool_facade import ToolCapability, ToolExecutionContext, ToolSpec
 from lean_constellation.tools.args import (
@@ -58,9 +58,17 @@ _COMMITTED_SOURCE_INDEX_VIEWS = {
     AppView.REPO_MATHLIB_RECON.value,
 }
 
-_NODE_MATERIAL_DISCOVERY_VIEWS = {
-    AppView.CONTENT_PLAN.value,
-    AppView.RESOURCE_RECON.value,
+_NODE_MATERIAL_AUTHORIZED_VIEWS = {
+    AppView.NODE_DIR_DEPENDENCY_RECON.value,
+    AppView.MATHLIB_RECON.value,
+    AppView.STATEMENT_NL_WORKER.value,
+    AppView.STATEMENT_NL_REVIEWER.value,
+    AppView.STATEMENT_FORMAL_WORKER.value,
+    AppView.STATEMENT_FORMAL_REVIEWER.value,
+    AppView.PROOF_NL_WORKER.value,
+    AppView.PROOF_NL_REVIEWER.value,
+    AppView.PROOF_FORMAL_WORKER.value,
+    AppView.PROOF_FORMAL_REVIEWER.value,
 }
 
 
@@ -350,75 +358,99 @@ def _get_source_index_update_context(runtime, ctx: ToolExecutionContext, _args: 
     )
 
 
-def _read_source_range(runtime, ctx: ToolExecutionContext, args: SourceRangeArgs):
-    if _requires_committed_source_index(ctx):
-        loaded = runtime.material.get_committed_source_index(ctx.repo_root)
-        if not loaded.ok or loaded.value is None:
-            return runtime.foundation.fail(loaded.issues)
-        expanded_start = max(1, args.start_line - args.context_lines)
-        expanded_end = args.end_line + args.context_lines
-        refs = sorted(
-            (
-                ref
-                for block in loaded.value.blocks.values()
-                if block.active
-                for ref in block.refs
-                if ref.path == args.path
-            ),
-            key=lambda ref: (ref.start_line, ref.end_line, ref.ref_id),
-        )
-        committed_match = any(ref.start_line <= expanded_start and expanded_end <= ref.end_line for ref in refs)
-        node_ranges: list[tuple[int, int | None, str]] = []
-        require_node_material = (
-            ctx.node is not None and ctx.endpoint_view_key not in _NODE_MATERIAL_DISCOVERY_VIEWS
-        )
-        if require_node_material:
-            contract = runtime.node.contract.get_current_contract(ctx.repo_root, node_path=ctx.node.node_path)
-            if not contract.ok or contract.value is None:
-                return runtime.foundation.fail(contract.issues)
-            for item in [*contract.value.contract.owned_refs, *contract.value.contract.context_refs]:
-                material_ref = item.ref
-                source_ref = material_ref.ref
-                if material_ref.kind != "source" or getattr(source_ref, "path", None) != args.path:
-                    continue
-                node_ranges.append(
-                    (
-                        getattr(source_ref, "start_line", None) or 1,
-                        getattr(source_ref, "end_line", None),
-                        item.ref_id,
-                    )
-                )
-        node_match = not require_node_material or any(
-            start_line <= expanded_start and (end_line is None or expanded_end <= end_line)
-            for start_line, end_line, _ref_id in node_ranges
-        )
-        if not committed_match or not node_match:
-            return runtime.foundation.fail(
-                runtime.foundation.issue(
-                    "source_range_outside_committed_index",
-                    "Requested source range must be contained in both committed SourceIndex truth and the current node material assignment.",
-                    object_ref=f"{args.path}:{args.start_line}-{args.end_line}",
-                    current=f"{expanded_start}-{expanded_end}",
-                    expected="contained in committed SourceIndex truth and current node material refs",
-                    suggested_action="Use the current node contract and get_source_block to locate an authorized contained range.",
-                    details={
-                        "committed_ranges": ", ".join(
-                            f"{ref.ref_id}:{ref.start_line}-{ref.end_line} ({ref.role})" for ref in refs[:20]
-                        )
-                        or "none for this path",
-                        "node_ranges": ", ".join(
-                            f"{ref_id}:{start_line}-{end_line if end_line is not None else '*'}"
-                            for start_line, end_line, ref_id in node_ranges[:20]
-                        )
-                        or (
-                            "not required for this repository/source-discovery view"
-                            if not require_node_material
-                            else "none for this path"
-                        ),
-                    },
-                )
+def _node_material_assignments(runtime, ctx: ToolExecutionContext):
+    if ctx.node is None or ctx.endpoint_view_key not in _NODE_MATERIAL_AUTHORIZED_VIEWS:
+        return runtime.foundation.ok({})
+    contract = runtime.node.contract.get_current_contract(
+        ctx.repo_root,
+        node_path=ctx.node.node_path,
+    )
+    if not contract.ok or contract.value is None:
+        return runtime.foundation.fail(contract.issues)
+    ranges: dict[str, list[tuple[int, int, str]]] = {}
+    for item in [*contract.value.contract.owned_refs, *contract.value.contract.context_refs]:
+        if item.ref.kind != "source":
+            continue
+        source_ref = item.ref.ref
+        path = getattr(source_ref, "path", None)
+        start_line = getattr(source_ref, "start_line", None)
+        end_line = getattr(source_ref, "end_line", None)
+        if path is None or start_line is None or end_line is None:
+            continue
+        ranges.setdefault(path, []).append((start_line, end_line, item.ref_id))
+    return runtime.foundation.ok(ranges)
+
+
+def _node_material_ranges(runtime, ctx: ToolExecutionContext, *, path: str):
+    assignments = _node_material_assignments(runtime, ctx)
+    if not assignments.ok or assignments.value is None:
+        return runtime.foundation.fail(assignments.issues)
+    return runtime.foundation.ok(assignments.value.get(path, []))
+
+
+def _authorize_source_range(runtime, ctx: ToolExecutionContext, args: SourceRangeArgs):
+    validation = runtime.material.validate_source_range(
+        ctx.repo_root,
+        path=args.path,
+        start_line=args.start_line,
+        end_line=args.end_line,
+    )
+    if not validation.ok or validation.value is None:
+        return runtime.foundation.fail(validation.issues)
+    if not validation.value.valid:
+        return runtime.foundation.fail(
+            runtime.foundation.issue(
+                validation.value.issue_code or "source_ref_invalid",
+                validation.value.summary,
+                object_ref=args.path,
+                current=f"{args.start_line}-{args.end_line}",
             )
+        )
+    ranges = _node_material_ranges(runtime, ctx, path=validation.value.path)
+    if not ranges.ok or ranges.value is None:
+        return runtime.foundation.fail(ranges.issues)
+    if ctx.node is None or ctx.endpoint_view_key not in _NODE_MATERIAL_AUTHORIZED_VIEWS:
+        return runtime.foundation.ok(None)
+    expanded_start = max(1, args.start_line - args.context_lines)
+    expanded_end = min(validation.value.line_count, args.end_line + args.context_lines)
+    if not any(start <= expanded_start and expanded_end <= end for start, end, _ in ranges.value):
+        return runtime.foundation.fail(
+            runtime.foundation.issue(
+                "source_range_outside_node_material",
+                "Requested source range and context must be contained in the current node material assignment.",
+                object_ref=f"{args.path}:{args.start_line}-{args.end_line}",
+                current=f"{expanded_start}-{expanded_end}",
+                expected="contained in one current node source material ref",
+                suggested_action="Use get_material_context or ask the planning authority to attach the required exact range.",
+                details={
+                    "node_ranges": [
+                        f"{ref_id}:{start_line}-{end_line}"
+                        for start_line, end_line, ref_id in ranges.value
+                    ]
+                },
+            )
+        )
+    return runtime.foundation.ok(None)
+
+
+def _read_source_range(runtime, ctx: ToolExecutionContext, args: SourceRangeArgs):
+    authorized = _authorize_source_range(runtime, ctx, args)
+    if not authorized.ok:
+        return runtime.foundation.fail(authorized.issues)
     return runtime.material.read_source_range(
+        ctx.repo_root,
+        path=args.path,
+        start_line=args.start_line,
+        end_line=args.end_line,
+        context_lines=args.context_lines,
+    )
+
+
+def _preview_source_ref(runtime, ctx: ToolExecutionContext, args: SourceRangeArgs):
+    authorized = _authorize_source_range(runtime, ctx, args)
+    if not authorized.ok:
+        return runtime.foundation.fail(authorized.issues)
+    return runtime.material.preview_source_ref(
         ctx.repo_root,
         path=args.path,
         start_line=args.start_line,
@@ -885,11 +917,10 @@ def build_material_tool_specs() -> list[ToolSpec]:
         handler_tool(
             name="read_source_range",
             description=(
-                "Read an inclusive line range from source corpus text with context_lines=0 by default. Read a SourceIndex "
-                "ref or origin at its exact bounds; downstream focused reads fail unless their expanded range is contained "
-                "in committed SourceIndex truth. ContentPlan and ResourceRecon may inspect any committed range before "
-                "attaching useful evidence to the current NodeContract; other node-scoped Agents are additionally limited "
-                "to the current node material assignment."
+                "Read an exact inclusive range from a readable file in current SourceCorpus truth, with context_lines=0 "
+                "by default. SourceIndex blocks help locate evidence but do not authorize it. Repository discovery and "
+                "planning views may inspect corpus-valid ranges; node-local workers and reviewers may read only when the "
+                "requested range plus returned context is contained in the current node material assignment."
             ),
             args_model=SourceRangeArgs,
             capability=ToolCapability.READ,
@@ -900,7 +931,7 @@ def build_material_tool_specs() -> list[ToolSpec]:
         ),
         direct_tool(
             name="validate_source_range",
-            description="Validate that a source corpus line range exists and is well-formed.",
+            description="Validate that an exact inclusive range belongs to a readable file in current SourceCorpus truth.",
             args_model=SourceRangeValidateArgs,
             capability=ToolCapability.READ,
             backing_service="material",
@@ -909,27 +940,54 @@ def build_material_tool_specs() -> list[ToolSpec]:
             groups={AppGroup.SOURCE_MATERIAL_TEXT_READ},
             roles=roles,
         ),
-        direct_tool(
+        handler_tool(
             name="preview_source_ref",
-            description="Preview a source corpus range with nearby context before using it as a SourceIndex ref.",
+            description="Preview an exact source corpus range with nearby context before recording it as evidence.",
             args_model=SourceRangeArgs,
             capability=ToolCapability.READ,
-            backing_service="material",
-            backing_method="preview_source_ref",
             result_view="material_ref_preview",
             groups={AppGroup.SOURCE_MATERIAL_TEXT_READ},
             roles=roles,
+            handler=_preview_source_ref,
         ),
     ]
 
 
 def _search_source_text(runtime, ctx: ToolExecutionContext, args: TextSearchArgs):
-    return runtime.material.search_material_text(
+    restricted = ctx.node is not None and ctx.endpoint_view_key in _NODE_MATERIAL_AUTHORIZED_VIEWS
+    searched = runtime.material.search_material_text(
         ctx.repo_root,
         query=args.query,
         scope="source",
         regex=args.regex,
-        limit=args.limit,
+        limit=None if restricted else args.limit,
+    )
+    if not searched.ok or searched.value is None or not restricted:
+        return searched
+    assignments = _node_material_assignments(runtime, ctx)
+    if not assignments.ok or assignments.value is None:
+        return runtime.foundation.fail(assignments.issues)
+    hits = [
+        hit
+        for hit in searched.value.hits
+        if hit.path is not None
+        and any(
+            start_line <= hit.line_number <= end_line
+            for start_line, end_line, _ref_id in assignments.value.get(hit.path, [])
+        )
+    ]
+    total = len(hits)
+    selected = hits if args.limit is None else hits[: args.limit]
+    return runtime.foundation.ok(
+        MaterialSearchView(
+            query=searched.value.query,
+            scope=searched.value.scope,
+            regex=searched.value.regex,
+            hits=selected,
+            total_matching_count=total,
+            truncated=len(selected) < total,
+            summary=f"Found {total} authorized hits; returned {len(selected)}.",
+        )
     )
 
 

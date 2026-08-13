@@ -372,6 +372,14 @@ class MaterialRefComponent:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue("material_ref_range_incomplete", "start_line and end_line must be provided together.", field="start_line")
             )
+        if kind == "source" and (start_line is None or end_line is None):
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "source_ref_range_required",
+                    "Source material refs require explicit start_line and end_line.",
+                    field="start_line",
+                )
+            )
         if start_line is not None and end_line is not None and not (1 <= start_line <= end_line):
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
@@ -441,8 +449,8 @@ class MaterialRefComponent:
             preview = self._material_service().material_read.preview_source_ref(
                 repo_root,
                 path=path,
-                start_line=start_line or 1,
-                end_line=end_line or start_line or 1,
+                start_line=start_line,
+                end_line=end_line,
             )
         elif item.ref.kind == "resource" and isinstance(item.ref.ref, ResourceRef):
             path = None
@@ -572,6 +580,10 @@ class MaterialRefComponent:
 
     def _validation_range(self, ref: MaterialRef) -> tuple[int, int]:
         start_line, end_line = self._stored_range(ref)
+        if ref.kind == "source":
+            if start_line is None or end_line is None:
+                raise ValueError("Source material refs require an explicit line range.")
+            return start_line, end_line
         return start_line or 1, end_line or start_line or 1
 
     @staticmethod

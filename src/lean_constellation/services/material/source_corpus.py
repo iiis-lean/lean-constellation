@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Literal
 from pydantic import Field
 
 from lean_constellation.domain.common import StrictModel, utc_now_iso
+from lean_constellation.domain.refs import SourceRef
 from lean_constellation.services.external_clients import (
     AcquiredArtifactResult,
     ExtractedMaterialResult,
@@ -899,29 +900,107 @@ class SourceCorpusComponent:
         start_line: int,
         end_line: int,
     ) -> ServiceResult[SourceRefValidationView]:
+        manifest = self.get_source_corpus_manifest(repo_root)
+        if not manifest.ok or manifest.value is None:
+            return self.runtime.foundation.fail(manifest.issues)
+        return self.runtime.foundation.ok(
+            self._validate_source_ref_against_manifest(
+                repo_root,
+                manifest=manifest.value,
+                path=path,
+                start_line=start_line,
+                end_line=end_line,
+            )
+        )
+
+    def validate_source_refs(
+        self,
+        repo_root: Path,
+        *,
+        refs: list[SourceRef],
+    ) -> ServiceResult[list[SourceRefValidationView]]:
+        """Validate a batch against one manifest read and one canonical policy."""
+
+        manifest = self.get_source_corpus_manifest(repo_root)
+        if not manifest.ok or manifest.value is None:
+            return self.runtime.foundation.fail(manifest.issues)
+        return self.runtime.foundation.ok(
+            [
+                self._validate_source_ref_against_manifest(
+                    repo_root,
+                    manifest=manifest.value,
+                    path=ref.path,
+                    start_line=ref.start_line,
+                    end_line=ref.end_line,
+                )
+                for ref in refs
+            ]
+        )
+
+    def _validate_source_ref_against_manifest(
+        self,
+        repo_root: Path,
+        *,
+        manifest: SourceCorpusManifestView,
+        path: str,
+        start_line: int,
+        end_line: int,
+    ) -> SourceRefValidationView:
         root = self._source_root(repo_root)
         try:
             target = self._resolve_inside(root, path)
         except ValueError as exc:
-            return self.runtime.foundation.ok(
-                SourceRefValidationView(valid=False, path=path, start_line=start_line, end_line=end_line, summary=str(exc), issue_code="source_ref_outside_root")
+            return SourceRefValidationView(
+                valid=False,
+                path=path,
+                start_line=start_line,
+                end_line=end_line,
+                summary=str(exc),
+                issue_code="source_ref_outside_root",
             )
+        canonical_path = target.relative_to(root).as_posix()
         if not target.exists() or not target.is_file():
-            return self.runtime.foundation.ok(
-                SourceRefValidationView(valid=False, path=path, start_line=start_line, end_line=end_line, summary="Source file not found.", issue_code="source_ref_file_missing")
+            return SourceRefValidationView(
+                valid=False,
+                path=path,
+                start_line=start_line,
+                end_line=end_line,
+                summary="Source file not found.",
+                issue_code="source_ref_file_missing",
+            )
+        manifest_entry = next(
+            (item for item in manifest.files if item.path == canonical_path),
+            None,
+        )
+        if manifest_entry is None:
+            return SourceRefValidationView(
+                valid=False,
+                path=canonical_path,
+                start_line=start_line,
+                end_line=end_line,
+                summary="Source file is not recorded in the current SourceCorpus manifest.",
+                issue_code="source_ref_not_in_corpus",
+            )
+        if not manifest_entry.readable_text:
+            return SourceRefValidationView(
+                valid=False,
+                path=canonical_path,
+                start_line=start_line,
+                end_line=end_line,
+                line_count=manifest_entry.line_count,
+                summary="Source file is not readable UTF-8 text in the current SourceCorpus manifest.",
+                issue_code="source_ref_not_readable",
             )
         line_count = self._line_count(target)
         valid = 1 <= start_line <= end_line <= line_count
-        return self.runtime.foundation.ok(
-            SourceRefValidationView(
-                valid=valid,
-                path=target.relative_to(root).as_posix(),
-                start_line=start_line,
-                end_line=end_line,
-                line_count=line_count,
-                summary="Source ref is valid." if valid else "Source ref line range is invalid.",
-                issue_code=None if valid else "source_ref_range_invalid",
-            )
+        return SourceRefValidationView(
+            valid=valid,
+            path=canonical_path,
+            start_line=start_line,
+            end_line=end_line,
+            line_count=line_count,
+            summary="Source ref is valid." if valid else "Source ref line range is invalid.",
+            issue_code=None if valid else "source_ref_range_invalid",
         )
 
     def check_target_in_source_corpus(

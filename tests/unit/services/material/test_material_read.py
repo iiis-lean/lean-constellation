@@ -93,7 +93,7 @@ def test_read_source_and_resource_range_boundaries(tmp_path: Path) -> None:
     assert resource.ok and resource.value is not None
     assert "2: resource theorem" in resource.value.text_with_line_numbers
     assert not source_escape.ok
-    assert source_escape.issues[0].kind == "source_material_path_invalid"
+    assert source_escape.issues[0].kind == "source_ref_outside_root"
     assert not bad_context.ok
     assert bad_context.issues[0].kind == "invalid_context_lines"
     assert not missing_resource.ok
@@ -248,6 +248,6 @@ def test_validate_and_preview_material_ref_source_resource_and_malformed(tmp_pat
     assert not malformed_object.ok
     assert malformed_object.issues[0].kind == "invalid_material_ref"
     assert not missing_locator.ok
-    assert missing_locator.issues[0].kind == "invalid_material_ref"
+    assert missing_locator.issues[0].kind == "source_ref_range_required"
     assert not bad_range.ok
-    assert bad_range.issues[0].kind == "invalid_material_ref_range"
+    assert bad_range.issues[0].kind == "source_ref_range_required"

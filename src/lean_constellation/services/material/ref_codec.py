@@ -43,6 +43,8 @@ def parse_material_ref(selector: str) -> MaterialRef:
         raise ValueError("material ref selector must be a non-empty trimmed string")
     base, start_line, end_line = _split_range(selector)
     if base.startswith("source:"):
+        if start_line is None or end_line is None:
+            raise ValueError("source material ref requires an explicit #L<start>-L<end> range")
         path = _decode(base.removeprefix("source:"))
         if not path:
             raise ValueError("source material ref path must be non-empty")
@@ -80,6 +82,8 @@ def _range_for_ref(ref: MaterialRef) -> tuple[int | None, int | None]:
         raise ValueError("material ref start_line and end_line must be present together")
     if start_line is not None and end_line is not None and not (1 <= start_line <= end_line):
         raise ValueError("material ref line range is invalid")
+    if ref.kind == "source" and (start_line is None or end_line is None):
+        raise ValueError("source material ref requires an explicit line range")
     return start_line, end_line
 
 

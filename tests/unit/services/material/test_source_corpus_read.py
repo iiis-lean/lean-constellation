@@ -565,6 +565,36 @@ def test_get_manifest_falls_back_to_scan_and_validate_source_ref_errors(tmp_path
     assert invalid_range.value.issue_code == "source_ref_range_invalid"
 
 
+def test_validate_source_ref_requires_current_manifest_membership_and_readable_text(tmp_path: Path) -> None:
+    _write_source(tmp_path)
+    (tmp_path / ".lean_constellation" / "source" / "original.bin").write_bytes(b"\x00\xff")
+    service = make_runtime().material
+    scanned = service.source_corpus.scan_source_corpus(tmp_path)
+    assert scanned.ok and scanned.value is not None
+    manifest_path = service.source_corpus._manifest_path(tmp_path)
+    assert service.runtime.foundation.store.write_json_atomic(manifest_path, scanned.value).ok
+
+    source_root = tmp_path / ".lean_constellation" / "source"
+    (source_root / "added_after_manifest.md").write_text("late\n", encoding="utf-8")
+    absent = service.validate_source_range(
+        tmp_path,
+        path="added_after_manifest.md",
+        start_line=1,
+        end_line=1,
+    )
+    binary = service.validate_source_range(
+        tmp_path,
+        path="original.bin",
+        start_line=1,
+        end_line=1,
+    )
+
+    assert absent.ok and absent.value is not None
+    assert absent.value.issue_code == "source_ref_not_in_corpus"
+    assert binary.ok and binary.value is not None
+    assert binary.value.issue_code == "source_ref_not_readable"
+
+
 def test_check_target_in_source_corpus_matches_path_and_sha(tmp_path: Path) -> None:
     _write_source(tmp_path)
     service = make_runtime().material

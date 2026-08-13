@@ -94,19 +94,25 @@ class MaterialReadComponent:
             return self.runtime.foundation.fail(self.runtime.foundation.issue("invalid_material_kind", "material_kind must be source, resource, or all."))
         files: list[MaterialFileEntry] = []
         if material_kind in {"source", "all"}:
-            source_root = self._source_root(repo_root)
-            if source_root.exists():
-                for path in sorted(source_root.rglob("*")):
-                    if path.is_file():
-                        readable, line_count = self._readable_line_count(path)
-                        files.append(
-                            MaterialFileEntry(
-                                kind="source",
-                                locator=path.relative_to(source_root).as_posix(),
-                                line_count=line_count,
-                                readable=readable,
-                            )
-                        )
+            if self.source_corpus is None:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "source_corpus_unavailable",
+                        "SourceCorpusComponent is not configured.",
+                    )
+                )
+            manifest = self.source_corpus.get_source_corpus_manifest(repo_root)
+            if not manifest.ok or manifest.value is None:
+                return self.runtime.foundation.fail(manifest.issues)
+            files.extend(
+                MaterialFileEntry(
+                    kind="source",
+                    locator=item.path,
+                    line_count=item.line_count,
+                    readable=item.readable_text,
+                )
+                for item in sorted(manifest.value.files, key=lambda value: value.path)
+            )
         if material_kind in {"resource", "all"}:
             if self.resource_library is None:
                 return self.runtime.foundation.fail(
@@ -168,6 +174,23 @@ class MaterialReadComponent:
         end_line: int,
         context_lines: int = 0,
     ) -> ServiceResult[MaterialRangeView]:
+        validation = self.validate_source_range(
+            repo_root,
+            path=path,
+            start_line=start_line,
+            end_line=end_line,
+        )
+        if not validation.ok or validation.value is None:
+            return self.runtime.foundation.fail(validation.issues)
+        if not validation.value.valid:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    validation.value.issue_code or "source_ref_invalid",
+                    validation.value.summary,
+                    object_ref=path,
+                    current=f"{start_line}-{end_line}",
+                )
+            )
         root = self._source_root(repo_root)
         try:
             target = self._resolve_inside(root, path)
@@ -247,10 +270,6 @@ class MaterialReadComponent:
                 if item.kind == "source":
                     path = self._source_root(repo_root) / item.locator
                     reusable_key = {"path": item.locator}
-                    ref = MaterialRef(
-                        kind="source",
-                        ref=SourceRef(path=item.locator),
-                    )
                     resource_key = None
                     resource_locator = None
                 else:
@@ -280,21 +299,30 @@ class MaterialReadComponent:
                 for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
                     matched = bool(pattern.search(line)) if pattern else query.lower() in line.lower()
                     if matched:
+                        if item.kind == "source":
+                            ref = MaterialRef(
+                                kind="source",
+                                ref=SourceRef(
+                                    path=item.locator,
+                                    start_line=line_number,
+                                    end_line=line_number,
+                                ),
+                            )
+                        else:
+                            ref = ref.model_copy(
+                                update={
+                                    "ref": ref.ref.model_copy(
+                                        update={
+                                            "start_line": line_number,
+                                            "end_line": line_number,
+                                        }
+                                    )
+                                }
+                            )
                         hits.append(
                             MaterialSearchHit(
                                 material_kind=item.kind,  # type: ignore[arg-type]
-                                ref=format_material_ref(
-                                    ref.model_copy(
-                                        update={
-                                            "ref": ref.ref.model_copy(
-                                                update={
-                                                    "start_line": line_number,
-                                                    "end_line": line_number,
-                                                }
-                                            )
-                                        }
-                                    )
-                                ),
+                                ref=format_material_ref(ref),
                                 path=item.locator if item.kind == "source" else None,
                                 resource_key=resource_key if item.kind == "resource" else None,
                                 resource_locator=resource_locator if item.kind == "resource" else None,
@@ -412,9 +440,18 @@ class MaterialReadComponent:
             return self.runtime.foundation.fail(self.runtime.foundation.issue("invalid_material_ref", "Material ref must be a mapping or pydantic model."))
         kind = data.get("kind") or data.get("ref_kind")
         nested = data.get("ref") if isinstance(data.get("ref"), dict) else {}
+        raw_start_line = data.get("start_line") or nested.get("start_line")
+        raw_end_line = data.get("end_line") or nested.get("end_line")
+        if kind == "source" and (raw_start_line is None or raw_end_line is None):
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "source_ref_range_required",
+                    "Source material refs require explicit start_line and end_line.",
+                )
+            )
         try:
-            start_line = int(data.get("start_line") or nested.get("start_line") or 1)
-            end_line = int(data.get("end_line") or nested.get("end_line") or start_line)
+            start_line = int(raw_start_line or 1)
+            end_line = int(raw_end_line or start_line)
         except (TypeError, ValueError) as exc:
             return self.runtime.foundation.fail(self.runtime.foundation.issue("invalid_material_ref_range", str(exc)))
         if kind == "source":

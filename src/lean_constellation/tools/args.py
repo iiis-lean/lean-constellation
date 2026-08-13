@@ -238,11 +238,23 @@ class SourceRangeArgs(StrictModel):
         ),
     )
 
+    @model_validator(mode="after")
+    def _validate_line_range(self) -> SourceRangeArgs:
+        if self.start_line > self.end_line:
+            raise ValueError("start_line must be <= end_line")
+        return self
+
 
 class SourceRangeValidateArgs(StrictModel):
     path: str = Field(description="Path relative to the source corpus root.")
     start_line: int = Field(ge=1, description="First source line to validate, 1-based.")
     end_line: int = Field(ge=1, description="Last source line to validate, inclusive.")
+
+    @model_validator(mode="after")
+    def _validate_line_range(self) -> SourceRangeValidateArgs:
+        if self.start_line > self.end_line:
+            raise ValueError("start_line must be <= end_line")
+        return self
 
 
 class ResourceRangeArgs(StrictModel):
@@ -505,13 +517,31 @@ class IndexReasonArgs(StrictModel):
     reason: str | None = Field(default=None, description="Optional reason for this removal.")
 
 
+def _validate_material_ref_range(
+    material_kind: Literal["source", "resource"],
+    start_line: int | None,
+    end_line: int | None,
+) -> None:
+    if (start_line is None) != (end_line is None):
+        raise ValueError("start_line and end_line must be provided together")
+    if material_kind == "source" and (start_line is None or end_line is None):
+        raise ValueError("source material refs require explicit start_line and end_line")
+    if start_line is not None and end_line is not None and start_line > end_line:
+        raise ValueError("start_line must be <= end_line")
+
+
 class CurrentMaterialRefAddArgs(StrictModel):
     ref_scope: Literal["owned", "context"] = Field(description="Whether to add the material to owned_refs or context_refs.")
     material_kind: Literal["source", "resource"] = Field(description="Whether locator identifies source text or a resource.")
     locator: str = Field(description="Source path or resource key.")
-    start_line: int | None = Field(default=None, ge=1, description="Optional first line, 1-based.")
-    end_line: int | None = Field(default=None, ge=1, description="Optional last line, inclusive.")
+    start_line: int | None = Field(default=None, ge=1, description="First line, 1-based; required for source and optional for resource.")
+    end_line: int | None = Field(default=None, ge=1, description="Last line, inclusive; required for source and optional for resource.")
     reason: str | None = Field(default=None, description="Why this material is relevant.")
+
+    @model_validator(mode="after")
+    def _validate_material_range(self) -> CurrentMaterialRefAddArgs:
+        _validate_material_ref_range(self.material_kind, self.start_line, self.end_line)
+        return self
 
 
 class CurrentMaterialRefRemoveArgs(StrictModel):
@@ -523,9 +553,14 @@ class NodeMaterialRefAddArgs(NodePathArgs):
     ref_scope: Literal["owned", "context"] = Field(description="Whether to add the material to owned_refs or context_refs.")
     material_kind: Literal["source", "resource"] = Field(description="Whether locator identifies source text or a resource.")
     locator: str = Field(description="Source path or resource key.")
-    start_line: int | None = Field(default=None, ge=1, description="Optional first line, 1-based.")
-    end_line: int | None = Field(default=None, ge=1, description="Optional last line, inclusive.")
+    start_line: int | None = Field(default=None, ge=1, description="First line, 1-based; required for source and optional for resource.")
+    end_line: int | None = Field(default=None, ge=1, description="Last line, inclusive; required for source and optional for resource.")
     reason: str | None = Field(default=None, description="Why this material is relevant to the target node.")
+
+    @model_validator(mode="after")
+    def _validate_material_range(self) -> NodeMaterialRefAddArgs:
+        _validate_material_ref_range(self.material_kind, self.start_line, self.end_line)
+        return self
 
 
 class NodeMaterialRefRemoveArgs(NodePathArgs):

@@ -445,7 +445,13 @@ def test_candidate_gate_aggregates_non_main_contract_tree_and_material_findings(
         ),
     ]
     content.contract.owned_refs = [
-        ContractMaterialRef(ref_id="source", ref=MaterialRef(kind="source", ref=SourceRef(path="missing.tex"))),
+        ContractMaterialRef(
+            ref_id="source",
+            ref=MaterialRef(
+                kind="source",
+                ref=SourceRef(path="missing.tex", start_line=1, end_line=1),
+            ),
+        ),
         ContractMaterialRef(ref_id="resource", ref=MaterialRef(kind="resource", ref=ResourceRef(resource_key="missing"))),
     ]
     content_path = runtime.node.node_tree.node_store.contract_path(

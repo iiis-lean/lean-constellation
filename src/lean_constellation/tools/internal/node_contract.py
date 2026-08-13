@@ -1035,7 +1035,10 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="add_current_material_ref",
-            description="Add a source or resource ref to the current node contract.",
+            description=(
+                "Add evidence to the current node contract. Source refs require an exact inclusive start_line/end_line; "
+                "resource refs retain their own optional-range contract."
+            ),
             args_model=CurrentMaterialRefAddArgs,
             capability=ToolCapability.WRITE,
             result_view="current_node_material_mutation",
@@ -1055,7 +1058,10 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="add_node_material_ref",
-            description="Add a source or resource ref to the target node contract.",
+            description=(
+                "Add evidence to the target node contract. Source refs require an exact inclusive start_line/end_line; "
+                "resource refs retain their own optional-range contract."
+            ),
             args_model=NodeMaterialRefAddArgs,
             capability=ToolCapability.WRITE,
             result_view="current_node_material_mutation",
