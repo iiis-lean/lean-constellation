@@ -7,6 +7,9 @@ import json
 import os
 import re
 import shutil
+import struct
+import subprocess
+import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -115,6 +118,20 @@ class SourceCorpusDuplicateView(StrictModel):
     summary: str
 
 
+class SourcePdfPagePreviewView(StrictModel):
+    source_path: str
+    source_sha256: str
+    page_number: int
+    page_count: int
+    dpi: int
+    image_path: str
+    image_sha256: str
+    width: int
+    height: int
+    cache_reused: bool = False
+    summary: str
+
+
 class SourceCorpusComponent:
     """Manage the configured source corpus root and its manifest."""
 
@@ -151,6 +168,175 @@ class SourceCorpusComponent:
             summary=f"Scanned {len(files)} source files.",
         )
         return self.runtime.foundation.ok(manifest)
+
+    def render_source_pdf_page(
+        self,
+        repo_root: Path,
+        *,
+        path: str,
+        page_number: int,
+        dpi: int = 160,
+    ) -> ServiceResult[SourcePdfPagePreviewView]:
+        repo_root = Path(repo_root).resolve(strict=False)
+        requested = Path(path)
+        if requested.is_absolute() or ".." in requested.parts:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "source_pdf_preview_path_escape",
+                    "PDF preview path must be a SourceCorpus-relative path without parent traversal.",
+                    object_ref=path,
+                )
+            )
+        normalized = requested.as_posix()
+        if normalized.startswith("./"):
+            normalized = normalized[2:]
+        manifest = self.get_source_corpus_manifest(repo_root)
+        if not manifest.ok or manifest.value is None:
+            return self.runtime.foundation.fail(manifest.issues)
+        entry = next((item for item in manifest.value.files if item.path == normalized), None)
+        if entry is None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "source_pdf_not_in_corpus",
+                    "PDF preview path is not recorded in current SourceCorpus truth.",
+                    object_ref=path,
+                )
+            )
+        root = self._source_root(repo_root).resolve(strict=False)
+        source = (root / normalized).resolve(strict=False)
+        try:
+            source.relative_to(root)
+        except ValueError:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "source_pdf_preview_path_escape",
+                    "PDF preview path escapes the SourceCorpus root.",
+                    object_ref=path,
+                )
+            )
+        if not source.is_file():
+            pdf_magic = b""
+        else:
+            with source.open("rb") as handle:
+                pdf_magic = handle.read(5)
+        if pdf_magic != b"%PDF-":
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "source_pdf_type_mismatch",
+                    "SourceCorpus page preview requires a real PDF artifact.",
+                    object_ref=path,
+                )
+            )
+        if page_number < 1 or dpi < 96 or dpi > 240:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "source_pdf_page_out_of_range" if page_number < 1 else "source_pdf_dpi_out_of_range",
+                    "PDF page_number must be positive and dpi must be between 96 and 240.",
+                    object_ref=path,
+                )
+            )
+        try:
+            info = subprocess.run(
+                ["pdfinfo", str(source)],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+                timeout=20,
+            )
+        except FileNotFoundError:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("source_pdf_renderer_unavailable", "pdfinfo is unavailable.")
+            )
+        except subprocess.TimeoutExpired:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("source_pdf_render_failed", "PDF metadata inspection timed out.")
+            )
+        match = re.search(r"^Pages:\s+(\d+)\s*$", info.stdout, re.MULTILINE)
+        if info.returncode != 0 or match is None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "source_pdf_render_failed",
+                    "Could not inspect PDF page count.",
+                    object_ref=path,
+                    details={"stderr": info.stderr[:500]},
+                )
+            )
+        page_count = int(match.group(1))
+        if page_number > page_count:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "source_pdf_page_out_of_range",
+                    "Requested PDF page does not exist.",
+                    object_ref=path,
+                    current=str(page_number),
+                    expected=f"1-{page_count}",
+                )
+            )
+        source_sha = self._hash_file(source)
+        cache_root = repo_root / ".agent_runtime" / "material_previews" / "source_corpus" / source_sha
+        output = cache_root / f"page_{page_number:04d}_{dpi}dpi.png"
+        reused = output.is_file()
+        if not reused:
+            cache_root.mkdir(parents=True, exist_ok=True)
+            temp_output = cache_root / f".{output.stem}.{uuid.uuid4().hex}.png"
+            try:
+                rendered = subprocess.run(
+                    [
+                        "pdftoppm", "-f", str(page_number), "-l", str(page_number),
+                        "-singlefile", "-png", "-r", str(dpi), str(source), str(temp_output.with_suffix("")),
+                    ],
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    check=False,
+                    timeout=30,
+                )
+            except FileNotFoundError:
+                temp_output.unlink(missing_ok=True)
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue("source_pdf_renderer_unavailable", "pdftoppm is unavailable.")
+                )
+            except subprocess.TimeoutExpired:
+                temp_output.unlink(missing_ok=True)
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue("source_pdf_render_failed", "PDF page rendering timed out.")
+                )
+            if rendered.returncode != 0 or not temp_output.is_file():
+                temp_output.unlink(missing_ok=True)
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "source_pdf_render_failed",
+                        "PDF page renderer did not produce a PNG.",
+                        object_ref=path,
+                        details={"stderr": rendered.stderr[:500]},
+                    )
+                )
+            os.replace(temp_output, output)
+        image = output.read_bytes()
+        if len(image) < 24 or image[:8] != b"\x89PNG\r\n\x1a\n":
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("source_pdf_render_failed", "Rendered page is not a valid PNG.")
+            )
+        width, height = struct.unpack(">II", image[16:24])
+        return self.runtime.foundation.ok(
+            SourcePdfPagePreviewView(
+                source_path=normalized,
+                source_sha256=source_sha,
+                page_number=page_number,
+                page_count=page_count,
+                dpi=dpi,
+                image_path=str(output),
+                image_sha256=hashlib.sha256(image).hexdigest(),
+                width=width,
+                height=height,
+                cache_reused=reused,
+                summary=(
+                    f"Rendered SourceCorpus PDF page {page_number}/{page_count}. The exact image_path is authorized "
+                    "for image inspection; do not traverse its parent cache directory."
+                ),
+            )
+        )
 
     def import_local_source_corpus(
         self,

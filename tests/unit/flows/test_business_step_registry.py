@@ -79,6 +79,10 @@ def test_business_agent_step_shells_register_and_parse_submissions() -> None:
                         payload[key] = []
                 elif key == "feedback" and "reviewed_decl_names" in fields:
                     payload[key] = []
+                elif key == "checked_materials":
+                    payload[key] = ["README.md"]
+                elif key == "unresolved_risks":
+                    payload[key] = []
                 elif key in {"approved", "accepted", "retry_required"}:
                     payload[key] = True
                 elif key == "outcome" and submission_type.endswith("_result"):

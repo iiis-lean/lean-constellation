@@ -877,13 +877,13 @@ def test_gate_failure_does_not_record_submission(tmp_path: Path) -> None:
     runtime = _runtime(gateway)
     assert register_submit_tooling(runtime).ok
     raw = RawToolCallContext(
-        endpoint_view_key="source_corpus_prepare_submit",
-        runtime_context=_runtime_ctx(tmp_path, view="source_corpus_prepare_submit", role="worker", agent_type="SourceCorpusPrepareAgent"),
+        endpoint_view_key="source_corpus_builder_submit",
+        runtime_context=_runtime_ctx(tmp_path, view="source_corpus_builder_submit", role="worker", agent_type="SourceCorpusBuilderAgent"),
     )
 
     result = runtime.tool_facade.invoke_agent_tool(
         raw,
-        tool_name="submit_source_corpus_prepared",
+        tool_name="submit_source_corpus_builder_ready",
         flat_args={
             "summary": "Prepared.",
             "entry_path": "README.md",
@@ -898,7 +898,7 @@ def test_gate_failure_does_not_record_submission(tmp_path: Path) -> None:
     assert gateway.accepted == []
 
 
-def test_source_corpus_prepared_gateway_missing_does_not_write_manifest(tmp_path: Path) -> None:
+def test_source_corpus_builder_ready_gateway_missing_does_not_write_manifest(tmp_path: Path) -> None:
     runtime = create_test_runtime_services()
     assert register_submit_tooling(runtime).ok
     source_root = tmp_path / ".lean_constellation" / "source"
@@ -911,13 +911,13 @@ def test_source_corpus_prepared_gateway_missing_does_not_write_manifest(tmp_path
         encoding="utf-8",
     )
     raw = RawToolCallContext(
-        endpoint_view_key="source_corpus_prepare_submit",
-        runtime_context=_runtime_ctx(tmp_path, view="source_corpus_prepare_submit", role="worker", agent_type="SourceCorpusPrepareAgent"),
+        endpoint_view_key="source_corpus_builder_submit",
+        runtime_context=_runtime_ctx(tmp_path, view="source_corpus_builder_submit", role="worker", agent_type="SourceCorpusBuilderAgent"),
     )
 
     result = runtime.tool_facade.invoke_agent_tool(
         raw,
-        tool_name="submit_source_corpus_prepared",
+        tool_name="submit_source_corpus_builder_ready",
         flat_args={
             "summary": "Prepared.",
             "entry_path": "README.md",
@@ -933,7 +933,7 @@ def test_source_corpus_prepared_gateway_missing_does_not_write_manifest(tmp_path
     assert not (tmp_path / ".lean_constellation" / "source_corpus" / "manifest.json").exists()
 
 
-def test_source_corpus_prepared_weak_canonical_readme_rejected_before_gateway(tmp_path: Path) -> None:
+def test_source_corpus_builder_ready_weak_canonical_readme_rejected_before_gateway(tmp_path: Path) -> None:
     gateway = FakeSubmissionGateway()
     runtime = _runtime(gateway)
     assert register_submit_tooling(runtime).ok
@@ -944,13 +944,13 @@ def test_source_corpus_prepared_weak_canonical_readme_rejected_before_gateway(tm
         encoding="utf-8",
     )
     raw = RawToolCallContext(
-        endpoint_view_key="source_corpus_prepare_submit",
-        runtime_context=_runtime_ctx(tmp_path, view="source_corpus_prepare_submit", role="worker", agent_type="SourceCorpusPrepareAgent"),
+        endpoint_view_key="source_corpus_builder_submit",
+        runtime_context=_runtime_ctx(tmp_path, view="source_corpus_builder_submit", role="worker", agent_type="SourceCorpusBuilderAgent"),
     )
 
     result = runtime.tool_facade.invoke_agent_tool(
         raw,
-        tool_name="submit_source_corpus_prepared",
+        tool_name="submit_source_corpus_builder_ready",
         flat_args={
             "summary": "Prepared.",
             "entry_path": "README.md",
@@ -967,6 +967,54 @@ def test_source_corpus_prepared_weak_canonical_readme_rejected_before_gateway(tm
         "source_corpus_provenance_missing",
         "source_corpus_reading_order_missing",
     } <= {issue.kind for issue in result.value.issues}
+    assert not (tmp_path / ".lean_constellation" / "source_corpus" / "manifest.json").exists()
+
+
+def test_source_corpus_reviewer_submit_requires_evidence_and_keeps_corpus_read_only(tmp_path: Path) -> None:
+    gateway = FakeSubmissionGateway()
+    runtime = _runtime(gateway)
+    assert register_submit_tooling(runtime).ok
+    source_root = tmp_path / ".lean_constellation" / "source"
+    source_root.mkdir(parents=True)
+    (source_root / "README.md").write_text(
+        "Source overview.\n"
+        "Source provenance: local source fixture.\n"
+        "Reading order: this README is the entry and main material.\n"
+        "Main material: source statement.\n"
+        "Known gaps and extraction limits: none.\n",
+        encoding="utf-8",
+    )
+    raw = RawToolCallContext(
+        endpoint_view_key="source_corpus_reviewer_submit",
+        runtime_context=_runtime_ctx(
+            tmp_path,
+            view="source_corpus_reviewer_submit",
+            role="reviewer",
+            agent_type="SourceCorpusReviewerAgent",
+        ),
+    )
+
+    missing_evidence = runtime.tool_facade.invoke_agent_tool(
+        raw,
+        tool_name="submit_source_corpus_review",
+        flat_args={"approved": True, "summary": "Reviewed."},
+    )
+    approved = runtime.tool_facade.invoke_agent_tool(
+        raw,
+        tool_name="submit_source_corpus_review",
+        flat_args={
+            "approved": True,
+            "checked_materials": ["README.md"],
+            "summary": "Independent full-current review passed.",
+        },
+    )
+
+    assert missing_evidence.ok and missing_evidence.value is not None
+    assert missing_evidence.value.ok is False
+    assert missing_evidence.value.issues[0].kind == "source_corpus_review_checked_materials_missing"
+    assert approved.ok and approved.value is not None and approved.value.ok is True
+    assert len(gateway.accepted) == 1
+    assert gateway.accepted[0].submission_type == "source_corpus_review"
     assert not (tmp_path / ".lean_constellation" / "source_corpus" / "manifest.json").exists()
 
 

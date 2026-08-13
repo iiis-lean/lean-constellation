@@ -54,7 +54,8 @@ class SkillKey(StrEnum):
 
 class ProductionAgentTypeKey(StrEnum):
     REPO_FORMAT_DISCOVERY = "RepoFormatDiscoveryAgent"
-    SOURCE_CORPUS_PREPARE = "SourceCorpusPrepareAgent"
+    SOURCE_CORPUS_BUILDER = "SourceCorpusBuilderAgent"
+    SOURCE_CORPUS_REVIEWER = "SourceCorpusReviewerAgent"
     SOURCE_INDEX_BUILDER = "SourceIndexBuilderAgent"
     SOURCE_INDEX_REVIEWER = "SourceIndexReviewerAgent"
     ROOT_INTERFACE_PREPARE = "RootInterfacePrepareAgent"

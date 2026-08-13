@@ -61,8 +61,9 @@ from lean_constellation.flows.repo_lifecycle.submissions import (
     AdapterCatalogReadySubmission,
     RepoFormatAdapterChoiceSubmission,
     RepoFormatNativeChoiceSubmission,
-    SourceCorpusBlockedSubmission,
-    SourceCorpusPreparedSubmission,
+    SourceCorpusBuilderBlockedSubmission,
+    SourceCorpusBuilderReadySubmission,
+    SourceCorpusReviewSubmission,
 )
 from lean_constellation.services.validation_snapshot.release_finalizer import (
     PreparedRepoReleaseView,
@@ -412,6 +413,10 @@ class NativeRepoPreparationState(BaseFlowState):
     source_corpus_mode: Literal["existing", "prepare"] | None = None
     allow_interface_supplement: bool | None = None
     source_corpus_ready: bool = False
+    source_corpus_candidate: SourceCorpusBuilderReadySubmission | None = None
+    source_corpus_review_round: int = 0
+    latest_source_corpus_reviewer_feedback: str | None = None
+    source_corpus_reviewed: bool = False
     root_interface_ready: bool = False
     handoff_gate_passed: bool = False
     waiting_dispatch_step_id: str | None = None
@@ -560,27 +565,58 @@ class NativeRepoPreparationFlow(LeanBusinessFlow):
                         scope_id=self.scope_id,
                     )
                 )
-            from lean_constellation.flows.common.agent_steps import SourceCorpusPrepareAgentStep
+            from lean_constellation.flows.common.agent_steps import SourceCorpusBuilderAgentStep
 
             source_root = _source_corpus_workdir(ctx, repo_root)
             return ctx.create_step(
-                SourceCorpusPrepareAgentStep(
-                    step_id=new_repo_lifecycle_step_id("source_corpus_prepare"),
+                SourceCorpusBuilderAgentStep(
+                    step_id=new_repo_lifecycle_step_id("source_corpus_builder"),
                     flow_id=self.flow_id,
                     scope_id=self.scope_id,
                     state=AgentStepState(
-                        agent_role="source_corpus_preparer",
-                        agent_type="SourceCorpusPrepareAgent",
-                        home_id="SourceCorpusPrepareAgent",
+                        agent_role="source_corpus_builder",
+                        agent_type="SourceCorpusBuilderAgent",
+                        home_id="SourceCorpusBuilderAgent",
                         create_agent_if_missing=True,
-                        bind_created_agent_to="step",
+                        bind_created_agent_to="flow",
                         variables={"repo_key": input_model.repo_key},
-                        prompt_override=_source_corpus_prepare_prompt(
+                        prompt_override=_source_corpus_builder_prompt(
                             input_model,
                             logical_path=source_root.relative_to(repo_root).as_posix(),
+                            reviewer_feedback=state.latest_source_corpus_reviewer_feedback,
                         ),
-                        env_overrides=_agent_env("SourceCorpusPrepareAgent", "source_corpus_prepare", "source_corpus_prepare_submit"),
+                        env_overrides=_agent_env("SourceCorpusBuilderAgent", "source_corpus_builder", "source_corpus_builder_submit"),
                         workdir_override=str(source_root),
+                    ),
+                )
+            )
+        if state.position.phase == "source_corpus_review":
+            from lean_constellation.flows.common.agent_steps import SourceCorpusReviewerAgentStep
+
+            return ctx.create_step(
+                SourceCorpusReviewerAgentStep(
+                    step_id=new_repo_lifecycle_step_id("source_corpus_reviewer"),
+                    flow_id=self.flow_id,
+                    scope_id=self.scope_id,
+                    state=AgentStepState(
+                        agent_role="source_corpus_reviewer",
+                        agent_type="SourceCorpusReviewerAgent",
+                        home_id="SourceCorpusReviewerAgent",
+                        create_agent_if_missing=True,
+                        bind_created_agent_to="flow",
+                        variables={"repo_key": input_model.repo_key},
+                        prompt_override=_source_corpus_reviewer_prompt(
+                            input_model,
+                            review_round=state.source_corpus_review_round,
+                            builder_summary=(
+                                state.source_corpus_candidate.preparation_summary
+                                if state.source_corpus_candidate is not None
+                                else "Existing SourceCorpus passed deterministic scan."
+                            ),
+                            previous_feedback=state.latest_source_corpus_reviewer_feedback,
+                        ),
+                        env_overrides=_agent_env("SourceCorpusReviewerAgent", "source_corpus_reviewer", "source_corpus_reviewer_submit"),
+                        workdir_override=str(_source_corpus_workdir(ctx, repo_root)),
                     ),
                 )
             )
@@ -680,8 +716,10 @@ class NativeRepoPreparationFlow(LeanBusinessFlow):
             self._consume_native_validate_result(state, input_model, result)
         elif isinstance(result, ExistingSourceCorpusScanStepResult):
             self._consume_existing_source_corpus_result(state, input_model, result)
-        elif ctx.step.step_type == "source_corpus_prepare_agent_step":
-            self._consume_source_corpus_agent_result(ctx, state, input_model, result, ctx.step.submission)
+        elif ctx.step.step_type == "source_corpus_builder_agent_step":
+            self._consume_source_corpus_builder_result(state, input_model, result, ctx.step.submission)
+        elif ctx.step.step_type == "source_corpus_reviewer_agent_step":
+            self._consume_source_corpus_reviewer_result(ctx, state, input_model, result, ctx.step.submission)
         elif isinstance(result, PrepareNativeLifecycleChildStepResult):
             if result.outcome == "prepared" and result.child_kind is not None:
                 state.pending_child_source_step_id = ctx.step.step_id
@@ -784,14 +822,12 @@ class NativeRepoPreparationFlow(LeanBusinessFlow):
         result: ExistingSourceCorpusScanStepResult,
     ) -> None:
         if result.outcome == "ready":
-            state.source_corpus_ready = True
-            state.position = FlowPosition(phase="prepare_source_index_child")
+            state.position = FlowPosition(phase="source_corpus_review")
             return
         self._finish_native_preparation(state, input_model, "blocked", result.error.message if result.error else result.summary, result.summary)
 
-    def _consume_source_corpus_agent_result(
+    def _consume_source_corpus_builder_result(
         self,
-        ctx: FlowStepContext,
         state: NativeRepoPreparationState,
         input_model: NativeRepoPreparationInput,
         result: object | None,
@@ -802,39 +838,74 @@ class NativeRepoPreparationFlow(LeanBusinessFlow):
                 state,
                 input_model,
                 "blocked",
-                "SourceCorpusPrepareAgent did not produce a successful prepared or blocked submission.",
-                "Source corpus prepare agent did not submit.",
+                "SourceCorpusBuilderAgent did not produce a successful ready or blocked submission.",
+                "Source corpus builder did not submit.",
             )
             return
-        if isinstance(submission, SourceCorpusPreparedSubmission):
+        if isinstance(submission, SourceCorpusBuilderReadySubmission):
+            state.source_corpus_candidate = submission
+            state.position = FlowPosition(phase="source_corpus_review")
+            return
+        if isinstance(submission, SourceCorpusBuilderBlockedSubmission):
+            self._finish_native_preparation(state, input_model, "blocked", submission.reason, submission.summary)
+            return
+        self._finish_native_preparation(state, input_model, "blocked", "Unsupported source corpus submission.", "Unsupported source corpus submission.")
+
+    def _consume_source_corpus_reviewer_result(
+        self,
+        ctx: FlowStepContext,
+        state: NativeRepoPreparationState,
+        input_model: NativeRepoPreparationInput,
+        result: object | None,
+        submission: object | None,
+    ) -> None:
+        if isinstance(result, AgentStepIncompleteResult) or not isinstance(submission, SourceCorpusReviewSubmission):
+            self._finish_native_preparation(
+                state,
+                input_model,
+                "blocked",
+                "SourceCorpusReviewerAgent did not produce a valid review submission.",
+                "Source corpus reviewer did not submit.",
+            )
+            return
+        if not submission.approved:
+            state.source_corpus_review_round += 1
+            state.latest_source_corpus_reviewer_feedback = submission.feedback
+            if state.source_corpus_mode == "prepare" and state.source_corpus_review_round < 3:
+                state.position = FlowPosition(phase="source_corpus")
+                return
+            reason = submission.feedback or "Source corpus fidelity review rejected the current candidate."
+            if state.source_corpus_mode == "existing":
+                reason = f"Existing SourceCorpus requires an explicit prepare/repair run: {reason}"
+            self._finish_native_preparation(state, input_model, "blocked", reason, submission.summary)
+            return
+
+        if state.source_corpus_mode == "prepare":
+            candidate = state.source_corpus_candidate
             material = getattr(ctx.app, "material", None)
-            if material is None:
+            if candidate is None or material is None:
                 self._finish_native_preparation(
                     state,
                     input_model,
                     "blocked",
-                    "Material service is not registered; cannot finalize source corpus manifest.",
-                    "Source corpus manifest finalize failed.",
+                    "Reviewed SourceCorpus candidate or Material service is missing.",
+                    "Source corpus finalize failed.",
                 )
                 return
             finalized = material.finalize_source_corpus_prepared(
                 _native_repo_root(input_model),
-                entry_path=submission.entry_path,
-                overview=submission.overview,
-                preparation_summary=submission.preparation_summary,
-                relpath=submission.relpath,
+                entry_path=candidate.entry_path,
+                overview=candidate.overview,
+                preparation_summary=candidate.preparation_summary,
+                relpath=candidate.relpath,
             )
             if not finalized.ok:
                 reason = finalized.issues[0].message if finalized.issues else "Source corpus manifest finalize failed."
                 self._finish_native_preparation(state, input_model, "blocked", reason, "Source corpus manifest finalize failed.")
                 return
-            state.source_corpus_ready = True
-            state.position = FlowPosition(phase="prepare_source_index_child")
-            return
-        if isinstance(submission, SourceCorpusBlockedSubmission):
-            self._finish_native_preparation(state, input_model, "blocked", submission.reason, submission.summary)
-            return
-        self._finish_native_preparation(state, input_model, "blocked", "Unsupported source corpus submission.", "Unsupported source corpus submission.")
+        state.source_corpus_reviewed = True
+        state.source_corpus_ready = True
+        state.position = FlowPosition(phase="prepare_source_index_child")
 
     def _consume_handoff_gate_result(
         self,
@@ -1397,18 +1468,37 @@ def _source_corpus_workdir(ctx: FlowContext, repo_root: Path) -> Path:
     return path if path.is_absolute() else repo_root / path
 
 
-def _source_corpus_prepare_prompt(
-    input_model: NativeRepoPreparationInput, *, logical_path: str
+def _source_corpus_builder_prompt(
+    input_model: NativeRepoPreparationInput, *, logical_path: str, reviewer_feedback: str | None
 ) -> str:
     return "\n".join(
         [
-            f"Prepare the source corpus for native repo {input_model.repo_key}.",
+            f"Build the source corpus candidate for native repo {input_model.repo_key}.",
             "Current working directory: the source corpus root.",
             "Allowed write boundary: this directory and its descendants.",
             f"Configured logical corpus path: {logical_path}.",
             "Read and apply $faithful-material-preservation and $source-corpus-faithful-preparation.",
             "Preserve supplied specifications, solutions, proof references, and author structure; do not invent or relabel Agent-authored material as supplied source truth.",
-            "Read the repository preparation input through tools and submit prepared or blocked.",
+            "Read the repository preparation input through tools and submit builder ready or blocked.",
+            f"Latest independent reviewer feedback: {reviewer_feedback}" if reviewer_feedback else "This is the initial Builder pass.",
+        ]
+    )
+
+
+def _source_corpus_reviewer_prompt(
+    input_model: NativeRepoPreparationInput,
+    *,
+    review_round: int,
+    builder_summary: str,
+    previous_feedback: str | None,
+) -> str:
+    return "\n".join(
+        [
+            f"Independently review the complete current SourceCorpus for native repo {input_model.repo_key}.",
+            f"Review round: {review_round + 1}.",
+            f"Builder/scan summary for orientation only: {builder_summary}",
+            f"Previous findings to regress after the fresh pass: {previous_feedback}" if previous_feedback else "No previous reviewer findings.",
+            "Use retained originals and PDF page previews where applicable. Submit one approved or rejected full-current decision.",
         ]
     )
 

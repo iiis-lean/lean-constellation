@@ -9,7 +9,8 @@ from lean_constellation.flows.common.agent_steps import (
     AdapterDeclCatalogAgentStep,
     RepoFormatDiscoveryAgentStep,
     RootInterfacePrepareAgentStep,
-    SourceCorpusPrepareAgentStep,
+    SourceCorpusBuilderAgentStep,
+    SourceCorpusReviewerAgentStep,
     SourceIndexBuilderAgentStep,
     SourceIndexReviewerAgentStep,
 )
@@ -19,7 +20,8 @@ from lean_constellation.flows.repo_lifecycle.steps import (
     AdapterDeclCatalogStepResult,
     RepoFormatDiscoveryStepResult,
     RootInterfacePrepareStepResult,
-    SourceCorpusPrepareStepResult,
+    SourceCorpusBuilderStepResult,
+    SourceCorpusReviewerStepResult,
     SourceIndexBuilderStepResult,
     SourceIndexReviewerStepResult,
 )
@@ -28,8 +30,9 @@ from lean_constellation.flows.repo_lifecycle.submissions import (
     RepoFormatAdapterChoiceSubmission,
     RepoFormatNativeChoiceSubmission,
     RootInterfacePrepareReadySubmission,
-    SourceCorpusBlockedSubmission,
-    SourceCorpusPreparedSubmission,
+    SourceCorpusBuilderBlockedSubmission,
+    SourceCorpusBuilderReadySubmission,
+    SourceCorpusReviewSubmission,
     SourceIndexBuilderRoundSubmission,
     SourceIndexReviewerRoundSubmission,
 )
@@ -133,51 +136,71 @@ def test_repo_format_discovery_agent_step_business_results(tmp_path: Path) -> No
     assert native_step.result.outcome == "native"
 
 
-def test_source_corpus_prepare_agent_step_business_results(tmp_path: Path) -> None:
+def test_source_corpus_builder_and_reviewer_agent_step_business_results(tmp_path: Path) -> None:
     runtime = create_fake_lean_flow_runtime(tmp_path / "ark")
     flow_id = _start_host_flow(runtime, tmp_path)
 
     prepared = _run_step(
         runtime,
-        SourceCorpusPrepareAgentStep(
-            step_id="source_corpus_prepared_step",
+        SourceCorpusBuilderAgentStep(
+            step_id="source_corpus_builder_ready_step",
             flow_id=flow_id,
             scope_id="repo:repo",
-            state=_state("source_corpus_preparer", "SourceCorpusPrepareAgent"),
+            state=_state("source_corpus_builder", "SourceCorpusBuilderAgent"),
         ),
-        SourceCorpusPreparedSubmission(
+        SourceCorpusBuilderReadySubmission(
             submission_id=new_submission_id("sub"),
-            submission_type="source_corpus_prepared",
-            tool_name="submit_source_corpus_prepared",
+            submission_type="source_corpus_builder_ready",
+            tool_name="submit_source_corpus_builder_ready",
             entry_path="README.md",
             overview="Readable corpus.",
             preparation_summary="Prepared.",
             summary="Prepared.",
         ),
     )
-    assert isinstance(prepared.result, SourceCorpusPrepareStepResult)
-    assert prepared.result.outcome == "prepared"
+    assert isinstance(prepared.result, SourceCorpusBuilderStepResult)
+    assert prepared.result.outcome == "ready"
     assert prepared.result.entry_path == "README.md"
 
     blocked = _run_step(
         runtime,
-        SourceCorpusPrepareAgentStep(
+        SourceCorpusBuilderAgentStep(
             step_id="source_corpus_blocked_step",
             flow_id=flow_id,
             scope_id="repo:repo",
-            state=_state("source_corpus_preparer", "SourceCorpusPrepareAgent"),
+            state=_state("source_corpus_builder", "SourceCorpusBuilderAgent"),
         ),
-        SourceCorpusBlockedSubmission(
+        SourceCorpusBuilderBlockedSubmission(
             submission_id=new_submission_id("sub"),
-            submission_type="source_corpus_blocked",
-            tool_name="submit_source_corpus_blocked",
+            submission_type="source_corpus_builder_blocked",
+            tool_name="submit_source_corpus_builder_blocked",
             reason="Missing source material.",
             summary="Blocked.",
         ),
     )
-    assert isinstance(blocked.result, SourceCorpusPrepareStepResult)
+    assert isinstance(blocked.result, SourceCorpusBuilderStepResult)
     assert blocked.result.outcome == "blocked"
     assert blocked.result.blocked_reason == "Missing source material."
+
+    reviewed = _run_step(
+        runtime,
+        SourceCorpusReviewerAgentStep(
+            step_id="source_corpus_review_step",
+            flow_id=flow_id,
+            scope_id="repo:repo",
+            state=_state("source_corpus_reviewer", "SourceCorpusReviewerAgent"),
+        ),
+        SourceCorpusReviewSubmission(
+            submission_id=new_submission_id("sub"),
+            submission_type="source_corpus_review",
+            tool_name="submit_source_corpus_review",
+            approved=True,
+            checked_materials=["README.md", "original/paper.pdf#page=1"],
+            summary="Reviewed current corpus.",
+        ),
+    )
+    assert isinstance(reviewed.result, SourceCorpusReviewerStepResult)
+    assert reviewed.result.outcome == "approved"
 
 
 def test_source_index_agent_step_business_results_and_incomplete(tmp_path: Path) -> None:

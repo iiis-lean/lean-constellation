@@ -64,8 +64,9 @@ from lean_constellation.flows.repo_lifecycle.submissions import (
     RepoFormatAdapterChoiceSubmission,
     RepoFormatNativeChoiceSubmission,
     RootInterfacePrepareReadySubmission,
-    SourceCorpusBlockedSubmission,
-    SourceCorpusPreparedSubmission,
+    SourceCorpusBuilderBlockedSubmission,
+    SourceCorpusBuilderReadySubmission,
+    SourceCorpusReviewSubmission,
     SourceIndexBuilderRoundSubmission,
     SourceIndexReviewerRoundSubmission,
 )
@@ -107,8 +108,9 @@ from lean_constellation.tools.submit_args import (
     SubmitResourceRejectedArgs,
     SubmitResourceRequestArgs,
     SubmitRootInterfacePrepareReadyArgs,
-    SubmitSourceCorpusBlockedArgs,
-    SubmitSourceCorpusPreparedArgs,
+    SubmitSourceCorpusBuilderBlockedArgs,
+    SubmitSourceCorpusBuilderReadyArgs,
+    SubmitSourceCorpusReviewArgs,
     SubmitSourceIndexBuilderRoundArgs,
     SubmitSourceIndexReviewRoundArgs,
     SubmitStageReviewArgs,
@@ -359,7 +361,7 @@ def submit_native_repo_choice(runtime: Any, ctx: ToolExecutionContext, args: Sub
     )
 
 
-def submit_source_corpus_prepared(runtime: Any, ctx: ToolExecutionContext, args: SubmitSourceCorpusPreparedArgs) -> ServiceResult[PreparedSubmissionView]:
+def submit_source_corpus_builder_ready(runtime: Any, ctx: ToolExecutionContext, args: SubmitSourceCorpusBuilderReadyArgs) -> ServiceResult[PreparedSubmissionView]:
     expected_relpath = _expected_source_corpus_relpath(runtime, ctx)
     gate = runtime.material.check_source_corpus_prepared(
         ctx.repo_root,
@@ -372,8 +374,8 @@ def submit_source_corpus_prepared(runtime: Any, ctx: ToolExecutionContext, args:
         return runtime.foundation.fail(gate.issues)
     return _prepared(
         runtime,
-        SourceCorpusPreparedSubmission(
-            **_base_kwargs(ctx, tool_name="submit_source_corpus_prepared", summary=args.summary),
+        SourceCorpusBuilderReadySubmission(
+            **_base_kwargs(ctx, tool_name="submit_source_corpus_builder_ready", summary=args.summary),
             relpath=expected_relpath,
             entry_path=args.entry_path,
             overview=args.overview.strip(),
@@ -394,7 +396,7 @@ def _expected_source_corpus_relpath(runtime: Any, ctx: ToolExecutionContext) -> 
     return fallback
 
 
-def submit_source_corpus_blocked(runtime: Any, ctx: ToolExecutionContext, args: SubmitSourceCorpusBlockedArgs) -> ServiceResult[PreparedSubmissionView]:
+def submit_source_corpus_builder_blocked(runtime: Any, ctx: ToolExecutionContext, args: SubmitSourceCorpusBuilderBlockedArgs) -> ServiceResult[PreparedSubmissionView]:
     gate = runtime.material.submit_source_corpus_blocked(
         ctx.repo_root,
         reason=args.reason,
@@ -407,14 +409,67 @@ def submit_source_corpus_blocked(runtime: Any, ctx: ToolExecutionContext, args: 
         return runtime.foundation.fail(gate.issues)
     return _prepared(
         runtime,
-        SourceCorpusBlockedSubmission(
-            **_base_kwargs(ctx, tool_name="submit_source_corpus_blocked", summary=gate.value.summary),
+        SourceCorpusBuilderBlockedSubmission(
+            **_base_kwargs(ctx, tool_name="submit_source_corpus_builder_blocked", summary=gate.value.summary),
             reason=args.reason,
             attempted_targets=args.attempted_targets,
             missing_materials=args.missing_materials,
             suggested_next_action=args.suggested_next_action,
         ),
         agent_view=gate.value.model_dump(mode="json"),
+    )
+
+
+def submit_source_corpus_review(runtime: Any, ctx: ToolExecutionContext, args: SubmitSourceCorpusReviewArgs) -> ServiceResult[PreparedSubmissionView]:
+    if args.approved:
+        if not [item for item in args.checked_materials if item.strip()]:
+            return runtime.foundation.fail(
+                runtime.foundation.issue(
+                    "source_corpus_review_checked_materials_missing",
+                    "Approved SourceCorpus review requires at least one checked material locator.",
+                )
+            )
+        expected_relpath = _expected_source_corpus_relpath(runtime, ctx)
+        entry_path = None
+        flow_service = getattr(getattr(runtime, "ark", None), "flow_service", None)
+        if flow_service is not None and ctx.runtime is not None and ctx.runtime.flow_id is not None:
+            try:
+                flow = flow_service.get_flow(ctx.runtime.flow_id)
+            except Exception:  # noqa: BLE001
+                flow = None
+            candidate = getattr(getattr(flow, "state", None), "source_corpus_candidate", None)
+            if candidate is not None:
+                expected_relpath = candidate.relpath
+                entry_path = candidate.entry_path
+        if entry_path is None:
+            manifest = runtime.material.source_corpus.get_source_corpus_manifest(ctx.repo_root)
+            if manifest.ok and manifest.value is not None:
+                entry_path = manifest.value.entry_path
+        gate = runtime.material.check_source_corpus_draft(
+            ctx.repo_root,
+            relpath=expected_relpath,
+            entry_path=entry_path,
+        )
+        if not gate.ok or gate.value is None:
+            return runtime.foundation.fail(gate.issues)
+        if not gate.value.passed:
+            return runtime.foundation.fail(gate.value.issues)
+    elif not (args.feedback or "").strip():
+        return runtime.foundation.fail(
+            runtime.foundation.issue(
+                "source_corpus_review_feedback_missing",
+                "Rejected SourceCorpus review requires actionable feedback.",
+            )
+        )
+    return _prepared(
+        runtime,
+        SourceCorpusReviewSubmission(
+            **_base_kwargs(ctx, tool_name="submit_source_corpus_review", summary=args.summary),
+            approved=args.approved,
+            feedback=args.feedback.strip() if args.feedback else None,
+            checked_materials=list(dict.fromkeys(item.strip() for item in args.checked_materials if item.strip())),
+            unresolved_risks=list(dict.fromkeys(item.strip() for item in args.unresolved_risks if item.strip())),
+        ),
     )
 
 

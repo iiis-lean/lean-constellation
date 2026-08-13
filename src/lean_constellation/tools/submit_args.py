@@ -66,16 +66,23 @@ class SubmitNativeRepoChoiceArgs(SummarySubmitArgs):
         return _normalized_non_empty_items(values, field_name="searched_targets")
 
 
-class SubmitSourceCorpusPreparedArgs(SummarySubmitArgs):
+class SubmitSourceCorpusBuilderReadyArgs(SummarySubmitArgs):
     entry_path: str = Field(description="Entry document path relative to the source corpus root.")
     overview: str = Field(description="Overview of the prepared source corpus.")
     preparation_summary: str = Field(description="What was acquired, normalized, and organized.")
 
 
-class SubmitSourceCorpusBlockedArgs(ReasonSubmitArgs):
+class SubmitSourceCorpusBuilderBlockedArgs(ReasonSubmitArgs):
     attempted_targets: list[str] = Field(default_factory=list, description="Targets already attempted.")
     missing_materials: list[str] = Field(default_factory=list, description="Materials still missing.")
     suggested_next_action: str | None = Field(default=None, description="Suggested admin or upstream action.")
+
+
+class SubmitSourceCorpusReviewArgs(SummarySubmitArgs):
+    approved: bool = Field(description="Whether the current complete SourceCorpus candidate passed independent review.")
+    feedback: str | None = Field(default=None, description="Actionable repair feedback; required when approved=false.")
+    checked_materials: list[str] = Field(default_factory=list, description="Exact source paths or page/range locators independently checked in this review.")
+    unresolved_risks: list[str] = Field(default_factory=list, description="Remaining fidelity or completeness risks; normally empty when approved=true.")
 
 
 class SubmitSourceIndexBuilderRoundArgs(SummarySubmitArgs):

@@ -27,14 +27,14 @@ from lean_constellation.app.repo_runtime_registry import RepoRuntimeRegistry
 AGENT_TYPE = "RepoFormatDiscoveryAgent"
 WEB_AGENT_TYPES = {
     "RepoFormatDiscoveryAgent",
-    "SourceCorpusPrepareAgent",
+    "SourceCorpusBuilderAgent",
     "ResourceCuratorAgent",
     "RepoResourceDiscoveryAgent",
     "RepoLeanProviderDiscoveryAgent",
     "CoordinatorAgent",
 }
 DIRECT_FILE_AGENT_TYPES = {
-    "SourceCorpusPrepareAgent",
+    "SourceCorpusBuilderAgent",
     "ResourceCuratorAgent",
     "StatementFormalWorkerAgent",
     "ProofFormalWorkerAgent",
@@ -299,7 +299,7 @@ def test_opencode_formal_worker_keeps_repo_file_tools_but_not_bash(tmp_path: Pat
     }
 
 
-@pytest.mark.parametrize("agent_type", ["SourceCorpusPrepareAgent", "ResourceCuratorAgent"])
+@pytest.mark.parametrize("agent_type", ["SourceCorpusBuilderAgent", "ResourceCuratorAgent"])
 def test_opencode_material_agents_receive_scoped_native_file_and_web_access(
     tmp_path: Path,
     agent_type: str,

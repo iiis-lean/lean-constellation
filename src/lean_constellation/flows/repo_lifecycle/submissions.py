@@ -44,20 +44,36 @@ class RepoFormatNativeChoiceSubmission(LeanBaseSubmission):
         return list(dict.fromkeys(normalized))
 
 
-class SourceCorpusPreparedSubmission(LeanBaseSubmission):
-    submission_type: Literal["source_corpus_prepared"] = "source_corpus_prepared"
+class SourceCorpusBuilderReadySubmission(LeanBaseSubmission):
+    submission_type: Literal["source_corpus_builder_ready"] = "source_corpus_builder_ready"
     relpath: str = ".lean_constellation/source"
     entry_path: str
     overview: str
     preparation_summary: str
 
 
-class SourceCorpusBlockedSubmission(LeanBaseSubmission):
-    submission_type: Literal["source_corpus_blocked"] = "source_corpus_blocked"
+class SourceCorpusBuilderBlockedSubmission(LeanBaseSubmission):
+    submission_type: Literal["source_corpus_builder_blocked"] = "source_corpus_builder_blocked"
     reason: str
     attempted_targets: list[str] = Field(default_factory=list)
     missing_materials: list[str] = Field(default_factory=list)
     suggested_next_action: str | None = None
+
+
+class SourceCorpusReviewSubmission(LeanBaseSubmission):
+    submission_type: Literal["source_corpus_review"] = "source_corpus_review"
+    approved: bool
+    feedback: str | None = None
+    checked_materials: list[str] = Field(default_factory=list)
+    unresolved_risks: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _review_fields_match_decision(self) -> "SourceCorpusReviewSubmission":
+        if self.approved and not [item for item in self.checked_materials if item.strip()]:
+            raise ValueError("approved source corpus review requires checked_materials")
+        if not self.approved and not (self.feedback or "").strip():
+            raise ValueError("rejected source corpus review requires feedback")
+        return self
 
 
 class SourceIndexBuilderRoundSubmission(LeanBaseSubmission):

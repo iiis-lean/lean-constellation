@@ -52,7 +52,8 @@ def test_source_range_reads_are_exact_by_default() -> None:
     spec = next(spec for spec in build_application_tool_specs() if spec.name == "read_source_range")
     assert "context_lines=0 by default" in spec.description
     assert "SourceIndex blocks help locate evidence but do not authorize it" in spec.description
-    assert "current node material assignment" in spec.description
+    assert "may inspect any corpus-valid range" in spec.description
+    assert "do not restrict reading or expand mutation authority" in spec.description
 
 
 def test_legacy_material_search_tool_is_not_agent_facing() -> None:
@@ -65,6 +66,7 @@ def test_legacy_material_search_tool_is_not_agent_facing() -> None:
 
 def test_source_material_groups_expose_expected_tools() -> None:
     assert_group_contains("source_corpus_read", {"scan_source_corpus", "check_source_corpus_draft"})
+    assert_group_contains("source_corpus_visual_read", {"render_source_pdf_page"})
     assert_group_contains(
         "source_acquisition",
         {"acquire_source_material", "extract_source_artifact", "import_source_material", "normalize_source_text_material"},

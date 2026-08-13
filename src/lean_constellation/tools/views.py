@@ -66,9 +66,25 @@ def build_application_tool_views(group_specs: Iterable[ToolGroupSpec] | None = N
             _aliases("repo_format_discovery", "RepoFormatDiscoveryAgent"),
         ),
         _view(
-            AppView.SOURCE_CORPUS_PREPARE,
-            [AppGroup.REPO_PREPARATION_INPUT_READ, AppGroup.SOURCE_CORPUS_READ, AppGroup.SOURCE_ACQUISITION],
-            _aliases("source_corpus_prepare", "SourceCorpusPrepareAgent"),
+            AppView.SOURCE_CORPUS_BUILDER,
+            [
+                AppGroup.REPO_PREPARATION_INPUT_READ,
+                AppGroup.SOURCE_CORPUS_READ,
+                AppGroup.SOURCE_CORPUS_VISUAL_READ,
+                AppGroup.SOURCE_MATERIAL_TEXT_READ,
+                AppGroup.SOURCE_ACQUISITION,
+            ],
+            _aliases("source_corpus_builder", "SourceCorpusBuilderAgent"),
+        ),
+        _view(
+            AppView.SOURCE_CORPUS_REVIEWER,
+            [
+                AppGroup.REPO_PREPARATION_INPUT_READ,
+                AppGroup.SOURCE_CORPUS_READ,
+                AppGroup.SOURCE_CORPUS_VISUAL_READ,
+                AppGroup.SOURCE_MATERIAL_TEXT_READ,
+            ],
+            _aliases("source_corpus_reviewer", "SourceCorpusReviewerAgent"),
         ),
         _view(
             AppView.SOURCE_INDEX_BUILDER,

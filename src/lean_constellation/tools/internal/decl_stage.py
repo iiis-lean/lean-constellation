@@ -10,6 +10,7 @@ from lean_constellation.services.decl_graph.models import (
     RepoDeclDep,
 )
 from lean_constellation.services.decl_graph.proof_nl_validation import validate_proof_deps, validate_proof_origin_ref
+from lean_constellation.services.decl_graph.origin_validation import validate_nl_origin
 from lean_constellation.services.mathlib.service import MathlibDependencyRequest
 from lean_constellation.services.tool_facade import ToolCapability, ToolSpec
 from lean_constellation.tools.args import (
@@ -205,6 +206,15 @@ def _add_statement_source_origin(runtime, ctx, args: StatementSourceOriginAddArg
             runtime.foundation.issue("statement_origin_line_range_invalid", "Source origin end_line must be >= start_line.", object_ref=args.decl_name, field="end_line")
         )
     origin = DeclOriginRef(kind="source", source_path=args.source_path, start_line=args.start_line, end_line=args.end_line, note=args.note)
+    issue = validate_nl_origin(
+        runtime,
+        ctx.repo_root,
+        origin=origin,
+        decl_name=args.decl_name,
+        stage="statement",
+    )
+    if issue is not None:
+        return runtime.foundation.fail(issue)
     written = runtime.decl_graph.add_statement_origin(
         ctx.repo_root,
         node_path=_node(ctx),

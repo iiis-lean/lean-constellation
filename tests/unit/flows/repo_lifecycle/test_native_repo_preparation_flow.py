@@ -11,7 +11,8 @@ from lean_constellation.domain.preparation import RepoPreparationInput, SourceCo
 from lean_constellation.flows.common.submissions import new_submission_id
 from lean_constellation.flows.common.testing import FakeLeanFlowRuntime, create_fake_lean_flow_runtime
 from lean_constellation.flows.repo_lifecycle.submissions import (
-    SourceCorpusPreparedSubmission,
+    SourceCorpusBuilderReadySubmission,
+    SourceCorpusReviewSubmission,
     SourceIndexBuilderRoundSubmission,
     SourceIndexReviewerRoundSubmission,
 )
@@ -211,6 +212,18 @@ def _advance_and_run(runtime: FakeLeanFlowRuntime, flow_id: str) -> str:
     return step_id
 
 
+def _approve_source_corpus(runtime: FakeLeanFlowRuntime) -> None:
+    runtime.agent_service.queue_submission(
+        SourceCorpusReviewSubmission(
+            submission_id=new_submission_id("source_review"),
+            tool_name="submit_source_corpus_review",
+            approved=True,
+            checked_materials=["README.md"],
+            summary="Independent full-current SourceCorpus review passed.",
+        )
+    )
+
+
 def test_native_preparation_rejects_retired_parent_root_interface_phase(tmp_path: Path) -> None:
     runtime, lean_runtime, _ = _runtime(tmp_path)
     repo_root = tmp_path / "RetiredPhase"
@@ -247,6 +260,8 @@ def _run_to_source_child_waiting(
     flow_id = _start_native_with_children(runtime, repo_root)
     _advance_and_run(runtime, flow_id)
     _advance_and_run(runtime, flow_id)
+    _approve_source_corpus(runtime)
+    _advance_and_run(runtime, flow_id)
     _advance_and_run(runtime, flow_id)
     dispatch_step_id = _advance_and_run(runtime, flow_id)
     children = runtime.flow_service.store.list_child_flows(
@@ -268,6 +283,9 @@ def test_fresh_native_preparation_dispatches_reusable_children_and_resumes_after
     flow = runtime.flow_service.get_flow(flow_id)
     assert flow.state.pre_run_mutation_checkpoint_id is not None
     assert flow.state.position.phase == "source_corpus"
+    _advance_and_run(runtime, flow_id)
+    assert runtime.flow_service.get_flow(flow_id).state.position.phase == "source_corpus_review"
+    _approve_source_corpus(runtime)
     _advance_and_run(runtime, flow_id)
     assert runtime.flow_service.get_flow(flow_id).state.position.phase == "prepare_source_index_child"
 
@@ -530,10 +548,10 @@ def test_native_preparation_source_prepare_accepted_submission_finalizes_manifes
         encoding="utf-8",
     )
     runtime.agent_service.queue_submission(
-        SourceCorpusPreparedSubmission(
+        SourceCorpusBuilderReadySubmission(
             submission_id=new_submission_id("sub"),
-            submission_type="source_corpus_prepared",
-            tool_name="submit_source_corpus_prepared",
+            submission_type="source_corpus_builder_ready",
+            tool_name="submit_source_corpus_builder_ready",
             repo_key=repo_root.name,
             relpath="custom_sources",
             entry_path="README.md",
@@ -546,9 +564,134 @@ def test_native_preparation_source_prepare_accepted_submission_finalizes_manifes
     _advance_and_run(runtime, flow_id)
 
     flow = runtime.flow_service.get_flow(flow_id)
+    assert flow.state.position.phase == "source_corpus_review"
+    assert flow.state.source_corpus_ready is False
+
+    _approve_source_corpus(runtime)
+    _advance_and_run(runtime, flow_id)
+    flow = runtime.flow_service.get_flow(flow_id)
     assert flow.state.position.phase == "prepare_source_index_child"
     assert flow.state.source_corpus_ready is True
     manifest = lean_runtime.material.source_corpus.get_source_corpus_manifest(repo_root)
     assert manifest.ok and manifest.value is not None
     assert manifest.value.relpath == "custom_sources"
     assert manifest.value.entry_path == "README.md"
+
+
+def test_source_corpus_reviewer_rejection_retries_prepare_builder(tmp_path: Path) -> None:
+    runtime, lean_runtime, _ = _runtime(tmp_path)
+    repo_root = tmp_path / "workspace" / "Provider"
+    _prepare_native_repo_for_source_prepare(lean_runtime, repo_root, source_corpus_relpath="custom_sources")
+    flow_id = _start_native(runtime, repo_root)
+    _advance_and_run(runtime, flow_id)
+    source_root = repo_root / "custom_sources"
+    source_root.mkdir(parents=True)
+    (source_root / "README.md").write_text(
+        "Prepared source corpus\n"
+        "Source provenance: local fixture.\n"
+        "Reading order: this README is the main material.\n"
+        "Known gaps and extraction limits: none.\n",
+        encoding="utf-8",
+    )
+    runtime.agent_service.queue_submission(
+        SourceCorpusBuilderReadySubmission(
+            submission_id=new_submission_id("builder"),
+            tool_name="submit_source_corpus_builder_ready",
+            relpath="custom_sources",
+            entry_path="README.md",
+            overview="Prepared custom source corpus.",
+            preparation_summary="Prepared source corpus in custom root.",
+            summary="Candidate ready.",
+        )
+    )
+    _advance_and_run(runtime, flow_id)
+    runtime.agent_service.queue_submission(
+        SourceCorpusReviewSubmission(
+            submission_id=new_submission_id("review"),
+            tool_name="submit_source_corpus_review",
+            approved=False,
+            feedback="Formula on page 1 is not faithful to the retained original.",
+            checked_materials=["README.md"],
+            unresolved_risks=["page 1 formula"],
+            summary="Repair required.",
+        )
+    )
+    _advance_and_run(runtime, flow_id)
+
+    flow = runtime.flow_service.get_flow(flow_id)
+    assert flow.state.position.phase == "source_corpus"
+    assert flow.state.source_corpus_review_round == 1
+    assert "page 1" in flow.state.latest_source_corpus_reviewer_feedback
+    assert flow.state.source_corpus_ready is False
+
+
+def test_source_corpus_builder_candidate_survives_restart_before_review(tmp_path: Path) -> None:
+    runtime, lean_runtime, _ = _runtime(tmp_path)
+    repo_root = tmp_path / "workspace" / "Provider"
+    _prepare_native_repo_for_source_prepare(lean_runtime, repo_root, source_corpus_relpath="custom_sources")
+    flow_id = _start_native(runtime, repo_root)
+    _advance_and_run(runtime, flow_id)
+    source_root = repo_root / "custom_sources"
+    source_root.mkdir(parents=True)
+    (source_root / "README.md").write_text(
+        "Prepared source corpus\n"
+        "Source provenance: local fixture.\n"
+        "Reading order: this README is the main material.\n"
+        "Known gaps and extraction limits: none.\n",
+        encoding="utf-8",
+    )
+    runtime.agent_service.queue_submission(
+        SourceCorpusBuilderReadySubmission(
+            submission_id=new_submission_id("builder"),
+            tool_name="submit_source_corpus_builder_ready",
+            relpath="custom_sources",
+            entry_path="README.md",
+            overview="Prepared custom source corpus.",
+            preparation_summary="Prepared source corpus in custom root.",
+            summary="Candidate ready.",
+        )
+    )
+    _advance_and_run(runtime, flow_id)
+
+    restarted = create_fake_lean_flow_runtime(
+        runtime.root,
+        ark_services=lean_runtime.ark,
+        app_services=lean_runtime.app,
+    )
+    candidate = restarted.flow_service.get_flow(flow_id).state.source_corpus_candidate
+    assert candidate is not None
+    assert candidate.relpath == "custom_sources"
+    _approve_source_corpus(restarted)
+    _advance_and_run(restarted, flow_id)
+
+    flow = restarted.flow_service.get_flow(flow_id)
+    assert flow.state.source_corpus_ready is True
+    assert flow.state.source_corpus_reviewed is True
+    manifest = lean_runtime.material.source_corpus.get_source_corpus_manifest(repo_root)
+    assert manifest.ok and manifest.value is not None
+    assert manifest.value.relpath == "custom_sources"
+
+
+def test_source_corpus_reviewer_rejection_blocks_existing_mode(tmp_path: Path) -> None:
+    runtime, lean_runtime, _ = _runtime(tmp_path)
+    repo_root = tmp_path / "workspace" / "Provider"
+    _prepare_native_repo(lean_runtime, repo_root)
+    flow_id = _start_native(runtime, repo_root)
+    _advance_and_run(runtime, flow_id)
+    _advance_and_run(runtime, flow_id)
+    runtime.agent_service.queue_submission(
+        SourceCorpusReviewSubmission(
+            submission_id=new_submission_id("review"),
+            tool_name="submit_source_corpus_review",
+            approved=False,
+            feedback="Existing transcription omits a source hypothesis.",
+            checked_materials=["README.md"],
+            summary="Existing corpus needs repair.",
+        )
+    )
+    _advance_and_run(runtime, flow_id)
+
+    flow = runtime.flow_service.get_flow(flow_id)
+    assert flow.status is FlowStatus.COMPLETED
+    assert flow.result.outcome == "blocked"
+    assert "explicit prepare/repair run" in flow.result.blocked_reason

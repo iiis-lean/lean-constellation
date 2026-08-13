@@ -8,8 +8,9 @@ from lean_constellation.tools.registry import build_application_tool_specs
 EXPECTED_SUBMIT_TOOLS = {
     "submit_adapter_repo_choice",
     "submit_native_repo_choice",
-    "submit_source_corpus_prepared",
-    "submit_source_corpus_blocked",
+    "submit_source_corpus_builder_ready",
+    "submit_source_corpus_builder_blocked",
+    "submit_source_corpus_review",
     "submit_source_index_builder_round",
     "submit_source_index_review_round",
     "submit_root_interface_prepare_ready",

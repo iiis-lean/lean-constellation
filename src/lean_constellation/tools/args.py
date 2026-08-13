@@ -126,6 +126,12 @@ class SourceCorpusCheckArgs(StrictModel):
     entry_path: str | None = Field(default=None, description="Optional entry file path relative to the source corpus root.")
 
 
+class SourcePdfPageRenderArgs(StrictModel):
+    path: str = Field(description="PDF path relative to the current SourceCorpus root.")
+    page_number: int = Field(ge=1, description="One-based PDF page number to render.")
+    dpi: int = Field(default=160, ge=96, le=240, description="Preview resolution between 96 and 240 DPI.")
+
+
 class SourceCorpusScanArgs(StrictModel):
     relpath: str = Field(default=".lean_constellation/source", description="Source corpus path relative to the repo root.")
 

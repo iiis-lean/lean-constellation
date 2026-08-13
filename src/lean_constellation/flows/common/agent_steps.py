@@ -70,8 +70,9 @@ from lean_constellation.flows.repo_lifecycle.submissions import (
     RepoFormatAdapterChoiceSubmission,
     RepoFormatNativeChoiceSubmission,
     RootInterfacePrepareReadySubmission,
-    SourceCorpusBlockedSubmission,
-    SourceCorpusPreparedSubmission,
+    SourceCorpusBuilderBlockedSubmission,
+    SourceCorpusBuilderReadySubmission,
+    SourceCorpusReviewSubmission,
     SourceIndexBuilderRoundSubmission,
     SourceIndexReviewerRoundSubmission,
 )
@@ -79,7 +80,8 @@ from lean_constellation.flows.repo_lifecycle.steps import (
     AdapterDeclCatalogStepResult,
     RepoFormatDiscoveryStepResult,
     RootInterfacePrepareStepResult,
-    SourceCorpusPrepareStepResult,
+    SourceCorpusBuilderStepResult,
+    SourceCorpusReviewerStepResult,
     SourceIndexBuilderStepResult,
     SourceIndexReviewerStepResult,
 )
@@ -145,33 +147,33 @@ class RepoFormatDiscoveryAgentStep(AgentStep):
         return RepoFormatDiscoveryStepResult(outcome="incomplete", incomplete_reason=reason, summary=reason)
 
 
-class SourceCorpusPrepareAgentStep(AgentStep):
-    step_type: ClassVar[str] = "source_corpus_prepare_agent_step"
+class SourceCorpusBuilderAgentStep(AgentStep):
+    step_type: ClassVar[str] = "source_corpus_builder_agent_step"
     Results: ClassVar[dict[str, type]] = {
         **AgentStep.Results,
-        "source_corpus_prepare": SourceCorpusPrepareStepResult,
+        "source_corpus_builder": SourceCorpusBuilderStepResult,
     }
     Submissions: ClassVar[dict[str, type[BaseSubmission]]] = _submission_map(
-        SourceCorpusPreparedSubmission,
-        SourceCorpusBlockedSubmission,
+        SourceCorpusBuilderReadySubmission,
+        SourceCorpusBuilderBlockedSubmission,
     )
     SubmitTools: ClassVar[set[str] | None] = {
-        "submit_source_corpus_prepared",
-        "submit_source_corpus_blocked",
+        "submit_source_corpus_builder_ready",
+        "submit_source_corpus_builder_blocked",
     }
 
     def build_result_from_submission(self, ctx, agent_id: str, turn_result: object | None):
         submission = ctx.load_step().submission
-        if isinstance(submission, SourceCorpusPreparedSubmission):
-            return SourceCorpusPrepareStepResult(
-                outcome="prepared",
+        if isinstance(submission, SourceCorpusBuilderReadySubmission):
+            return SourceCorpusBuilderStepResult(
+                outcome="ready",
                 relpath=submission.relpath,
                 entry_path=submission.entry_path,
                 overview=submission.overview,
                 summary=submission.summary or submission.preparation_summary,
             )
-        if isinstance(submission, SourceCorpusBlockedSubmission):
-            return SourceCorpusPrepareStepResult(
+        if isinstance(submission, SourceCorpusBuilderBlockedSubmission):
+            return SourceCorpusBuilderStepResult(
                 outcome="blocked",
                 blocked_reason=submission.reason,
                 summary=submission.summary or submission.reason,
@@ -180,7 +182,35 @@ class SourceCorpusPrepareAgentStep(AgentStep):
 
     def build_incomplete_result(self, ctx, agent_id: str | None, reason: str, turn_result: object | None, attempt_count: int):
         del ctx, agent_id, turn_result, attempt_count
-        return SourceCorpusPrepareStepResult(outcome="incomplete", incomplete_reason=reason, summary=reason)
+        return SourceCorpusBuilderStepResult(outcome="incomplete", incomplete_reason=reason, summary=reason)
+
+
+class SourceCorpusReviewerAgentStep(AgentStep):
+    step_type: ClassVar[str] = "source_corpus_reviewer_agent_step"
+    Results: ClassVar[dict[str, type]] = {
+        **AgentStep.Results,
+        "source_corpus_reviewer": SourceCorpusReviewerStepResult,
+    }
+    Submissions: ClassVar[dict[str, type[BaseSubmission]]] = _submission_map(
+        SourceCorpusReviewSubmission,
+    )
+    SubmitTools: ClassVar[set[str] | None] = {"submit_source_corpus_review"}
+
+    def build_result_from_submission(self, ctx, agent_id: str, turn_result: object | None):
+        submission = ctx.load_step().submission
+        if isinstance(submission, SourceCorpusReviewSubmission):
+            return SourceCorpusReviewerStepResult(
+                outcome="approved" if submission.approved else "rejected",
+                feedback=submission.feedback,
+                checked_materials=list(submission.checked_materials),
+                unresolved_risks=list(submission.unresolved_risks),
+                summary=submission.summary,
+            )
+        return super().build_result_from_submission(ctx, agent_id, turn_result)
+
+    def build_incomplete_result(self, ctx, agent_id: str | None, reason: str, turn_result: object | None, attempt_count: int):
+        del ctx, agent_id, turn_result, attempt_count
+        return SourceCorpusReviewerStepResult(outcome="incomplete", incomplete_reason=reason, summary=reason)
 
 
 class SourceIndexBuilderAgentStep(AgentStep):
@@ -1030,7 +1060,8 @@ def _round_affected_decl_names(ctx, child: object | None, result: object | None)
 
 BUSINESS_AGENT_STEP_TYPES: tuple[type[AgentStep], ...] = (
     RepoFormatDiscoveryAgentStep,
-    SourceCorpusPrepareAgentStep,
+    SourceCorpusBuilderAgentStep,
+    SourceCorpusReviewerAgentStep,
     SourceIndexBuilderAgentStep,
     SourceIndexReviewerAgentStep,
     RootInterfacePrepareAgentStep,

@@ -718,7 +718,7 @@ def test_source_corpus_tool_invokes_material_service(tmp_path: Path) -> None:
     (source_root / "README.md").write_text(_source_readme_text(), encoding="utf-8")
 
     result = runtime.tool_facade.invoke_agent_tool(
-        _raw(tmp_path, view="source_corpus_prepare", agent_type="source_corpus_prepare"),
+        _raw(tmp_path, view="source_corpus_builder", agent_type="SourceCorpusBuilderAgent"),
         tool_name="scan_source_corpus",
         flat_args={"relpath": ".lean_constellation/source"},
     )
@@ -803,7 +803,7 @@ def test_source_range_validation_and_preview_tools_invoke_material_service(tmp_p
     assert invalid["issue_code"] == "source_ref_range_invalid"
 
 
-def test_source_reads_separate_corpus_validity_from_node_material_authorization(
+def test_source_reads_use_corpus_validity_without_node_material_read_acl(
     tmp_path: Path,
 ) -> None:
     runtime = create_test_runtime_services(register_application_tools=True)
@@ -845,7 +845,7 @@ def test_source_reads_separate_corpus_validity_from_node_material_authorization(
             flat_args={"path": "source.md", "start_line": 2, "end_line": 3},
         )
     )
-    context_failure = _unwrap_tool_failure(
+    context_read = _unwrap_tool_result(
         runtime.tool_facade.invoke_agent_tool(
             worker,
             tool_name="read_source_range",
@@ -857,7 +857,7 @@ def test_source_reads_separate_corpus_validity_from_node_material_authorization(
             },
         )
     )
-    preview_failure = _unwrap_tool_failure(
+    preview = _unwrap_tool_result(
         runtime.tool_facade.invoke_agent_tool(
             worker,
             tool_name="preview_source_ref",
@@ -887,9 +887,9 @@ def test_source_reads_separate_corpus_validity_from_node_material_authorization(
     )
 
     assert "2: assigned one" in accepted["text_with_line_numbers"]
-    assert context_failure[0].kind == "source_range_outside_node_material"
-    assert preview_failure[0].kind == "source_range_outside_node_material"
-    assert search["hits"] == []
+    assert "1: outside before" in context_read["before_context"]
+    assert preview["preview"]["path"] == "source.md"
+    assert len(search["hits"]) == 2
     assert "4: outside after" in discovery_read["text_with_line_numbers"]
 
 
@@ -2066,7 +2066,7 @@ def test_source_range_read_uses_role_appropriate_node_material_boundary(tmp_path
                 flat_args={"path": "chapter.md", "start_line": 2, "end_line": 3},
             )
         )
-        outside = _unwrap_tool_failure(
+        outside = _unwrap_tool_result(
             runtime.tool_facade.invoke_agent_tool(
                 downstream_raw,
                 tool_name="read_source_range",
@@ -2087,7 +2087,7 @@ def test_source_range_read_uses_role_appropriate_node_material_boundary(tmp_path
     assert plan_outside_corpus[0].kind == "source_ref_range_invalid"
     for inside, outside in downstream_results:
         assert "2: two" in inside["text_with_line_numbers"]
-        assert outside[0].kind == "source_range_outside_node_material"
+        assert "1: one" in outside["text_with_line_numbers"]
     assert "1: one" in repo_level["text_with_line_numbers"]
 
 
@@ -2245,6 +2245,9 @@ def test_resource_draft_read_and_mathlib_write_tools_invoke_services(tmp_path: P
 def test_decl_stage_nl_tool_invokes_stage_mutation_with_context(tmp_path: Path) -> None:
     runtime = create_test_runtime_services(register_application_tools=True)
     initialize_native_test_repo(tmp_path)
+    source_root = tmp_path / ".lean_constellation" / "source"
+    source_root.mkdir(parents=True)
+    (source_root / "notes.md").write_text("statement source\n", encoding="utf-8")
     assert runtime.node.node_tree.ensure_root_scope_node(tmp_path).ok
     assert runtime.node.create_content_node(
         tmp_path,

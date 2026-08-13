@@ -13,7 +13,7 @@ def test_agent_home_materialization_writes_instruction_skills_and_mcp_config(tmp
 
     view = materialize_agent_home(
         runtime,
-        "SourceCorpusPrepareAgent",
+        "SourceCorpusBuilderAgent",
         mcp_http_base_url="http://127.0.0.1:8765",
     )
 
@@ -26,8 +26,8 @@ def test_agent_home_materialization_writes_instruction_skills_and_mcp_config(tmp
     ]
     assert (home_root / ".agents" / "skills" / "source-material-acquisition" / "SKILL.md").exists()
     config_text = (Path(view.value.home_root) / ".codex" / "config.toml").read_text(encoding="utf-8")
-    assert "http://127.0.0.1:8765/mcp/views/source_corpus_prepare" in config_text
-    assert "http://127.0.0.1:8765/mcp/views/source_corpus_prepare_submit" in config_text
+    assert "http://127.0.0.1:8765/mcp/views/source_corpus_builder" in config_text
+    assert "http://127.0.0.1:8765/mcp/views/source_corpus_builder_submit" in config_text
     assert "env_http_headers" in config_text
     assert ".env]" not in config_text
     assert "x-ark-flow-id" in config_text
@@ -38,8 +38,8 @@ def test_agent_home_materialization_writes_instruction_skills_and_mcp_config(tmp
     config = tomllib.loads(config_text)
     assert config["features"] == {"apps": False, "plugins": False, "tool_suggest": False}
     manifest = json.loads((home_root / ".agents" / "lean_constellation_home.json").read_text(encoding="utf-8"))
-    assert manifest["tool_view_config"]["application_view_key"] == "source_corpus_prepare"
-    assert manifest["tool_view_config"]["submit_view_key"] == "source_corpus_prepare_submit"
+    assert manifest["tool_view_config"]["application_view_key"] == "source_corpus_builder"
+    assert manifest["tool_view_config"]["submit_view_key"] == "source_corpus_builder_submit"
     assert manifest["mcp_transport"] == "http"
     assert len(manifest["mcp_server_specs"]) == 2
     assert "capabilities" not in manifest

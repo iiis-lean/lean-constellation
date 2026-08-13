@@ -18,7 +18,8 @@ from lean_constellation.agents.ark import build_ark_agent_type
 
 EXPECTED_AGENT_TYPES = {
     "RepoFormatDiscoveryAgent",
-    "SourceCorpusPrepareAgent",
+    "SourceCorpusBuilderAgent",
+    "SourceCorpusReviewerAgent",
     "SourceIndexBuilderAgent",
     "SourceIndexReviewerAgent",
     "RootInterfacePrepareAgent",
@@ -137,7 +138,8 @@ def test_formal_reviewer_source_fidelity_requires_exact_ranges() -> None:
     instruction = render_agent_instruction("StatementFormalReviewerAgent")
     assert "exact inclusive endpoints" in instruction
     assert "SourceIndex blocks are not authorization boundaries" in instruction
-    assert "node-local workers and reviewers remain limited to assigned material" in instruction
+    assert "Node material assignments identify responsibility" in instruction
+    assert "do not restrict corpus reading or expand mutation authority" in instruction
 
 
 def test_coordinator_public_fragments_match_native_repo_target_order() -> None:
@@ -168,7 +170,7 @@ def test_coordinator_public_fragments_match_native_repo_target_order() -> None:
 
 def test_blocked_contract_is_only_installed_for_agents_with_structured_completion_paths() -> None:
     expected_paths = {
-        "SourceCorpusPrepareAgent": {"submit_source_corpus_blocked"},
+        "SourceCorpusBuilderAgent": {"submit_source_corpus_builder_blocked"},
         "AdapterDeclCatalogAgent": {"submit_adapter_catalog_blocked"},
         "ResourceCuratorAgent": {"submit_external_repo_required", "submit_resource_rejected"},
         "ContentPlanAgent": {"submit_content_node_blocked"},

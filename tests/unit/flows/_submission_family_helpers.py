@@ -44,6 +44,7 @@ def instantiate_submission(cls, **overrides):
         "attempted_targets": [],
         "missing_materials": [],
         "approved": True,
+        "checked_materials": ["README.md"],
         "feedback": None,
         "missing_interfaces": [],
         "evidence_summary": "Evidence",

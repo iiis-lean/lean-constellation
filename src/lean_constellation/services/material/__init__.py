@@ -47,6 +47,7 @@ from lean_constellation.services.material.source_corpus import (
     SourceCorpusPreparedView,
     SourceExtractionView,
     SourceRefValidationView,
+    SourcePdfPagePreviewView,
 )
 from lean_constellation.services.material.source_index import (
     ResolvedSourceScopeView,
@@ -140,5 +141,6 @@ __all__ = [
     "SourceLink",
     "SourceLinkView",
     "SourceRefValidationView",
+    "SourcePdfPagePreviewView",
     "SubmissionView",
 ]

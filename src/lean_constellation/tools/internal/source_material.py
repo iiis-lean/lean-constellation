@@ -7,7 +7,7 @@ from typing import Literal
 from pydantic import Field
 
 from lean_constellation.domain.common import StrictModel
-from lean_constellation.services.material import MaterialSearchView, SourceBlockAdjacentLinkView
+from lean_constellation.services.material import SourceBlockAdjacentLinkView
 from lean_constellation.services.material.source_index import SourceBlockRefView
 from lean_constellation.services.tool_facade import ToolCapability, ToolExecutionContext, ToolSpec
 from lean_constellation.tools.args import (
@@ -29,6 +29,7 @@ from lean_constellation.tools.args import (
     SourceMaterialAcquireArgs,
     SourceMaterialImportArgs,
     SourceMaterialNormalizeArgs,
+    SourcePdfPageRenderArgs,
     SourceRangeArgs,
     SourceRangeValidateArgs,
     TextSearchArgs,
@@ -57,20 +58,6 @@ _COMMITTED_SOURCE_INDEX_VIEWS = {
     AppView.REPO_LEAN_PROVIDER_DISCOVERY.value,
     AppView.REPO_MATHLIB_RECON.value,
 }
-
-_NODE_MATERIAL_AUTHORIZED_VIEWS = {
-    AppView.NODE_DIR_DEPENDENCY_RECON.value,
-    AppView.MATHLIB_RECON.value,
-    AppView.STATEMENT_NL_WORKER.value,
-    AppView.STATEMENT_NL_REVIEWER.value,
-    AppView.STATEMENT_FORMAL_WORKER.value,
-    AppView.STATEMENT_FORMAL_REVIEWER.value,
-    AppView.PROOF_NL_WORKER.value,
-    AppView.PROOF_NL_REVIEWER.value,
-    AppView.PROOF_FORMAL_WORKER.value,
-    AppView.PROOF_FORMAL_REVIEWER.value,
-}
-
 
 class SourceBlockAgentView(StrictModel):
     block_id: str
@@ -358,36 +345,6 @@ def _get_source_index_update_context(runtime, ctx: ToolExecutionContext, _args: 
     )
 
 
-def _node_material_assignments(runtime, ctx: ToolExecutionContext):
-    if ctx.node is None or ctx.endpoint_view_key not in _NODE_MATERIAL_AUTHORIZED_VIEWS:
-        return runtime.foundation.ok({})
-    contract = runtime.node.contract.get_current_contract(
-        ctx.repo_root,
-        node_path=ctx.node.node_path,
-    )
-    if not contract.ok or contract.value is None:
-        return runtime.foundation.fail(contract.issues)
-    ranges: dict[str, list[tuple[int, int, str]]] = {}
-    for item in [*contract.value.contract.owned_refs, *contract.value.contract.context_refs]:
-        if item.ref.kind != "source":
-            continue
-        source_ref = item.ref.ref
-        path = getattr(source_ref, "path", None)
-        start_line = getattr(source_ref, "start_line", None)
-        end_line = getattr(source_ref, "end_line", None)
-        if path is None or start_line is None or end_line is None:
-            continue
-        ranges.setdefault(path, []).append((start_line, end_line, item.ref_id))
-    return runtime.foundation.ok(ranges)
-
-
-def _node_material_ranges(runtime, ctx: ToolExecutionContext, *, path: str):
-    assignments = _node_material_assignments(runtime, ctx)
-    if not assignments.ok or assignments.value is None:
-        return runtime.foundation.fail(assignments.issues)
-    return runtime.foundation.ok(assignments.value.get(path, []))
-
-
 def _authorize_source_range(runtime, ctx: ToolExecutionContext, args: SourceRangeArgs):
     validation = runtime.material.validate_source_range(
         ctx.repo_root,
@@ -404,30 +361,6 @@ def _authorize_source_range(runtime, ctx: ToolExecutionContext, args: SourceRang
                 validation.value.summary,
                 object_ref=args.path,
                 current=f"{args.start_line}-{args.end_line}",
-            )
-        )
-    ranges = _node_material_ranges(runtime, ctx, path=validation.value.path)
-    if not ranges.ok or ranges.value is None:
-        return runtime.foundation.fail(ranges.issues)
-    if ctx.node is None or ctx.endpoint_view_key not in _NODE_MATERIAL_AUTHORIZED_VIEWS:
-        return runtime.foundation.ok(None)
-    expanded_start = max(1, args.start_line - args.context_lines)
-    expanded_end = min(validation.value.line_count, args.end_line + args.context_lines)
-    if not any(start <= expanded_start and expanded_end <= end for start, end, _ in ranges.value):
-        return runtime.foundation.fail(
-            runtime.foundation.issue(
-                "source_range_outside_node_material",
-                "Requested source range and context must be contained in the current node material assignment.",
-                object_ref=f"{args.path}:{args.start_line}-{args.end_line}",
-                current=f"{expanded_start}-{expanded_end}",
-                expected="contained in one current node source material ref",
-                suggested_action="Use get_material_context or ask the planning authority to attach the required exact range.",
-                details={
-                    "node_ranges": [
-                        f"{ref_id}:{start_line}-{end_line}"
-                        for start_line, end_line, ref_id in ranges.value
-                    ]
-                },
             )
         )
     return runtime.foundation.ok(None)
@@ -919,8 +852,8 @@ def build_material_tool_specs() -> list[ToolSpec]:
             description=(
                 "Read an exact inclusive range from a readable file in current SourceCorpus truth, with context_lines=0 "
                 "by default. SourceIndex blocks help locate evidence but do not authorize it. Repository discovery and "
-                "planning views may inspect corpus-valid ranges; node-local workers and reviewers may read only when the "
-                "requested range plus returned context is contained in the current node material assignment."
+                "planning and node-local views may inspect any corpus-valid range; Node material assignments guide "
+                "responsibility but do not restrict reading or expand mutation authority."
             ),
             args_model=SourceRangeArgs,
             capability=ToolCapability.READ,
@@ -954,40 +887,12 @@ def build_material_tool_specs() -> list[ToolSpec]:
 
 
 def _search_source_text(runtime, ctx: ToolExecutionContext, args: TextSearchArgs):
-    restricted = ctx.node is not None and ctx.endpoint_view_key in _NODE_MATERIAL_AUTHORIZED_VIEWS
-    searched = runtime.material.search_material_text(
+    return runtime.material.search_material_text(
         ctx.repo_root,
         query=args.query,
         scope="source",
         regex=args.regex,
-        limit=None if restricted else args.limit,
-    )
-    if not searched.ok or searched.value is None or not restricted:
-        return searched
-    assignments = _node_material_assignments(runtime, ctx)
-    if not assignments.ok or assignments.value is None:
-        return runtime.foundation.fail(assignments.issues)
-    hits = [
-        hit
-        for hit in searched.value.hits
-        if hit.path is not None
-        and any(
-            start_line <= hit.line_number <= end_line
-            for start_line, end_line, _ref_id in assignments.value.get(hit.path, [])
-        )
-    ]
-    total = len(hits)
-    selected = hits if args.limit is None else hits[: args.limit]
-    return runtime.foundation.ok(
-        MaterialSearchView(
-            query=searched.value.query,
-            scope=searched.value.scope,
-            regex=searched.value.regex,
-            hits=selected,
-            total_matching_count=total,
-            truncated=len(selected) < total,
-            summary=f"Found {total} authorized hits; returned {len(selected)}.",
-        )
+        limit=args.limit,
     )
 
 
@@ -1135,6 +1040,17 @@ def build_source_corpus_tool_specs() -> list[ToolSpec]:
             result_view="gate_report",
             groups={AppGroup.SOURCE_CORPUS_READ},
             roles=roles,
+        ),
+        direct_tool(
+            name="render_source_pdf_page",
+            description="Render one canonical SourceCorpus PDF page into a task-local PNG preview and return its exact image locator and digest.",
+            args_model=SourcePdfPageRenderArgs,
+            capability=ToolCapability.READ,
+            backing_service="material",
+            backing_method="render_source_pdf_page",
+            result_view="source_pdf_page_preview",
+            groups={AppGroup.SOURCE_CORPUS_VISUAL_READ},
+            roles={"worker", "reviewer", "admin"},
         ),
         handler_tool(
             name="acquire_source_material",

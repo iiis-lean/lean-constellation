@@ -1,4 +1,6 @@
 import json
+import struct
+import subprocess
 
 from tests.unit_services_helpers import make_runtime
 
@@ -12,8 +14,57 @@ from lean_constellation.services.external_clients import (
     ResolvedArtifactKindView,
 )
 from lean_constellation.services.material import MaterialService
+from lean_constellation.services.material import source_corpus as source_corpus_module
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
 from lean_constellation.domain.refs import SourceRef
+
+
+def test_source_pdf_page_preview_validates_corpus_and_reuses_cache(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime = make_runtime()
+    source_root = tmp_path / ".lean_constellation" / "source"
+    source_root.mkdir(parents=True)
+    (source_root / "paper.pdf").write_bytes(b"%PDF-1.4\nfixture")
+    (source_root / "notes.txt").write_text("not a pdf\n", encoding="utf-8")
+    calls: list[str] = []
+
+    def fake_run(command, **kwargs):  # noqa: ANN001
+        del kwargs
+        calls.append(command[0])
+        if command[0] == "pdfinfo":
+            return subprocess.CompletedProcess(command, 0, stdout="Pages:          2\n", stderr="")
+        output = Path(f"{command[-1]}.png")
+        output.write_bytes(
+            b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\rIHDR" + struct.pack(">II", 640, 480)
+        )
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(source_corpus_module.subprocess, "run", fake_run)
+
+    first = runtime.material.render_source_pdf_page(
+        tmp_path,
+        path="paper.pdf",
+        page_number=2,
+    )
+    second = runtime.material.render_source_pdf_page(
+        tmp_path,
+        path="paper.pdf",
+        page_number=2,
+    )
+    non_pdf = runtime.material.render_source_pdf_page(tmp_path, path="notes.txt", page_number=1)
+    escaped = runtime.material.render_source_pdf_page(tmp_path, path="../paper.pdf", page_number=1)
+    out_of_range = runtime.material.render_source_pdf_page(tmp_path, path="paper.pdf", page_number=3)
+
+    assert first.ok and first.value is not None
+    assert first.value.width == 640 and first.value.height == 480
+    assert first.value.cache_reused is False
+    assert second.ok and second.value is not None and second.value.cache_reused is True
+    assert calls.count("pdftoppm") == 1
+    assert not non_pdf.ok and non_pdf.issues[0].kind == "source_pdf_type_mismatch"
+    assert not escaped.ok and escaped.issues[0].kind == "source_pdf_preview_path_escape"
+    assert not out_of_range.ok and out_of_range.issues[0].kind == "source_pdf_page_out_of_range"
 
 
 class FakeMaterialClient:

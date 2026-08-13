@@ -109,9 +109,9 @@ class RepoFormatDiscoveryStepResult(LeanRenderableStepResult):
         }
 
 
-class SourceCorpusPrepareStepResult(LeanRenderableStepResult):
-    result_type: Literal["source_corpus_prepare"] = "source_corpus_prepare"
-    outcome: Literal["prepared", "blocked", "incomplete"]
+class SourceCorpusBuilderStepResult(LeanRenderableStepResult):
+    result_type: Literal["source_corpus_builder"] = "source_corpus_builder"
+    outcome: Literal["ready", "blocked", "incomplete"]
     relpath: str | None = None
     entry_path: str | None = None
     overview: str | None = None
@@ -124,6 +124,24 @@ class SourceCorpusPrepareStepResult(LeanRenderableStepResult):
             "relpath": self.relpath,
             "entry_path": self.entry_path,
             "blocked_reason": self.blocked_reason,
+            "incomplete_reason": self.incomplete_reason,
+        }
+
+
+class SourceCorpusReviewerStepResult(LeanRenderableStepResult):
+    result_type: Literal["source_corpus_reviewer"] = "source_corpus_reviewer"
+    outcome: Literal["approved", "rejected", "incomplete"]
+    feedback: str | None = None
+    checked_materials: list[str] = Field(default_factory=list)
+    unresolved_risks: list[str] = Field(default_factory=list)
+    incomplete_reason: str | None = None
+
+    def agent_fields(self) -> dict[str, object]:
+        return {
+            "outcome": self.outcome,
+            "feedback": self.feedback,
+            "checked_materials": list(self.checked_materials),
+            "unresolved_risks": list(self.unresolved_risks),
             "incomplete_reason": self.incomplete_reason,
         }
 
@@ -1712,7 +1730,8 @@ __all__ = [
     "RepoFormatDiscoveryStepResult",
     "RequirementBootstrapStepError",
     "RootInterfacePrepareStepResult",
-    "SourceCorpusPrepareStepResult",
+    "SourceCorpusBuilderStepResult",
+    "SourceCorpusReviewerStepResult",
     "SourceIndexBuilderStepResult",
     "SourceIndexReviewerStepResult",
     "ValidateBootstrapInputStep",

@@ -255,7 +255,7 @@ def test_source_and_resource_acquisition_skills_reference_visible_tools() -> Non
     reports = build_agent_surface_reports()
 
     source_refs = _tool_refs(specs["source-material-acquisition"].body)
-    source_visible = {tool.name for tool in reports["SourceCorpusPrepareAgent"].application_tools}
+    source_visible = {tool.name for tool in reports["SourceCorpusBuilderAgent"].application_tools}
     assert source_refs <= source_visible
     assert "acquire_resource_material" not in specs["source-material-acquisition"].body
 

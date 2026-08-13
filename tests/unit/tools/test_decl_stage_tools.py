@@ -484,6 +484,9 @@ def _create_local_resource(runtime, repo_root: Path) -> str:
 def test_statement_nl_typed_tools_write_text_origins_and_deps(tmp_path: Path) -> None:
     runtime = create_test_runtime_services()
     initialize_native_test_repo(tmp_path)
+    source_root = tmp_path / ".lean_constellation" / "source"
+    source_root.mkdir(parents=True)
+    (source_root / "notes.md").write_text("one\ntwo\nthree\nfour\n", encoding="utf-8")
     assert runtime.node.node_tree.ensure_root_scope_node(tmp_path).ok
     assert runtime.node.create_scope_node(tmp_path, path="Main.Topic", goal="Topic", boundary="Topic boundary").ok
     assert runtime.node.create_content_node(
@@ -559,6 +562,19 @@ def test_statement_nl_typed_tools_write_text_origins_and_deps(tmp_path: Path) ->
     assert origin.value.added[0].kind == "source"
     assert origin.value.managed_projection is None
     assert prepared_path.read_bytes() == before_nl_metadata
+
+    invalid_origin = _add_statement_source_origin(
+        runtime,
+        ctx,
+        StatementSourceOriginAddArgs(
+            decl_name="main_result",
+            source_path="notes.md",
+            start_line=2,
+            end_line=99,
+        ),
+    )
+    assert not invalid_origin.ok
+    assert invalid_origin.issues[0].kind == "statement_origin_source_missing"
 
     dep = _add_statement_repo_dependencies(
         runtime,

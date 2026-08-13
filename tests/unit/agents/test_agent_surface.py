@@ -8,7 +8,8 @@ from lean_constellation.tools import build_application_tool_specs, build_submit_
 
 EXPECTED_SURFACE_COUNTS = {
     "RepoFormatDiscoveryAgent": (6, 12, 1, 2, 1),
-    "SourceCorpusPrepareAgent": (3, 7, 1, 2, 3),
+    "SourceCorpusBuilderAgent": (5, 12, 1, 2, 3),
+    "SourceCorpusReviewerAgent": (4, 8, 1, 1, 2),
     "SourceIndexBuilderAgent": (6, 25, 1, 1, 1),
     "SourceIndexReviewerAgent": (5, 14, 1, 1, 1),
     "RootInterfacePrepareAgent": (7, 15, 1, 1, 1),
@@ -34,7 +35,8 @@ EXPECTED_SURFACE_COUNTS = {
 
 EXPECTED_APPLICATION_SURFACE_HASHES = {
     "RepoFormatDiscoveryAgent": "6a9b3b7a40f76fe2845129db49a0f1d8b34e704cd764f27c98b2b3c86362ac98",
-    "SourceCorpusPrepareAgent": "8a56bf36f9cc83b6ad7eef83155f55a77bd60516c1c6a31851b6053edbb09bd3",
+    "SourceCorpusBuilderAgent": "91a3cc514093ad8dd81a420dc1565c51b1a67b321efa0119ad318f402deaff3f",
+    "SourceCorpusReviewerAgent": "a7329c521ca558bdc64959692c89140ee9c6014052befc7c20070a0d74b61b34",
     "SourceIndexBuilderAgent": "83c7d2aa3b835727f89779c44b92f708371a1b3e7c085b9b1b8787f4fc1e5876",
     "SourceIndexReviewerAgent": "71ed43ad69003736a91fbb5146983683c80cc23eb821ee5abf464d546a32641f",
     "RootInterfacePrepareAgent": "744c85a080bb7ec6ecf1e2923beee4fb683ce68347599ab76c2eee9b3e905cd9",
@@ -535,9 +537,10 @@ def test_coordinator_surface_uses_path_based_read_and_write_tools() -> None:
         }.isdisjoint({tool.name for tool in report.application_tools})
 
 
-def test_source_prepare_and_resource_curator_keep_acquisition_boundaries() -> None:
+def test_source_builder_reviewer_and_resource_curator_keep_acquisition_boundaries() -> None:
     reports = build_agent_surface_reports()
-    source_tools = {tool.name for tool in reports["SourceCorpusPrepareAgent"].application_tools}
+    source_tools = {tool.name for tool in reports["SourceCorpusBuilderAgent"].application_tools}
+    reviewer_tools = {tool.name for tool in reports["SourceCorpusReviewerAgent"].application_tools}
     curator_tools = {tool.name for tool in reports["ResourceCuratorAgent"].application_tools}
 
     source_write_tools = {
@@ -554,6 +557,9 @@ def test_source_prepare_and_resource_curator_keep_acquisition_boundaries() -> No
     }
 
     assert source_write_tools <= source_tools
+    assert source_write_tools.isdisjoint(reviewer_tools)
+    assert "render_source_pdf_page" in source_tools
+    assert "render_source_pdf_page" in reviewer_tools
     assert resource_write_tools.isdisjoint(source_tools)
     assert resource_write_tools <= curator_tools
     assert source_write_tools.isdisjoint(curator_tools)

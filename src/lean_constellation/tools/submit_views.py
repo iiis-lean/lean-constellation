@@ -31,7 +31,8 @@ def build_submit_tool_views(group_specs: Iterable[ToolGroupSpec] | None = None) 
     del group_specs
     return [
         _view(SubmitView.REPO_FORMAT_DISCOVERY_SUBMIT, [SubmitGroup.REPO_FORMAT_DISCOVERY_SUBMIT], _aliases("repo_format_discovery", "RepoFormatDiscoveryAgent")),
-        _view(SubmitView.SOURCE_CORPUS_PREPARE_SUBMIT, [SubmitGroup.SOURCE_CORPUS_PREPARE_SUBMIT], _aliases("source_corpus_prepare", "SourceCorpusPrepareAgent")),
+        _view(SubmitView.SOURCE_CORPUS_BUILDER_SUBMIT, [SubmitGroup.SOURCE_CORPUS_BUILDER_SUBMIT], _aliases("source_corpus_builder", "SourceCorpusBuilderAgent")),
+        _view(SubmitView.SOURCE_CORPUS_REVIEWER_SUBMIT, [SubmitGroup.SOURCE_CORPUS_REVIEWER_SUBMIT], _aliases("source_corpus_reviewer", "SourceCorpusReviewerAgent")),
         _view(SubmitView.SOURCE_INDEX_BUILDER_SUBMIT, [SubmitGroup.SOURCE_INDEX_BUILDER_SUBMIT], _aliases("source_index_builder", "SourceIndexBuilderAgent")),
         _view(SubmitView.SOURCE_INDEX_REVIEWER_SUBMIT, [SubmitGroup.SOURCE_INDEX_REVIEWER_SUBMIT], _aliases("source_index_reviewer", "SourceIndexReviewerAgent")),
         _view(SubmitView.ROOT_INTERFACE_PREPARE_SUBMIT, [SubmitGroup.ROOT_INTERFACE_PREPARE_SUBMIT], _aliases("root_interface_prepare", "RootInterfacePrepareAgent")),

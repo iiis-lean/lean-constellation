@@ -31,7 +31,7 @@ DEFAULT_OPENAI_AGENTS_FACTORY_REF = "lean_constellation/default"
 CODEX_NATIVE_WEB_AGENT_TYPES = frozenset(
     {
         "RepoFormatDiscoveryAgent",
-        "SourceCorpusPrepareAgent",
+        "SourceCorpusBuilderAgent",
         "ResourceCuratorAgent",
         "RepoResourceDiscoveryAgent",
         "RepoLeanProviderDiscoveryAgent",
@@ -40,7 +40,7 @@ CODEX_NATIVE_WEB_AGENT_TYPES = frozenset(
 )
 CODEX_NATIVE_FILE_AGENT_TYPES = frozenset(
     {
-        "SourceCorpusPrepareAgent",
+        "SourceCorpusBuilderAgent",
         "ResourceCuratorAgent",
         "StatementFormalWorkerAgent",
         "ProofFormalWorkerAgent",
@@ -49,7 +49,7 @@ CODEX_NATIVE_FILE_AGENT_TYPES = frozenset(
 OPENCODE_NATIVE_WEB_AGENT_TYPES = frozenset(
     {
         "RepoFormatDiscoveryAgent",
-        "SourceCorpusPrepareAgent",
+        "SourceCorpusBuilderAgent",
         "ResourceCuratorAgent",
         "RepoResourceDiscoveryAgent",
         "RepoLeanProviderDiscoveryAgent",
@@ -58,7 +58,7 @@ OPENCODE_NATIVE_WEB_AGENT_TYPES = frozenset(
 )
 OPENCODE_NATIVE_FILE_AGENT_TYPES = frozenset(
     {
-        "SourceCorpusPrepareAgent",
+        "SourceCorpusBuilderAgent",
         "ResourceCuratorAgent",
         "StatementFormalWorkerAgent",
         "ProofFormalWorkerAgent",

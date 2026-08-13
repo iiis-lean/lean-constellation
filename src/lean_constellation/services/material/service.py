@@ -40,6 +40,7 @@ from lean_constellation.services.material.source_corpus import (
     SourceCorpusImportView,
     SourceCorpusPreparedView,
     SourceExtractionView,
+    SourcePdfPagePreviewView,
 )
 from lean_constellation.services.material.source_index import (
     ResolvedSourceScopeView,
@@ -253,6 +254,21 @@ class MaterialService:
         entry_path: str | None = None,
     ) -> ServiceResult[GateReport]:
         return self.source_corpus.check_source_corpus_draft(repo_root, relpath=relpath, entry_path=entry_path)
+
+    def render_source_pdf_page(
+        self,
+        repo_root: Path,
+        *,
+        path: str,
+        page_number: int,
+        dpi: int = 160,
+    ) -> ServiceResult[SourcePdfPagePreviewView]:
+        return self.source_corpus.render_source_pdf_page(
+            repo_root,
+            path=path,
+            page_number=page_number,
+            dpi=dpi,
+        )
 
     def submit_source_corpus_prepared(
         self,
