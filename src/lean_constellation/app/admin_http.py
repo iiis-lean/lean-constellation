@@ -265,6 +265,7 @@ def create_workspace_admin_http_routes(
                 start_reason="admin",
                 admin_notes="Started by main native repo bootstrap.",
                 enqueue=input_model.enqueue,
+                run_request=input_model.run_request,
             )
         )
         if not preparation.ok or preparation.value is None:

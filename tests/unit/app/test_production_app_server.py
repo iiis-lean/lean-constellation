@@ -19,7 +19,7 @@ from lean_constellation.app import (
     create_production_app_server,
     initialize_repo_business_truth,
 )
-from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
+from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode, SourceMaterialInput
 from lean_constellation.domain.repo import RepoCompletionMode
 from lean_constellation.flows.common.agent_steps import RepoFormatDiscoveryAgentStep
 from lean_constellation.services.external_clients import LeanMcpToolkitClient
@@ -969,6 +969,56 @@ def test_production_app_server_workspace_main_repo_admin_routes_create_shell_and
     assert status.status_code == 200
     assert status.json()["value"]["repo_exists"] is True
     assert status.json()["value"]["preparation_input_exists"] is True
+
+
+def test_workspace_bootstrap_native_forwards_run_request(tmp_path) -> None:
+    from tests.unit.app.test_admin_main_repo import FakeLakeClient
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    config = LeanAppConfig(workspace_root=workspace, scheduler_enabled=False, materialize_agent_homes=False)
+    app_result = create_production_app_server(config)
+
+    assert app_result.ok and app_result.value is not None
+    app = app_result.value
+    fake_lake = FakeLakeClient()
+    workspace_runtime = app.state.lean_constellation_registry.workspace_runtime()
+    workspace_runtime.external.lake = fake_lake
+    workspace_runtime.external.lean_toolchain.lake = fake_lake
+    with TestClient(app) as client:
+        response = client.post(
+            "/admin/workspace/main-repo/bootstrap-native",
+            json={
+                "workspace_root": str(workspace),
+                "repo_name": "DeclaredRepo",
+                "project_name": "DeclaredRepo",
+                "preparation_input": RepoPreparationInput(
+                    goal="Prepare the declared graph.",
+                    source_corpus_mode=SourceCorpusMode.PREPARE,
+                    source_material_inputs=[
+                        SourceMaterialInput(
+                            target="https://example.test/paper.pdf",
+                            included_scope="Complete supplied paper.",
+                            role="primary_source",
+                        )
+                    ],
+                ).model_dump(mode="json"),
+                "validate_source_corpus": False,
+                "enqueue": False,
+                "run_request": {
+                    "run_objective": "Build only the declared graph.",
+                    "completion_mode": "graph_declared",
+                    "max_parallel_content_node_tasks": 1,
+                },
+            },
+        )
+        assert response.status_code == 200, response.text
+        flow_id = response.json()["value"]["preparation_flow"]["flow_id"]
+        runtime = app.state.lean_constellation_registry.try_get_loaded("DeclaredRepo")
+        assert runtime is not None
+        flow = runtime.ark.flow_service.get_flow(flow_id)
+        assert flow.input.run_spec.completion_mode == RepoCompletionMode.GRAPH_DECLARED
+        assert flow.input.run_spec.run_objective == "Build only the declared graph."
 
 
 def test_production_app_server_repo_snapshot_restore_does_not_touch_other_repo(tmp_path) -> None:
