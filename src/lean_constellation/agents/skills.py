@@ -418,7 +418,7 @@ Deterministic manifests and checks verify paths, bytes, readability, and require
                 "A new Content contract version defaults its task completion mode to the repository mode. Use `set_node_contract_task_completion_mode` only on an open Content contract when a deliberate theorem-statement staging boundary is justified.",
                 "Do not lower a task target to defer definitions, types, instances, or canonical constructions. Before choosing interface_declared or graph_declared under a deeper repo target, verify that every definition used by the staged statements already comes from a repo-ready visible boundary or is fully declared in this task's bottom-up layers.",
                 "Record that a shallower task target is partial progress: it cannot become another node's dependency, feed a Scope export, or close its parent Scope until a later contract version reaches the repo target.",
-                "Before adding or changing a source ref, call `validate_source_range` and `preview_source_ref`, read the excerpt, and confirm that it supports the ref reason, target interface, and node boundary; a structurally valid range is not semantic evidence.",
+                "Follow `$source-evidence-referencing` before adding or changing source evidence; record both exact line endpoints and confirm the excerpt supports the ref reason, target interface, and node boundary.",
                 "Treat SourceCorpus locators such as `article/sections/...` as semantic-tool identities, not paths relative to the current workdir.",
                 "Attach durable source or resource context to a target node with `add_node_material_ref`. To remove stale material, first read `list_node_material_refs`, then pass its system-generated exact `ref` to `remove_node_material_ref`; list indices are display-only.",
                 "Record visible same-repo or provider node dependencies with `add_node_dep`, and remove stale dependency entries with `remove_node_dep`.",
@@ -573,6 +573,30 @@ Deterministic manifests and checks verify paths, bytes, readability, and require
                 "Do not invent targets, answers, proofs, expected node trees, Lean probes, or audit hints, and do not present Agent-authored summaries or commentary as supplied source truth.",
                 "Do not strengthen or weaken statements, drop assumptions, merge separate conclusions, or invent connective proof text.",
                 "Do not build SourceIndex, root interfaces, NodeTree, DeclGraph, Resources, or Lean project files.",
+            ),
+        ),
+    ),
+    SkillKey.SOURCE_EVIDENCE_REFERENCING.value: LeanSkillDefinition(
+        name="source-evidence-referencing",
+        description="Use when an Agent locates, reads, records, or reviews exact SourceCorpus evidence.",
+        group="source",
+        required_tool_groups=_groups(AppGroup.SOURCE_MATERIAL_TEXT_READ),
+        source_design_doc="dev_docs/implementation/2026-08-13_exact_source_ref_and_source_corpus_validation",
+        body=_body(
+            "source-evidence-referencing",
+            "Use this skill whenever source evidence is located, read, attached to a node or interface, or recorded as a statement/proof origin.",
+            (
+                "Treat SourceCorpus as physical source truth and SourceIndex as semantic navigation and coverage; a SourceIndex block is not an access-control boundary.",
+                "Every source reference has an explicit inclusive range with `1 <= start_line <= end_line`. There is no implicit whole-file reference; cite an entire readable file explicitly as `L1-LN` using its current line count.",
+                "Use SourceIndex blocks, text search, and compact material views to locate candidates, then call `validate_source_range` and `preview_source_ref` before recording one. A valid range is evidence only after the excerpt supports the stated reason or claim.",
+                "Read a recorded ref or origin at its exact endpoints with `context_lines=0`. Use context only for navigation and never record the expanded context as evidence without separately validating its exact range.",
+                "Repository discovery and planning views may inspect corpus-valid ranges outside SourceIndex blocks. Node-local workers and reviewers may search, read, and preview only current-node material assignments; context expansion must remain inside one assigned range.",
+                "Attach a planning candidate to the NodeContract before handing it to a node-local worker. Record statement/proof source origins with the exact source path and both line endpoints.",
+            ),
+            (
+                "Do not omit endpoints, use a first-line sentinel for a whole file, or infer permission from SourceIndex containment.",
+                "Do not cite a range solely because it validates structurally; verify semantic support from the returned excerpt.",
+                "Do not use context_lines to cross a Node material boundary.",
             ),
         ),
     ),
@@ -1493,9 +1517,9 @@ Before planning changes:
 
 ## Semantic Declaration Planning
 
-For every source- or contract-derived create, update, or delete, inspect the committed SourceIndex and relevant SourceCorpus range before mutation. Keep the stable catalog summary distinct from the current change objective. The change objective must identify the semantic boundary to preserve, the relevant source/contract reference, and why this action belongs in the current route. External Resources may clarify an explicit gap but do not silently replace source semantics.
+For every source- or contract-derived create, update, or delete, use SourceIndex for navigation and inspect the relevant exact SourceCorpus range before mutation. Keep the stable catalog summary distinct from the current change objective. The change objective must identify the semantic boundary to preserve, the relevant source/contract reference, and why this action belongs in the current route. External Resources may clarify an explicit gap but do not silently replace source semantics.
 
-When a SourceIndex ref or source tool supplies an exact inclusive line range, pass that exact range to `read_source_range`. Do not round or pad its end line as a discovery probe. If the indexed range is insufficient, first locate or validate a separate authorized range, then read that range exactly.
+When a SourceIndex ref or source tool supplies an exact inclusive line range, pass that exact range to `read_source_range`. Do not round or pad its end line as a discovery probe. If the indexed range is insufficient, follow `$source-evidence-referencing` to locate and validate a separate range allowed by this role, then read that range exactly.
 
 ## Interface Fit
 

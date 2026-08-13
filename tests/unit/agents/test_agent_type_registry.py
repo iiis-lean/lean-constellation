@@ -45,6 +45,7 @@ EXPECTED_AGENT_TYPES = {
 
 EXPECTED_COORDINATOR_SKILLS = [
     "coordinator-completion-policy",
+    "source-evidence-referencing",
     "coordinator-repo-exploration",
     "material-boundary-classification",
     "coordinator-content-result-closeout",
@@ -134,9 +135,9 @@ def test_every_agent_uses_merged_common_fragments() -> None:
 
 def test_formal_reviewer_source_fidelity_requires_exact_ranges() -> None:
     instruction = render_agent_instruction("StatementFormalReviewerAgent")
-    assert "exact inclusive start and end" in instruction
-    assert "intentional semantic subrange" in instruction
-    assert "Do not cross the authorized boundary" in instruction
+    assert "exact inclusive endpoints" in instruction
+    assert "SourceIndex blocks are not authorization boundaries" in instruction
+    assert "node-local workers and reviewers remain limited to assigned material" in instruction
 
 
 def test_coordinator_public_fragments_match_native_repo_target_order() -> None:

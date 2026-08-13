@@ -9,27 +9,27 @@ from lean_constellation.tools import build_application_tool_specs, build_submit_
 EXPECTED_SURFACE_COUNTS = {
     "RepoFormatDiscoveryAgent": (6, 12, 1, 2, 1),
     "SourceCorpusPrepareAgent": (3, 7, 1, 2, 3),
-    "SourceIndexBuilderAgent": (6, 25, 1, 1, 0),
-    "SourceIndexReviewerAgent": (5, 14, 1, 1, 0),
-    "RootInterfacePrepareAgent": (7, 15, 1, 1, 0),
+    "SourceIndexBuilderAgent": (6, 25, 1, 1, 1),
+    "SourceIndexReviewerAgent": (5, 14, 1, 1, 1),
+    "RootInterfacePrepareAgent": (7, 15, 1, 1, 1),
     "AdapterDeclCatalogAgent": (12, 38, 1, 2, 0),
     "ResourceCuratorAgent": (8, 25, 1, 4, 4),
     "RepoResourceDiscoveryAgent": (9, 22, 1, 1, 2),
     "RepoLeanProviderDiscoveryAgent": (11, 26, 1, 1, 1),
     "RepoMathlibReconAgent": (9, 27, 1, 1, 4),
-    "CoordinatorAgent": (41, 93, 2, 7, 20),
-    "ContentPlanAgent": (34, 86, 3, 6, 17),
+    "CoordinatorAgent": (41, 93, 2, 7, 21),
+    "ContentPlanAgent": (34, 86, 3, 6, 18),
     "NodeDirDependencyReconAgent": (7, 14, 1, 1, 2),
     "MathlibReconAgent": (7, 22, 1, 1, 5),
-    "ResourceReconAgent": (8, 22, 2, 3, 5),
-    "StatementNLWorkerAgent": (20, 53, 1, 2, 4),
-    "StatementNLReviewerAgent": (18, 43, 1, 1, 2),
+    "ResourceReconAgent": (8, 22, 2, 3, 6),
+    "StatementNLWorkerAgent": (20, 53, 1, 2, 5),
+    "StatementNLReviewerAgent": (18, 43, 1, 1, 3),
     "StatementFormalWorkerAgent": (24, 53, 1, 2, 7),
-    "StatementFormalReviewerAgent": (19, 44, 1, 1, 2),
-    "ProofNLWorkerAgent": (25, 61, 1, 2, 6),
-    "ProofNLReviewerAgent": (22, 48, 1, 1, 2),
-    "ProofFormalWorkerAgent": (27, 62, 1, 2, 7),
-    "ProofFormalReviewerAgent": (21, 47, 1, 1, 2),
+    "StatementFormalReviewerAgent": (19, 44, 1, 1, 3),
+    "ProofNLWorkerAgent": (25, 61, 1, 2, 7),
+    "ProofNLReviewerAgent": (22, 48, 1, 1, 3),
+    "ProofFormalWorkerAgent": (27, 62, 1, 2, 8),
+    "ProofFormalReviewerAgent": (21, 47, 1, 1, 3),
 }
 
 EXPECTED_APPLICATION_SURFACE_HASHES = {
@@ -297,7 +297,7 @@ def test_coordinator_surface_matches_specific_agent_refactor() -> None:
 
     assert report.application_tool_view_key == "native_repo_coordinator"
     assert report.submit_tool_view_key == "native_repo_coordinator_submit"
-    assert len(report.skills) == 20
+    assert len(report.skills) == 21
     assert len(report.application_group_keys) == 41
     assert len(report.application_tools) == 93
     assert "read_visible_decl_lean_file" in tools
@@ -417,7 +417,7 @@ def test_root_interface_prepare_surface_uses_root_specific_tools() -> None:
         "update_root_interface",
         "remove_root_interface",
     }.isdisjoint(tools)
-    assert report.skills == []
+    assert [skill.key for skill in report.skills] == ["source-evidence-referencing"]
 
 
 def test_root_interface_prepare_surface_is_worker_role_callable() -> None:
