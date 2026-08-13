@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -75,7 +76,7 @@ class ResourceCurationResultView(StrictModel):
     suggested_repo_name: str | None = None
     source_description: str | None = None
     required_interfaces_hint: str | None = None
-    normalized_entry: str | None = None
+    canonical_entry: str | None = None
     classification_reason: str | None = None
     resource_role: str | None = None
     consumer_formalization_scope: str | None = None
@@ -90,7 +91,7 @@ class ResourceCurationResultView(StrictModel):
     def _validate_boundary_fields(self):
         if self.kind == "local_resource_created":
             required = {
-                "normalized_entry": self.normalized_entry,
+                "canonical_entry": self.canonical_entry,
                 "classification_reason": self.classification_reason,
                 "resource_role": self.resource_role,
                 "consumer_formalization_scope": self.consumer_formalization_scope,
@@ -349,7 +350,7 @@ class ResourceCurationComponent:
                 kind="local_resource_created",
                 target=decision.target,
                 resource_key=resource.resource.resource_key,
-                normalized_entry=resource.resource.normalized_entry,
+                canonical_entry=resource.resource.canonical_entry,
                 classification_reason=boundary_fields.value[0],
                 resource_role=boundary_fields.value[1],
                 consumer_formalization_scope=boundary_fields.value[2],
@@ -449,7 +450,7 @@ class ResourceCurationComponent:
                 kind="local_resource_created",
                 target=target,
                 resource_key=finalized.value.resource.resource_key,
-                normalized_entry=finalized.value.resource.normalized_entry,
+                canonical_entry=finalized.value.resource.canonical_entry,
                 classification_reason=classification_reason.strip(),
                 resource_role=resource_role.strip(),
                 consumer_formalization_scope=consumer_formalization_scope.strip(),
@@ -509,18 +510,18 @@ class ResourceCurationComponent:
         resource_key = self.resource_library.resource_key_for_target(draft.value.draft.target)
         if not resource_key.ok or resource_key.value is None:
             return self.runtime.foundation.fail(resource_key.issues)
-        normalized_entry = self.resource_library.get_resource_draft_normalized_entry(
+        canonical_entry = self.resource_library.get_resource_draft_canonical_entry(
             repo_root,
             draft_id=draft_id,
         )
-        if not normalized_entry.ok or normalized_entry.value is None:
-            return self.runtime.foundation.fail(normalized_entry.issues)
+        if not canonical_entry.ok or canonical_entry.value is None:
+            return self.runtime.foundation.fail(canonical_entry.issues)
         return self.runtime.foundation.ok(
             ResourceCurationResultView(
                 kind="local_resource_created",
                 target=target,
                 resource_key=resource_key.value,
-                normalized_entry=normalized_entry.value,
+                canonical_entry=canonical_entry.value,
                 classification_reason=boundary_fields.value[0],
                 resource_role=boundary_fields.value[1],
                 consumer_formalization_scope=boundary_fields.value[2],
@@ -624,7 +625,7 @@ class ResourceCurationComponent:
         if not draft_root.ok or draft_root.value is None:
             return self.runtime.foundation.fail(draft_root.issues)
         root = draft_root.value
-        acquisition_root = root / "acquisition"
+        acquisition_root = root / "_work"
         ensured = self.runtime.foundation.store.ensure_dir(acquisition_root)
         if not ensured.ok:
             return self.runtime.foundation.fail(ensured.issues)
@@ -632,6 +633,9 @@ class ResourceCurationComponent:
             normalized = self.runtime.external.material.normalize_target(target)
         except Exception as exc:  # noqa: BLE001
             return self.runtime.foundation.fail(self.runtime.foundation.issue("invalid_material_target", str(exc)))
+        authorized = self._require_resource_draft_target(repo_root, draft_id=draft_id, target=target)
+        if not authorized.ok:
+            return self.runtime.foundation.fail(authorized.issues)
 
         mismatch = self._preferred_kind_mismatch(preferred_kind, normalized.kind)
         if mismatch is not None:
@@ -677,11 +681,14 @@ class ResourceCurationComponent:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue("missing_local_file", f"Local resource material not found: {source}")
             )
+        authorized = self._require_resource_draft_target(repo_root, draft_id=draft_id, target=str(source))
+        if not authorized.ok:
+            return self.runtime.foundation.fail(authorized.issues)
         try:
             dest_name = self.runtime.foundation.layout.ensure_safe_key(as_name) if as_name else self._safe_material_filename(source.name)
         except ValueError as exc:
             return self.runtime.foundation.fail(self.runtime.foundation.issue("unsafe_resource_filename", str(exc)))
-        dest = root / "original" / dest_name
+        dest = root / "_work" / "original" / dest_name
         dest.parent.mkdir(parents=True, exist_ok=True)
         import shutil
 
@@ -715,8 +722,8 @@ class ResourceCurationComponent:
             artifact = self._resolve_inside(root, artifact_ref)
         except ValueError as exc:
             return self.runtime.foundation.fail(self.runtime.foundation.issue("resource_artifact_ref_invalid", str(exc)))
-        normalized_root = root / "normalized"
-        ensured = self.runtime.foundation.store.ensure_dir(normalized_root)
+        work_root = root / "_work"
+        ensured = self.runtime.foundation.store.ensure_dir(work_root)
         if not ensured.ok:
             return self.runtime.foundation.fail(ensured.issues)
         resolution = self.runtime.external.material.resolve_artifact_kind(
@@ -736,18 +743,18 @@ class ResourceCurationComponent:
             )
         extraction_kind = resolution.extraction_kind
         if extraction_kind == "pdf_text":
-            result = self.runtime.external.material.extract_pdf_text(pdf_path=artifact, output_root=root)
+            result = self.runtime.external.material.extract_pdf_text(pdf_path=artifact, output_root=work_root)
         elif extraction_kind == "html_main_text":
             result = self.runtime.external.material.extract_web_main_text(
                 html_path=artifact,
-                output_root=root,
+                output_root=work_root,
                 acquisition_kind=acquisition_kind,
                 mime_type=mime_type,
             )
         elif extraction_kind == "tex_source":
-            result = self.runtime.external.material.extract_arxiv_tex(source_root_or_archive=artifact, output_root=root)
+            result = self.runtime.external.material.extract_arxiv_tex(source_root_or_archive=artifact, output_root=work_root)
         else:
-            result = self.runtime.external.material.normalize_text_material(input_path=artifact, output_root=root)
+            result = self.runtime.external.material.normalize_text_material(input_path=artifact, output_root=work_root)
         if not result.ok:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(result.issue_code or "resource_extraction_failed", result.summary or "Resource extraction failed")
@@ -760,20 +767,6 @@ class ResourceCurationComponent:
                     object_ref=artifact_ref,
                 )
             )
-        canonical = self._rel_or_abs(root, Path(result.primary_text_path))
-        refreshed = self.resource_library.refresh_resource_draft_manifest(
-            repo_root,
-            draft_id=draft_id,
-            canonical_normalized_entry=canonical,
-            source_artifact_ref=artifact_ref,
-            extraction_kind=extraction_kind,
-            relation_normalized_paths=[
-                self._rel_or_abs(root, Path(path))
-                for path in result.extracted_paths
-            ],
-        )
-        if not refreshed.ok:
-            return self.runtime.foundation.fail(refreshed.issues)
         view = self._source_extraction_view(
             artifact_ref,
             result,
@@ -792,11 +785,11 @@ class ResourceCurationComponent:
             source = self._resolve_inside(root, material_ref)
         except ValueError as exc:
             return self.runtime.foundation.fail(self.runtime.foundation.issue("resource_material_ref_invalid", str(exc)))
-        normalized_root = root / "normalized"
-        ensured = self.runtime.foundation.store.ensure_dir(normalized_root)
+        work_root = root / "_work"
+        ensured = self.runtime.foundation.store.ensure_dir(work_root)
         if not ensured.ok:
             return self.runtime.foundation.fail(ensured.issues)
-        result = self.runtime.external.material.normalize_text_material(input_path=source, output_root=root)
+        result = self.runtime.external.material.normalize_text_material(input_path=source, output_root=work_root)
         if not result.ok:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(result.issue_code or "resource_text_normalization_failed", result.summary or "Resource text normalization failed")
@@ -809,17 +802,6 @@ class ResourceCurationComponent:
                     object_ref=material_ref,
                 )
             )
-        canonical = self._rel_or_abs(root, Path(result.primary_text_path))
-        refreshed = self.resource_library.refresh_resource_draft_manifest(
-            repo_root,
-            draft_id=draft_id,
-            canonical_normalized_entry=canonical,
-            source_artifact_ref=material_ref,
-            extraction_kind="text_normalize",
-            relation_normalized_paths=[canonical],
-        )
-        if not refreshed.ok:
-            return self.runtime.foundation.fail(refreshed.issues)
         view = self._source_extraction_view(
             material_ref,
             result,
@@ -837,16 +819,25 @@ class ResourceCurationComponent:
         temp_root: Path,
         metadata: ResourceMetadataInput | None = None,
     ) -> ServiceResult[ResourceView]:
-        artifact = self.acquire_material_artifact(target, temp_root=temp_root)
+        candidate_root = Path(temp_root)
+        work_root = candidate_root / "_work"
+        artifact = self.acquire_material_artifact(target, temp_root=work_root)
         if not artifact.ok or artifact.value is None:
             return self.runtime.foundation.fail(artifact.issues)
-        extracted = self.extract_readable_material(artifact.value, temp_root=temp_root)
-        if not extracted.ok:
+        extracted = self.extract_readable_material(artifact.value, temp_root=work_root)
+        if not extracted.ok or extracted.value is None or extracted.value.primary_text_path is None:
             return self.runtime.foundation.fail(extracted.issues)
+        extracted_entry = Path(extracted.value.primary_text_path)
+        article_root = candidate_root / "article"
+        article_root.mkdir(parents=True, exist_ok=True)
+        canonical_name = extracted_entry.name or "main.md"
+        if Path(canonical_name).suffix.lower() not in {".md", ".txt", ".tex", ".lean"}:
+            canonical_name = f"{canonical_name}.txt"
+        shutil.copy2(extracted_entry, article_root / canonical_name)
         return self.resource_library.register_local_resource(
             repo_root,
             target=target,
-            temp_dir=Path(temp_root),
+            temp_dir=candidate_root,
             metadata=metadata or ResourceMetadataInput(title=target.target),
         )
 
@@ -860,6 +851,32 @@ class ResourceCurationComponent:
         except ValueError as exc:
             return self.runtime.foundation.fail(self.runtime.foundation.issue("resource_draft_path_escape", str(exc), object_ref=draft_id))
         return self.runtime.foundation.ok(root)
+
+    def _require_resource_draft_target(
+        self,
+        repo_root: Path,
+        *,
+        draft_id: str,
+        target: str,
+    ) -> ServiceResult[None]:
+        draft = self.resource_library.get_resource_draft(repo_root, draft_id=draft_id)
+        if not draft.ok or draft.value is None:
+            return self.runtime.foundation.fail(draft.issues)
+        normalized = self.resource_library.normalize_resource_target_model(target)
+        if not normalized.ok or normalized.value is None:
+            return self.runtime.foundation.fail(normalized.issues)
+        expected = draft.value.draft.target.canonical_locator
+        actual = normalized.value.canonical_locator
+        if actual != expected:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "resource_material_target_unauthorized",
+                    "Resource material target is not the exact target assigned to this draft.",
+                    object_ref=draft_id,
+                    details={"expected_target": expected, "requested_target": actual},
+                )
+            )
+        return self.runtime.foundation.ok(None)
 
     def _artifact_view(self, target: ResourceTargetView, result: AcquiredArtifactResult) -> ResourceArtifactView:
         return ResourceArtifactView(

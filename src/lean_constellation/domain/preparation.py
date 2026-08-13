@@ -20,6 +20,26 @@ class SourceCorpusMode(StrEnum):
     NONE = "none"
 
 
+class SourceMaterialInput(StrictModel):
+    """Exact external or supplied material boundary authorized for Source preparation."""
+
+    target: str
+    included_scope: str
+    role: Literal["primary_source", "formal_target", "solution", "proof_reference", "asset"]
+
+    @field_validator("target", "included_scope", mode="before")
+    @classmethod
+    def _strip_required_text(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
+    @field_validator("target", "included_scope")
+    @classmethod
+    def _required_text(cls, value: str) -> str:
+        if not value:
+            raise ValueError("source material target and included_scope must be non-empty")
+        return value
+
+
 class RepoDependencyRequirementStatus(StrEnum):
     OPEN = "open"
     SATISFIED = "satisfied"
@@ -243,6 +263,7 @@ class RepoPreparationInput(StrictModel):
     source_corpus_mode: SourceCorpusMode
     source_corpus_relpath: str | None = ".lean_constellation/source"
     source_description: str | None = None
+    source_material_inputs: list[SourceMaterialInput] = Field(default_factory=list)
     interface_inputs: list[DeclInterface] = Field(default_factory=list)
     allow_interface_supplement: bool = True
     requirement_refs: list[RepoRequirementRef] = Field(default_factory=list)
@@ -254,6 +275,17 @@ class RepoPreparationInput(StrictModel):
         if not value.strip():
             raise ValueError("goal must be non-empty")
         return value.strip()
+
+    @field_validator("source_material_inputs")
+    @classmethod
+    def _unique_source_material_inputs(cls, values: list[SourceMaterialInput]) -> list[SourceMaterialInput]:
+        seen: set[tuple[str, str, str]] = set()
+        for value in values:
+            key = (value.target, value.included_scope, value.role)
+            if key in seen:
+                raise ValueError("source_material_inputs must not contain duplicate exact boundaries")
+            seen.add(key)
+        return values
 
 
 class RequirementView(StrictModel):

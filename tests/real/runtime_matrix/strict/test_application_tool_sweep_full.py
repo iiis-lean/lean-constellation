@@ -1479,7 +1479,7 @@ def _install_fake_mathlib_toolkit(ws: RuntimeMatrixWorkspace) -> None:
 
 
 def _run_local_acquisition_tool_sweep(ws: RuntimeMatrixWorkspace, server: Any, recorder: EvidenceRecorder) -> None:
-    source_root = ws.provider_repo / ".lean_constellation" / "source"
+    source_root = ws.provider_repo / ".lean_constellation" / "source_draft"
     local_source = str(ws.resources.local_file)
     resource_flow_id = _start_resource_curation_for_tool_sweep(ws, target_kind="local_file", target=local_source)
     run_next_created_step(ws.admin, resource_flow_id)
@@ -1544,7 +1544,7 @@ def _run_local_acquisition_tool_sweep(ws: RuntimeMatrixWorkspace, server: Any, r
         assertion_summary="Local source material import created a named source draft artifact.",
     )
     imported_source_ref = imported_source.value["primary_artifact_ref"]
-    assert imported_source_ref == "original/strict_source_import.md"
+    assert imported_source_ref == "_work/original/strict_source_import.md"
 
     normalized_source = call_tool_with_evidence(
         server,
@@ -1555,7 +1555,7 @@ def _run_local_acquisition_tool_sweep(ws: RuntimeMatrixWorkspace, server: Any, r
         recorder=recorder,
         assertion_summary="Local source material normalization produced readable text.",
     )
-    assert normalized_source.value["primary_material_ref"] == "normalized/strict_source_import.txt"
+    assert normalized_source.value["primary_material_ref"] == "_work/normalized/strict_source_import.txt"
 
     acquired_resource = call_tool_with_evidence(
         server,
@@ -1591,7 +1591,7 @@ def _run_local_acquisition_tool_sweep(ws: RuntimeMatrixWorkspace, server: Any, r
         assertion_summary="Local resource import created a named artifact in the active draft.",
     )
     imported_resource_ref = imported_resource.value["primary_artifact_ref"]
-    assert imported_resource_ref == "original/strict_resource_import.md"
+    assert imported_resource_ref == "_work/original/strict_resource_import.md"
 
     normalized_resource = call_tool_with_evidence(
         server,
@@ -1602,18 +1602,24 @@ def _run_local_acquisition_tool_sweep(ws: RuntimeMatrixWorkspace, server: Any, r
         recorder=recorder,
         assertion_summary="Local resource normalization produced readable text in the active draft.",
     )
-    assert normalized_resource.value["primary_material_ref"] == "normalized/strict_resource_import.txt"
+    assert normalized_resource.value["primary_material_ref"] == "_work/normalized/strict_resource_import.txt"
+
+    (resource_draft_root / "article").mkdir(exist_ok=True)
+    (resource_draft_root / "article" / "strict_resource_import.txt").write_text(
+        ws.resources.local_file.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
 
     refreshed_manifest = call_tool_with_evidence(
         server,
         "resource_curator",
         "refresh_resource_draft_manifest",
-        {"canonical_normalized_entry": "normalized/strict_resource_import.txt"},
+        {"canonical_entry": "article/strict_resource_import.txt"},
         runtime_context=resource_ctx,
         recorder=recorder,
         assertion_summary="Resource material manifest selected the validated canonical entry.",
     )
-    assert refreshed_manifest.value["canonical_normalized_entry"] == "normalized/strict_resource_import.txt"
+    assert refreshed_manifest.value["canonical_entry"] == "article/strict_resource_import.txt"
 
     restore_with_evidence(
         ws.admin,
@@ -1623,10 +1629,10 @@ def _run_local_acquisition_tool_sweep(ws: RuntimeMatrixWorkspace, server: Any, r
         label="strict_tool_sweep_local_acquisition",
         recorder=recorder,
     )
-    assert not (source_root / "original" / "strict_source_import.md").exists()
-    assert not (source_root / "normalized" / "strict_source_import.txt").exists()
-    assert not (resource_draft_root / "original" / "strict_resource_import.md").exists()
-    assert not (resource_draft_root / "normalized" / "strict_resource_import.txt").exists()
+    assert not (source_root / "_work" / "original" / "strict_source_import.md").exists()
+    assert not (source_root / "_work" / "normalized" / "strict_source_import.txt").exists()
+    assert not (resource_draft_root / "_work" / "original" / "strict_resource_import.md").exists()
+    assert not (resource_draft_root / "_work" / "normalized" / "strict_resource_import.txt").exists()
 
 
 def _start_resource_curation_for_tool_sweep(ws: RuntimeMatrixWorkspace, *, target_kind: str, target: str) -> str:

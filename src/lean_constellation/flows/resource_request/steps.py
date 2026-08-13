@@ -27,7 +27,7 @@ class LocalResourceCreatedResultView(StrictModel):
     resource_key: str
     resource_ref_summary: str
     locator_summary: str
-    normalized_entry: str | None = None
+    canonical_entry: str | None = None
     classification_reason: str
     resource_role: str
     consumer_formalization_scope: str

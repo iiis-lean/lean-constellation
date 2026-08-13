@@ -331,7 +331,7 @@ class OperatorResourceView(StrictModel):
     title: str | None = None
     source_url: str | None = None
     notes: str | None = None
-    normalized_entry: str
+    canonical_entry: str
     content_hash: str | None = None
     summary: str
 
@@ -482,7 +482,7 @@ def _resource_view(value: ResourceView) -> OperatorResourceView:
         title=resource.title,
         source_url=resource.source_url,
         notes=resource.notes,
-        normalized_entry=resource.normalized_entry,
+        canonical_entry=resource.canonical_entry,
         content_hash=resource.content_hash,
         summary=value.summary,
     )

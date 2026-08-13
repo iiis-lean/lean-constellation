@@ -100,6 +100,12 @@ class LayoutComponent:
         self.assert_within(root, entry)
         return entry
 
+    def source_corpus_draft_root(self, ctx: FoundationContext) -> Path:
+        return self.constellation_root(ctx) / "source_draft"
+
+    def source_corpus_work_root(self, ctx: FoundationContext) -> Path:
+        return self.source_corpus_draft_root(ctx) / "_work"
+
     def resources_root(self, ctx: FoundationContext) -> Path:
         return self.constellation_root(ctx) / "resources"
 
@@ -111,9 +117,6 @@ class LayoutComponent:
 
     def resource_raw_dir(self, ctx: FoundationContext, resource_key: str) -> Path:
         return self.resource_dir(ctx, resource_key) / "raw"
-
-    def resource_normalized_dir(self, ctx: FoundationContext, resource_key: str) -> Path:
-        return self.resource_dir(ctx, resource_key) / "normalized"
 
     def resource_temp_dir(self, ctx: FoundationContext, request_key: str) -> Path:
         return self.resources_root(ctx) / "tmp" / self.ensure_safe_key(request_key)

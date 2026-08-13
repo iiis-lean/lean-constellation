@@ -44,8 +44,8 @@ def test_material_resource_draft_curation_real_lifecycle(tmp_path: Path) -> None
         ),
         encoding="utf-8",
     )
-    (draft_root / "original" / "draft-source.md").write_text(local_source.read_text(encoding="utf-8"), encoding="utf-8")
-    (draft_root / "normalized" / "main.md").write_text(local_source.read_text(encoding="utf-8"), encoding="utf-8")
+    (draft_root / "article").mkdir()
+    (draft_root / "article" / "main.md").write_text(local_source.read_text(encoding="utf-8"), encoding="utf-8")
 
     check = service.check_resource_draft(repo_root, draft_id=draft.value.draft.draft_id)
     finalized = service.finalize_resource_draft(
@@ -58,7 +58,7 @@ def test_material_resource_draft_curation_real_lifecycle(tmp_path: Path) -> None
     assert finalized.ok and finalized.value is not None
     resource_key = finalized.value.resource.resource_key
     assert finalized.value.resource.title == "Draft curation fixture"
-    assert finalized.value.resource.normalized_entry == "normalized/main.md"
+    assert finalized.value.resource.canonical_entry == "article/main.md"
 
     reloaded = make_runtime().material
     loaded = reloaded.resource_library.get_resource(repo_root, resource_key=resource_key)
@@ -111,8 +111,8 @@ def test_material_resource_curation_submit_outcomes_real_local_and_duplicate(tmp
         ),
         encoding="utf-8",
     )
-    (draft_root / "original" / "outcome-source.md").write_text(local_source.read_text(encoding="utf-8"), encoding="utf-8")
-    (draft_root / "normalized" / "main.md").write_text(local_source.read_text(encoding="utf-8"), encoding="utf-8")
+    (draft_root / "article").mkdir()
+    (draft_root / "article" / "main.md").write_text(local_source.read_text(encoding="utf-8"), encoding="utf-8")
 
     local_result = service.submit_local_resource_created(
         repo_root,

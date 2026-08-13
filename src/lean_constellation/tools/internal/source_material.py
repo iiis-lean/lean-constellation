@@ -907,9 +907,12 @@ def _search_resource_text(runtime, ctx: ToolExecutionContext, args: TextSearchAr
 
 
 def _scan_source_corpus(runtime, ctx: ToolExecutionContext, args: SourceCorpusScanArgs):
-    scanned = runtime.material.scan_source_corpus(
-        ctx.repo_root, **args.model_dump(exclude_unset=True)
-    )
+    if ctx.actor.agent_type in {"SourceCorpusBuilderAgent", "SourceCorpusReviewerAgent"}:
+        scanned = runtime.material.source_corpus.scan_source_corpus_draft(ctx.repo_root)
+    else:
+        scanned = runtime.material.scan_source_corpus(
+            ctx.repo_root, **args.model_dump(exclude_unset=True)
+        )
     if not scanned.ok or scanned.value is None:
         return runtime.foundation.fail(scanned.issues)
     return runtime.foundation.ok(
@@ -1017,6 +1020,19 @@ def _normalize_source_text_material(runtime, ctx, args: SourceMaterialNormalizeA
     )
 
 
+def _check_source_corpus_draft(runtime, ctx: ToolExecutionContext, args: SourceCorpusCheckArgs):
+    if ctx.actor.agent_type in {"SourceCorpusBuilderAgent", "SourceCorpusReviewerAgent"}:
+        return runtime.material.check_source_corpus_draft(
+            ctx.repo_root,
+            relpath=".lean_constellation/source_draft",
+            entry_path=args.entry_path,
+        )
+    return runtime.material.check_source_corpus_draft(
+        ctx.repo_root,
+        **args.model_dump(exclude_unset=True),
+    )
+
+
 def build_source_corpus_tool_specs() -> list[ToolSpec]:
     roles = {"coordinator", "worker", "reviewer", "admin"}
     return [
@@ -1030,20 +1046,19 @@ def build_source_corpus_tool_specs() -> list[ToolSpec]:
             roles=roles,
             handler=_scan_source_corpus,
         ),
-        direct_tool(
+        handler_tool(
             name="check_source_corpus_draft",
-            description="Validate SourceCorpus README/entry, faithful structure, original mapping, partial scope, correction ledger, readability, and path/runtime safety.",
+            description="Validate the active Source draft candidate outside _work: README/entry, scope, correction ledger, readable self-contained text, authorization, and path/runtime safety.",
             args_model=SourceCorpusCheckArgs,
             capability=ToolCapability.READ,
-            backing_service="material",
-            backing_method="check_source_corpus_draft",
             result_view="gate_report",
             groups={AppGroup.SOURCE_CORPUS_READ},
             roles=roles,
+            handler=_check_source_corpus_draft,
         ),
         direct_tool(
             name="render_source_pdf_page",
-            description="Render one canonical SourceCorpus PDF page into a task-local PNG preview and return its exact image locator and digest.",
+            description="Render one PDF from the active Source draft _work area into _work/previews and return its exact image locator and digest.",
             args_model=SourcePdfPageRenderArgs,
             capability=ToolCapability.READ,
             backing_service="material",
@@ -1054,7 +1069,7 @@ def build_source_corpus_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="acquire_source_material",
-            description="Acquire raw source material into the source draft area.",
+            description="Acquire one exact authorized source target into the active Source draft _work area.",
             args_model=SourceMaterialAcquireArgs,
             capability=ToolCapability.WRITE,
             result_view="source_acquisition_handles",

@@ -304,19 +304,19 @@ Classification is advisory evidence for the caller's next action, not permission
         source_design_doc="dev_docs/implementation/four_case_exploration_material_followups",
         body="""# Faithful Material Preservation
 
-Use this Skill whenever acquired material is copied, extracted, normalized, or organized into durable SourceCorpus or Resource content.
+Use this Skill whenever authorized material is copied, extracted, transcribed, normalized, or organized into durable SourceCorpus or Resource content.
 
 ## Preserve Source Truth
 
-Keep the acquired original when access permits. Produce normalized text by mechanical decoding, extraction, line-ending cleanup, or faithful structural organization. Preserve the source's claims, hierarchy, notation, assumptions, attribution, and relevant surrounding context. A normalized entry is source truth for downstream range reads; it is not an agent summary, commentary, formalization plan, or newly proposed proof.
+Keep acquired originals and processing scratch in the draft's `_work/` area. Produce durable readable text by mechanical decoding, corrected transcription, line-ending cleanup, or faithful structural organization. Preserve the source's claims, hierarchy, notation, assumptions, attribution, and relevant surrounding context. A canonical readable entry is source truth for downstream reads; it is not an agent summary, commentary, translation, formalization plan, or newly proposed proof.
 
 When only a range, section, appendix, or selected file is retained, record the exact included scope and what was omitted. Never present a partial extraction as the complete work. Keep figures, tables, appendices, source archives, or other supporting artifacts under their declared logical locations when they materially affect interpretation.
 
 ## Record Mechanical Intervention
 
-Record canonical provenance, version or date, license and access conditions, acquisition route, original-to-normalized mapping, reading order, extraction or OCR limits, and unreadable regions. If text is corrected beyond mechanical normalization, preserve the original wording and add a separate correction ledger that identifies every change and reason.
+Record canonical provenance, version or date, license and access conditions, acquisition route, input-to-final mapping, reading order, extraction or OCR limits, and unreadable regions. If text is corrected beyond mechanical normalization, retain exact working evidence under `_work/` and add a correction ledger when individual interventions are not self-evident from faithful transcription.
 
-Deterministic manifests and checks verify paths, bytes, readability, and required records. They do not certify mathematical fidelity. Before declaring material ready, compare the normalized entry against the retained original or canonical source and repair omissions, invented connective prose, or altered mathematical meaning.
+Deterministic manifests and checks verify paths, bytes, readability, and required records. They do not certify mathematical fidelity. Before declaring material ready, compare the complete candidate against working evidence or the canonical source and repair omissions, invented connective prose, or altered mathematical meaning.
 """,
     ),
     SkillKey.REPO_LEAN_PROVIDER_DISCOVERY.value: LeanSkillDefinition(
@@ -525,54 +525,74 @@ Deterministic manifests and checks verify paths, bytes, readability, and require
             ),
         ),
     ),
-    SkillKey.SOURCE_MATERIAL_ACQUISITION.value: LeanSkillDefinition(
-        name="source-material-acquisition",
-        description="Guides SourceCorpusBuilder agents using source acquisition and extraction tools.",
+    SkillKey.PDF_FAITHFUL_TRANSCRIPTION.value: LeanSkillDefinition(
+        name="pdf-faithful-transcription",
+        description="Preserve a PDF's complete readable mathematical content while transcribing it into text.",
         group="material",
-        required_tool_groups=_groups(AppGroup.SOURCE_ACQUISITION),
-        source_design_doc="dev_docs/design/agents/skill_bundles/04_SourceCorpusPrepareSkills.md",
+        source_design_doc="dev_docs/implementation/2026-08-14_source_resource_faithful_draft_projection",
         body=_body(
-            "source-material-acquisition",
-            "Use this skill before organizing fetched artifacts into the repository source corpus.",
+            "pdf-faithful-transcription",
+            "Use this skill when an authorized PDF must become durable readable text for a SourceCorpus or local Resource.",
             (
-                "Acquire source targets with `acquire_source_material` or import local source files with `import_source_material`.",
-                "Extract readable text or project files with `extract_source_artifact` when the acquired artifact is a PDF, HTML page, TeX archive, or similar container.",
-                "Apply `faithful-material-preservation` before using `normalize_source_text_material`; normalization is mechanical and must not summarize or rewrite source truth.",
-                "Treat acquisition and extraction outputs as intermediate material; preserve an author's existing TeX tree and file boundaries when they are already coherent.",
-                "Keep original material and readable extraction distinct, and explain their mapping and extraction limits in the SourceCorpus README.",
+                "Keep the downloaded PDF, automatic extraction, OCR, page images, and other scratch evidence in the draft's `_work/` area; none of these are final readable content.",
+                "Use extraction or OCR only as a transcription starting point. Check every page against rendered evidence and repair reading order, headings, paragraphs, lists, captions, footnotes, bibliography, and cross-references.",
+                "Inspect every mathematical display and high-risk inline expression for quantifier scope, hypotheses, relation direction, primes, accents, subscripts, superscripts, ranges, case boundaries, and equation or theorem numbering.",
+                "Preserve ambiguity that exists in print and document unreadable regions; never guess a missing symbol or insert explanatory connective prose.",
+                "The durable output must stand on its own for downstream line-based reading. A future Agent should not need the PDF to recover omitted definitions, assumptions, statements, proofs, references, or notation.",
             ),
             (
-                "Do not register ResourceLibrary entries from source preparation.",
-                "Do not write SourceIndex, NodeContract, or Lean files.",
-                "Do not rely on raw PDF, HTML, or image-only material as the only prepared source corpus content.",
+                "Do not accept raw `pdftotext` or OCR output without page-level correction.",
+                "Do not summarize, paraphrase, translate, or improve the source unless the exact input explicitly requests that transformation.",
+                "Do not place the PDF, OCR, screenshots, or extraction scratch in the final candidate tree.",
             ),
         ),
     ),
-    SkillKey.SOURCE_CORPUS_FAITHFUL_PREPARATION.value: LeanSkillDefinition(
-        name="source-corpus-faithful-preparation",
-        description="Guides SourceCorpus Builder and Reviewer agents preserving and independently checking supplied material without inventing formalization answers.",
+    SkillKey.MATERIAL_FIDELITY_CHECK.value: LeanSkillDefinition(
+        name="material-fidelity-check",
+        description="Check a complete current material candidate against its exact authorized evidence before approval.",
+        group="material",
+        source_design_doc="dev_docs/implementation/2026-08-14_source_resource_faithful_draft_projection",
+        body=_body(
+            "material-fidelity-check",
+            "Use this skill for Builder or Curator self-check and for independent SourceCorpus review.",
+            (
+                "Start from the exact target and included scope in preparation or resource truth, not from filenames, a worker summary, or an inferred broader task.",
+                "Check the entire current candidate in reading order. Verify that every included definition, assumption, statement, proof step, notation convention, reference, and materially meaningful figure or table remains represented with the same meaning.",
+                "Trace pronouns, abbreviations, numbered objects, variable conventions, and cross-references back to their defining context. Local textual similarity is not enough when the candidate changes the referenced mathematical object.",
+                "Check README provenance, scope, inventory, reading order, canonical entry, input-to-final mapping, omissions, and extraction limitations against the actual files.",
+                "On retry, begin a fresh full pass over the current revision. After that pass, revisit every previous finding as a regression check; old passed marks and patch summaries do not carry forward.",
+            ),
+            (
+                "Do not approve because deterministic path and readability checks pass; they cannot establish mathematical fidelity.",
+                "Do not narrow review to the latest reported edits or trust an earlier reviewer context as current evidence.",
+                "Do not use a README warning as a substitute for repairing readable canonical content.",
+            ),
+        ),
+    ),
+    SkillKey.SOURCE_CORPUS_DRAFT_CURATION.value: LeanSkillDefinition(
+        name="source-corpus-draft-curation",
+        description="Define Source draft layout, README contract, full-candidate checks, review, and canonical projection.",
         group="source",
         required_tool_groups=_groups(
             AppGroup.SOURCE_CORPUS_READ,
             AppGroup.SOURCE_CORPUS_VISUAL_READ,
             AppGroup.SOURCE_MATERIAL_TEXT_READ,
         ),
-        source_design_doc="dev_docs/implementation/four_case_exploration_material_followups",
+        source_design_doc="dev_docs/implementation/2026-08-14_source_resource_faithful_draft_projection",
         body=_body(
-            "source-corpus-faithful-preparation",
-            "Use this skill to turn acquired artifacts into a preservation-first SourceCorpus without designing the later formalization.",
+            "source-corpus-draft-curation",
+            "Use this skill to build or review the current Source draft without designing the later formalization.",
             (
-                "Read `faithful-material-preservation` and keep an existing author TeX tree, macro files, bibliography, assets, sections, theorem statements, and proof structure intact.",
-                "Maintain a root README with source/author/version/canonical locator, file inventory, reading order, main material entry, original-to-extracted mapping, extraction/OCR/correction status, missing pages/assets/bibliography, and the included/omitted source boundary.",
-                "Use `article/`, `original/`, `assets/`, and `supplementary/` only when they match the source; do not force a coherent author tree into an artificial `main/` layout.",
-                "For PDF-only material, keep the original, transcribe rather than summarize, and use page previews to compare every high-risk formula, symbol, range, case boundary, and cross-reference. OCR is navigation input, not accepted source truth by itself.",
-                "Record partial sections or transcripts exactly and add a supplementary correction ledger for any non-mechanical correction. Builder repairs must preserve unresolved printed ambiguity instead of guessing; Reviewer checks originals independently rather than trusting the ledger or Builder summary.",
-                "Preserve supplied Lean specifications, formal targets, solutions, and proof references as source truth; a supplied file containing `sorry` remains an input constraint rather than a completed project artifact.",
-                "Maintain a complete inventory and original-to-readable mapping. On every review retry, inspect the current corpus afresh, then use earlier findings as regression checks; approval requires a full current pass rather than a patch-only check.",
+                "Treat `_work/` as the only location for downloads, original binary artifacts, OCR, screenshots, extraction scratch, and previews. Candidate content is every approved durable file outside `_work/`; only that candidate is projected to canonical SourceCorpus.",
+                "Follow every typed source input exactly. Preserve an author's coherent TeX tree, macros, bibliography, assets, sections, theorem statements, and proof structure. For PDF-only input, create a complete corrected textual transcription rather than a summary.",
+                "Use natural candidate paths such as `article/`, `assets/`, and `supplementary/` only when they match the source. Do not create `original/` in the candidate merely to retain working evidence.",
+                "Maintain a root README with identity and provenance, author/version/canonical locator, exact included and omitted scope, file inventory and reading order, canonical readable entry, input-to-final mapping, extraction/OCR/correction status, known limitations, and missing required material.",
+                "README descriptions may identify the corpus and explain navigation or fidelity limits. They must not add a mathematical summary, proof plan, formalization advice, expected declarations, or claims absent from the supplied source.",
+                "Builder must scan and check the complete candidate before ready. Reviewer independently reads the same complete candidate and evidence; approval projects only the candidate and excludes `_work/`.",
             ),
             (
-                "Do not invent targets, answers, proofs, expected node trees, Lean probes, or audit hints, and do not present Agent-authored summaries or commentary as supplied source truth.",
-                "Do not strengthen or weaken statements, drop assumptions, merge separate conclusions, or invent connective proof text.",
+                "Do not place PDF, HTML, archives, OCR scratch, page previews, or draft metadata in canonical SourceCorpus.",
+                "Do not extend the requested source scope, fetch related papers on your own, or synthesize a `formal_target.lean` unless an exact input supplies that formal target.",
                 "Do not build SourceIndex, root interfaces, NodeTree, DeclGraph, Resources, or Lean project files.",
             ),
         ),
@@ -599,31 +619,6 @@ Deterministic manifests and checks verify paths, bytes, readability, and require
                 "Do not omit endpoints, use a first-line sentinel for a whole file, or infer permission from SourceIndex containment.",
                 "Do not cite a range solely because it validates structurally; verify semantic support from the returned excerpt.",
                 "Do not treat previous reviewer feedback, old marks, or a worker summary as proof that the current candidate was fully checked.",
-            ),
-        ),
-    ),
-    SkillKey.RESOURCE_MATERIAL_ACQUISITION.value: LeanSkillDefinition(
-        name="resource-material-acquisition",
-        description="Guides ResourceCurator agents using resource acquisition tools inside an active resource draft.",
-        group="resource",
-        required_tool_groups=_groups(AppGroup.RESOURCE_ACQUISITION),
-        source_design_doc="dev_docs/design/agents/skill_bundles/05_ResourceCurationSkills.md",
-        body=_body(
-            "resource-material-acquisition",
-            "Use this skill when curating local resource material inside the current active resource draft.",
-            (
-                "Acquire resource targets with `acquire_resource_material` or import local files with `import_resource_material`.",
-                "Extract readable text or project files with `extract_resource_artifact` when the artifact is a PDF, HTML page, TeX archive, or similar container.",
-                "Pass the acquisition kind and MIME returned by acquisition through to extraction; do not guess from the filename.",
-                "Apply `faithful-material-preservation` before normalizing readable text with `normalize_resource_text_material`.",
-                "Treat acquisition and extraction outputs as intermediate material; place canonical originals under `original/`, faithful readable text under `normalized/`, and auxiliary material under `assets/` or `supplementary/`.",
-                "Maintain `README.md` with identity, provenance, license/access, material mapping, reading order, selected scope, consumer need, extraction limits, correction status, and ownership.",
-                "Use `refresh_resource_draft_manifest` only when multiple validated normalized outputs require an explicit canonical entry; ordinary successful extraction refreshes it automatically.",
-            ),
-            (
-                "Do not write SourceCorpus files from resource curation.",
-                "Do not finalize a full paper, reusable theory, or formal dependency as a small local resource when it should be an external provider repo.",
-                "Do not call local-resource submit until the active draft passes its deterministic check.",
             ),
         ),
     ),
@@ -736,19 +731,21 @@ Then stop using this Skill and return to the caller's next-action loop in the sa
         source_design_doc="dev_docs/design/agents/skill_bundles",
         body=_body(
             "resource-draft-curation",
-            "Use this skill for local Resource draft layout, README requirements, normalized text requirements, draft checks, and local_resource_created submit readiness.",
+            "Use this skill for local Resource draft layout, README requirements, faithful readable content, draft checks, and local_resource_created submit readiness.",
             (
                 "Inspect the current system-created resource draft with `get_resource_draft` before local resource work.",
-                "Apply `faithful-material-preservation`; place originals in `original/`, faithful readable text in `normalized/`, and auxiliary files in `assets/` or `supplementary/`.",
-                "Write README content that identifies title, authors, version/date, source provenance and canonical locator, license/access, original-to-normalized mapping, canonical reading order, selected scope and consumer need, extraction/OCR limits, correction status, and supporting-material ownership.",
-                "If no original is retained, state the exact reason. If any correction is made, add a supplementary correction ledger.",
-                "Ensure the deterministic manifest names the intended canonical normalized entry; use `refresh_resource_draft_manifest` to resolve multiple readable outputs.",
+                "Use `acquire_resource_material` or `import_resource_material` only for the draft's exact target. Use extraction and normalization tools as needed, and preserve the returned artifact kind and MIME rather than guessing from a filename.",
+                "Put downloads, originals, OCR, screenshots, extraction scratch, previews, and `draft.json` under `_work/`. Organize durable candidate content outside `_work/` using natural paths such as `article/`, `assets/`, and `supplementary/`; finalization copies only this candidate.",
+                "Write README content that identifies title, authors, version/date, provenance and canonical locator, license/access, input-to-final mapping, canonical reading order and entry, exact selected scope and consumer need, omissions, extraction/OCR limits, correction status, and supporting-material ownership.",
+                "README may describe identity, navigation, scope, provenance, and limitations. It must not add an unsourced mathematical summary, proof plan, formalization advice, or new claim.",
+                "Ensure the deterministic manifest names the intended canonical readable entry; use `refresh_resource_draft_manifest` after the candidate is organized or to resolve multiple readable outputs.",
                 "Run `check_resource_draft` and repair failures within your authority.",
                 "Call `submit_local_resource_created` only after the draft is coherent.",
             ),
             (
                 "Do not use this skill for duplicate, external-repo-required, or rejected outcomes.",
                 "Treat formal_dependency as strong provider evidence rather than an irreversible classification; choose a local Resource only when inspected truth shows narrow supporting material and record the corrected ownership in the README and submission.",
+                "Do not finalize `_work/`, raw textual containers, OCR scratch, or draft lifecycle metadata as Resource content.",
                 "Do not attach the resource to a content node from the curator role.",
             ),
         ),

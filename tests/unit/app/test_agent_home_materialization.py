@@ -24,7 +24,9 @@ def test_agent_home_materialization_writes_instruction_skills_and_mcp_config(tmp
         "lc_app",
         "lc_submit",
     ]
-    assert (home_root / ".agents" / "skills" / "source-material-acquisition" / "SKILL.md").exists()
+    assert (home_root / ".agents" / "skills" / "pdf-faithful-transcription" / "SKILL.md").exists()
+    assert (home_root / ".agents" / "skills" / "material-fidelity-check" / "SKILL.md").exists()
+    assert (home_root / ".agents" / "skills" / "source-corpus-draft-curation" / "SKILL.md").exists()
     config_text = (Path(view.value.home_root) / ".codex" / "config.toml").read_text(encoding="utf-8")
     assert "http://127.0.0.1:8765/mcp/views/source_corpus_builder" in config_text
     assert "http://127.0.0.1:8765/mcp/views/source_corpus_builder_submit" in config_text

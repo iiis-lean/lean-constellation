@@ -63,7 +63,9 @@ def _create_local_resource(lean_runtime, repo_root: Path, *, target_kind: str, t
         ),
         encoding="utf-8",
     )
-    Path(draft.value.normalized_dir, "main.md").write_text("Normalized theorem background.\n", encoding="utf-8")
+    article = Path(draft.value.draft_root) / "article"
+    article.mkdir()
+    (article / "main.md").write_text("Faithful theorem background.\n", encoding="utf-8")
     promoted = lean_runtime.material.resource_curation.submit_local_resource_created(
         repo_root,
         target=normalized_target.value,
@@ -80,8 +82,10 @@ def _create_local_resource(lean_runtime, repo_root: Path, *, target_kind: str, t
 
 def _write_draft_files(draft_root: Path) -> None:
     (draft_root / "README.md").write_text(valid_resource_readme(), encoding="utf-8")
-    (draft_root / "original" / "raw.txt").write_text("raw resource text\n", encoding="utf-8")
-    (draft_root / "normalized" / "main.md").write_text("normalized resource text\n", encoding="utf-8")
+    (draft_root / "_work" / "original").mkdir(parents=True, exist_ok=True)
+    (draft_root / "_work" / "original" / "raw.txt").write_text("raw resource text\n", encoding="utf-8")
+    (draft_root / "article").mkdir(exist_ok=True)
+    (draft_root / "article" / "main.md").write_text("faithful resource text\n", encoding="utf-8")
 
 
 def test_resource_curation_preflight_duplicate_hint_continues_to_agent(tmp_path: Path) -> None:

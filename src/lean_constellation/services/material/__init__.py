@@ -29,7 +29,6 @@ from lean_constellation.services.material.resource_library import (
     ResourceTarget,
     ResourceTargetView,
     ResourceView,
-    ResourceExtractionRelationView,
 )
 from lean_constellation.services.material.service import (
     MaterialContextCitationView,
@@ -106,7 +105,6 @@ __all__ = [
     "ResourceTarget",
     "ResourceTargetView",
     "ResourceView",
-    "ResourceExtractionRelationView",
     "SourceAcquisitionView",
     "ResolvedSourceScopeView",
     "SourceBlock",

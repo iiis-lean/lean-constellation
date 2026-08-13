@@ -408,8 +408,9 @@ AGENT_TYPE_SPECS: tuple[AgentTypeSpec, ...] = (
         fragments=[*BLOCKED_FRAGMENTS, "repo.native_repo_context", "source.source_corpus_context"],
         skills=[
             SkillKey.FAITHFUL_MATERIAL_PRESERVATION,
-            SkillKey.SOURCE_MATERIAL_ACQUISITION,
-            SkillKey.SOURCE_CORPUS_FAITHFUL_PREPARATION,
+            SkillKey.PDF_FAITHFUL_TRANSCRIPTION,
+            SkillKey.MATERIAL_FIDELITY_CHECK,
+            SkillKey.SOURCE_CORPUS_DRAFT_CURATION,
         ],
         app_view=AppView.SOURCE_CORPUS_BUILDER,
         submit_view=SubmitView.SOURCE_CORPUS_BUILDER_SUBMIT,
@@ -429,7 +430,8 @@ AGENT_TYPE_SPECS: tuple[AgentTypeSpec, ...] = (
         ],
         skills=[
             SkillKey.FAITHFUL_MATERIAL_PRESERVATION,
-            SkillKey.SOURCE_CORPUS_FAITHFUL_PREPARATION,
+            SkillKey.MATERIAL_FIDELITY_CHECK,
+            SkillKey.SOURCE_CORPUS_DRAFT_CURATION,
         ],
         app_view=AppView.SOURCE_CORPUS_REVIEWER,
         submit_view=SubmitView.SOURCE_CORPUS_REVIEWER_SUBMIT,
@@ -518,7 +520,8 @@ AGENT_TYPE_SPECS: tuple[AgentTypeSpec, ...] = (
         skills=[
             SkillKey.MATERIAL_BOUNDARY_CLASSIFICATION,
             SkillKey.FAITHFUL_MATERIAL_PRESERVATION,
-            SkillKey.RESOURCE_MATERIAL_ACQUISITION,
+            SkillKey.PDF_FAITHFUL_TRANSCRIPTION,
+            SkillKey.MATERIAL_FIDELITY_CHECK,
             SkillKey.RESOURCE_DRAFT_CURATION,
         ],
         app_view=AppView.RESOURCE_CURATOR,

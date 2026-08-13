@@ -191,7 +191,10 @@ def test_web_fetch_and_extract_views_normalize_metadata_and_preview(tmp_path: Pa
     extracted = client.extract_web_main_text(html_path=Path(acquired.primary_artifact_path), output_root=output_root)
 
     assert acquired.ok is True
-    assert acquired.artifact_kind == "web_page"
+    assert acquired.artifact_kind == "html"
+    assert acquired.primary_artifact_path is not None
+    assert Path(acquired.primary_artifact_path).suffix == ".html"
+    assert acquired.metadata["acquisition_route"] == "web_url"
     assert acquired.source_url == "https://example.com/article"
     assert acquired.mime_type == "text/html"
     assert acquired.artifact_view is not None
@@ -204,6 +207,31 @@ def test_web_fetch_and_extract_views_normalize_metadata_and_preview(tmp_path: Pa
     assert extracted.artifact_view is not None
     assert extracted.artifact_view.text_preview == "Hello wo"
     assert Path(extracted.primary_text_path).resolve().is_relative_to(output_root.resolve())  # type: ignore[arg-type]
+
+
+def test_web_fetch_names_pdf_from_content_instead_of_route(tmp_path: Path) -> None:
+    def downloader(url: str, path: Path, headers: dict[str, str], timeout: int) -> dict[str, str]:
+        path.write_bytes(b"%PDF-1.4\nfixture")
+        return {
+            "Content-Type": "application/pdf",
+            "Content-Disposition": 'inline; filename="official-paper.pdf"',
+            "X-Lean-Constellation-Final-URL": "https://cdn.example.test/download?id=42",
+        }
+
+    acquired = MaterialAcquisitionExtractionClient(downloader=downloader).fetch_web_page(
+        "https://example.test/article",
+        output_root=tmp_path / "draft",
+    )
+
+    assert acquired.ok is True
+    assert acquired.artifact_kind == "pdf"
+    assert acquired.mime_type == "application/pdf"
+    assert acquired.primary_artifact_path is not None
+    assert Path(acquired.primary_artifact_path).name == "official-paper.pdf"
+    assert Path(acquired.primary_artifact_path).read_bytes().startswith(b"%PDF-")
+    assert acquired.metadata["acquisition_route"] == "web_url"
+    assert acquired.metadata["resolved_artifact_kind"] == "pdf"
+    assert not list((tmp_path / "draft").rglob("*.download"))
 
 
 def test_pdf_extraction_requires_readable_postcondition(

@@ -13,10 +13,10 @@ def _resource_temp(root: Path, text: str = "first\nsecond theorem\nthird\n") -> 
         while (root / f"resource_tmp_{suffix}").exists():
             suffix += 1
         temp = root / f"resource_tmp_{suffix}"
-    (temp / "original").mkdir(parents=True)
-    (temp / "normalized").mkdir()
-    (temp / "original" / "page.html").write_text("<p>raw</p>", encoding="utf-8")
-    (temp / "normalized" / "page.md").write_text(text, encoding="utf-8")
+    (temp / "_work" / "original").mkdir(parents=True)
+    (temp / "article").mkdir()
+    (temp / "_work" / "original" / "page.html").write_text("<p>raw</p>", encoding="utf-8")
+    (temp / "article" / "page.md").write_text(text, encoding="utf-8")
     return temp
 
 

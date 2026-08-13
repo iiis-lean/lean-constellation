@@ -69,6 +69,27 @@ def _runtime(gateway: FakeSubmissionGateway):
     return runtime
 
 
+def _write_submit_source_draft(root: Path, *, weak_readme: bool = False) -> None:
+    root.mkdir(parents=True)
+    (root / "article").mkdir()
+    (root / "article" / "main.md").write_text("Faithful source statement.\n", encoding="utf-8")
+    if weak_readme:
+        text = "# Source\n\nMain material: article/main.md. Known gaps and extraction limits: none.\n"
+    else:
+        text = (
+            "Source identity: submit fixture.\n"
+            "Source provenance: local source fixture.\n"
+            "License/access: local test fixture.\n"
+            "Included scope: complete fixture. Excluded scope: none; omitted: none.\n"
+            "File inventory: README.md and article/main.md.\n"
+            "Reading order: this README, then article/main.md.\n"
+            "Main material: article/main.md.\n"
+            "Input-to-final mapping: fixture input maps to article/main.md.\n"
+            "Known gaps and extraction limits: none.\n"
+        )
+    (root / "README.md").write_text(text, encoding="utf-8")
+
+
 class FakeResourceDiscovery:
     def __init__(self) -> None:
         self.inspect_calls: list[str] = []
@@ -901,15 +922,8 @@ def test_gate_failure_does_not_record_submission(tmp_path: Path) -> None:
 def test_source_corpus_builder_ready_gateway_missing_does_not_write_manifest(tmp_path: Path) -> None:
     runtime = create_test_runtime_services()
     assert register_submit_tooling(runtime).ok
-    source_root = tmp_path / ".lean_constellation" / "source"
-    source_root.mkdir(parents=True)
-    (source_root / "README.md").write_text(
-        "Source overview.\n"
-        "Source provenance: local source fixture.\n"
-        "Reading order: this README is the entry and main material.\n"
-        "Known gaps and extraction limits: no missing source sections are known.\n",
-        encoding="utf-8",
-    )
+    source_root = tmp_path / ".lean_constellation" / "source_draft"
+    _write_submit_source_draft(source_root)
     raw = RawToolCallContext(
         endpoint_view_key="source_corpus_builder_submit",
         runtime_context=_runtime_ctx(tmp_path, view="source_corpus_builder_submit", role="worker", agent_type="SourceCorpusBuilderAgent"),
@@ -937,12 +951,8 @@ def test_source_corpus_builder_ready_weak_canonical_readme_rejected_before_gatew
     gateway = FakeSubmissionGateway()
     runtime = _runtime(gateway)
     assert register_submit_tooling(runtime).ok
-    source_root = tmp_path / ".lean_constellation" / "source"
-    source_root.mkdir(parents=True)
-    (source_root / "README.md").write_text(
-        "# Source\n\nMain material: notes. Known gaps and extraction limits: none.\n",
-        encoding="utf-8",
-    )
+    source_root = tmp_path / ".lean_constellation" / "source_draft"
+    _write_submit_source_draft(source_root, weak_readme=True)
     raw = RawToolCallContext(
         endpoint_view_key="source_corpus_builder_submit",
         runtime_context=_runtime_ctx(tmp_path, view="source_corpus_builder_submit", role="worker", agent_type="SourceCorpusBuilderAgent"),
@@ -974,16 +984,8 @@ def test_source_corpus_reviewer_submit_requires_evidence_and_keeps_corpus_read_o
     gateway = FakeSubmissionGateway()
     runtime = _runtime(gateway)
     assert register_submit_tooling(runtime).ok
-    source_root = tmp_path / ".lean_constellation" / "source"
-    source_root.mkdir(parents=True)
-    (source_root / "README.md").write_text(
-        "Source overview.\n"
-        "Source provenance: local source fixture.\n"
-        "Reading order: this README is the entry and main material.\n"
-        "Main material: source statement.\n"
-        "Known gaps and extraction limits: none.\n",
-        encoding="utf-8",
-    )
+    source_root = tmp_path / ".lean_constellation" / "source_draft"
+    _write_submit_source_draft(source_root)
     raw = RawToolCallContext(
         endpoint_view_key="source_corpus_reviewer_submit",
         runtime_context=_runtime_ctx(

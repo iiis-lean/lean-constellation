@@ -713,14 +713,14 @@ def _source_readme_text() -> str:
 
 def test_source_corpus_tool_invokes_material_service(tmp_path: Path) -> None:
     runtime = create_test_runtime_services(register_application_tools=True)
-    source_root = tmp_path / ".lean_constellation" / "source"
+    source_root = tmp_path / ".lean_constellation" / "source_draft"
     source_root.mkdir(parents=True)
     (source_root / "README.md").write_text(_source_readme_text(), encoding="utf-8")
 
     result = runtime.tool_facade.invoke_agent_tool(
         _raw(tmp_path, view="source_corpus_builder", agent_type="SourceCorpusBuilderAgent"),
         tool_name="scan_source_corpus",
-        flat_args={"relpath": ".lean_constellation/source"},
+        flat_args={"relpath": ".lean_constellation/source_draft"},
     )
 
     assert result.ok
@@ -2218,9 +2218,8 @@ def test_resource_draft_read_and_mathlib_write_tools_invoke_services(tmp_path: P
     assert draft["target"]["canonical_locator"] == "https://example.com/resource"
     assert draft["logical_files"] == [
         "README.md",
-        "manifest.json",
-        "original/",
-        "normalized/",
+        "_work/",
+        "article/ or another natural content tree",
         "assets/",
         "supplementary/",
     ]

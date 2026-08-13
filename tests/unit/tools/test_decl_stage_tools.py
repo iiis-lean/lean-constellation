@@ -466,7 +466,9 @@ def _create_local_resource(runtime, repo_root: Path) -> str:
         ),
         encoding="utf-8",
     )
-    Path(draft.value.normalized_dir, "main.md").write_text("Proof route support.\n", encoding="utf-8")
+    article = Path(draft.value.draft_root) / "article"
+    article.mkdir()
+    (article / "main.md").write_text("Proof route support.\n", encoding="utf-8")
     promoted = runtime.material.submit_local_resource_created(
         repo_root,
         target=target.value,

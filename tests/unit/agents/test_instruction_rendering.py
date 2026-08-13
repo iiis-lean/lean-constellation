@@ -472,9 +472,9 @@ def test_source_reviewer_routes_corpus_fidelity_blocker_outside_builder_authorit
 def test_source_builder_preserves_supplied_targets_without_inventing_source_truth() -> None:
     text = render_agent_instruction("SourceCorpusBuilderAgent")
 
-    assert "Treat Lean specifications, formal targets, solutions, proof references" in text
-    assert "preserve their bytes or faithfully extracted meaning" in text
-    assert "Do not invent a target, answer, proof, NodeTree, probe, or audit hint" in text
+    assert "exact targets and included scopes" in text
+    assert "Keep downloads, originals, OCR, screenshots, and extraction scratch under `_work/`" in text
+    assert "do not summarize, extend the requested scope, invent formal targets" in text
     assert "Do not replace source truth with" not in text
 
 
@@ -482,8 +482,8 @@ def test_source_corpus_reviewer_is_independent_read_only_and_full_current() -> N
     text = render_agent_instruction("SourceCorpusReviewerAgent")
 
     assert "You are read-only" in text
-    assert "compare the original pages independently" in text
-    assert "fresh pass over the entire current candidate" in text
+    assert "independently compare it with authorized evidence under `_work/`" in text
+    assert "review the entire current candidate from the beginning" in text
     assert "submit_source_corpus_review" in text
 
 

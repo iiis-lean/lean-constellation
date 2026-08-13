@@ -362,16 +362,15 @@ def submit_native_repo_choice(runtime: Any, ctx: ToolExecutionContext, args: Sub
 
 
 def submit_source_corpus_builder_ready(runtime: Any, ctx: ToolExecutionContext, args: SubmitSourceCorpusBuilderReadyArgs) -> ServiceResult[PreparedSubmissionView]:
-    expected_relpath = _expected_source_corpus_relpath(runtime, ctx)
-    gate = runtime.material.check_source_corpus_prepared(
+    gate = runtime.material.check_source_corpus_draft(
         ctx.repo_root,
+        relpath=".lean_constellation/source_draft",
         entry_path=args.entry_path,
-        overview=args.overview,
-        preparation_summary=args.preparation_summary,
-        relpath=expected_relpath,
     )
     if not gate.ok or gate.value is None:
         return runtime.foundation.fail(gate.issues)
+    if not gate.value.passed:
+        return runtime.foundation.fail(gate.value.issues)
     return _prepared(
         runtime,
         SourceCorpusBuilderReadySubmission(
@@ -429,7 +428,6 @@ def submit_source_corpus_review(runtime: Any, ctx: ToolExecutionContext, args: S
                     "Approved SourceCorpus review requires at least one checked material locator.",
                 )
             )
-        expected_relpath = _expected_source_corpus_relpath(runtime, ctx)
         entry_path = None
         flow_service = getattr(getattr(runtime, "ark", None), "flow_service", None)
         if flow_service is not None and ctx.runtime is not None and ctx.runtime.flow_id is not None:
@@ -439,7 +437,6 @@ def submit_source_corpus_review(runtime: Any, ctx: ToolExecutionContext, args: S
                 flow = None
             candidate = getattr(getattr(flow, "state", None), "source_corpus_candidate", None)
             if candidate is not None:
-                expected_relpath = candidate.relpath
                 entry_path = candidate.entry_path
         if entry_path is None:
             manifest = runtime.material.source_corpus.get_source_corpus_manifest(ctx.repo_root)
@@ -447,7 +444,7 @@ def submit_source_corpus_review(runtime: Any, ctx: ToolExecutionContext, args: S
                 entry_path = manifest.value.entry_path
         gate = runtime.material.check_source_corpus_draft(
             ctx.repo_root,
-            relpath=expected_relpath,
+            relpath=".lean_constellation/source_draft",
             entry_path=entry_path,
         )
         if not gate.ok or gate.value is None:

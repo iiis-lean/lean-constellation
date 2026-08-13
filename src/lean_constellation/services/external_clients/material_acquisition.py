@@ -305,13 +305,70 @@ class MaterialAcquisitionExtractionClient:
         target = MaterialTarget(kind="web_url", value=url)
         parsed = urlparse(url)
         name = self._safe_name(parsed.netloc + parsed.path) or "page"
-        path = output_root / "original" / f"{name}.html"
-        return self._download_artifact(
+        temporary_path = output_root / "original" / f"{name}.download"
+        acquired = self._download_artifact(
             target,
             url,
-            path,
-            "Fetched web page",
+            temporary_path,
+            "Fetched web material",
             artifact_kind="web_page",
+        )
+        if not acquired.ok or acquired.primary_artifact_path is None:
+            return acquired
+        path = Path(acquired.primary_artifact_path)
+        resolution = self.resolve_artifact_kind(
+            path,
+            acquisition_kind="web_page",
+            mime_type=acquired.mime_type,
+        )
+        if not resolution.compatible or resolution.kind == "unknown_binary":
+            return self._acquired_failed(
+                target,
+                output_root,
+                resolution.issue_code or "material_artifact_kind_unknown",
+                resolution.summary,
+                artifact_kind=resolution.kind,
+                source_url=url,
+                metadata={**acquired.metadata, "acquisition_route": "web_url"},
+            )
+        final_name = self._download_identity_name(
+            original_url=url,
+            metadata=acquired.metadata,
+            fallback_stem=name,
+            resolved_kind=resolution.kind,
+            mime_type=acquired.mime_type,
+        )
+        final_path = output_root / "original" / final_name
+        safety_issue = self._ensure_output_path(output_root, final_path)
+        if safety_issue is not None:
+            return self._acquired_failed(
+                target,
+                output_root,
+                "artifact_path_escape",
+                safety_issue,
+                artifact_kind=resolution.kind,
+                source_url=url,
+                metadata={**acquired.metadata, "acquisition_route": "web_url"},
+            )
+        if final_path != path:
+            if final_path.exists():
+                final_path.unlink()
+            path.replace(final_path)
+        metadata = {
+            **acquired.metadata,
+            "acquisition_route": "web_url",
+            "resolved_artifact_kind": resolution.kind,
+        }
+        return self._acquired_ok(
+            target,
+            output_root,
+            artifact_paths=[final_path],
+            primary=final_path,
+            metadata=metadata,
+            summary="Fetched web material",
+            artifact_kind=resolution.kind,
+            source_url=url,
+            mime_type=acquired.mime_type,
         )
 
     def import_local_file(self, path: Path | None = None, temp_root: Path | None = None, *, source_path: Path | None = None, output_root: Path | None = None) -> AcquiredArtifactResult:
@@ -602,6 +659,12 @@ class MaterialAcquisitionExtractionClient:
         metadata = {"url": url}
         if response_headers:
             metadata["headers_summary"] = self._headers_summary(response_headers)
+            content_disposition = self._header_value(response_headers, "content-disposition")
+            if content_disposition:
+                metadata["content_disposition"] = content_disposition
+            final_url = self._header_value(response_headers, "x-lean-constellation-final-url")
+            if final_url:
+                metadata["final_url"] = final_url
         return self._acquired_ok(
             target,
             output_root,
@@ -627,7 +690,9 @@ class MaterialAcquisitionExtractionClient:
                     if self.config.max_download_bytes is not None and total > self.config.max_download_bytes:
                         raise ValueError("download exceeds max_download_bytes")
                     handle.write(chunk)
-            return {str(key): str(value) for key, value in response.headers.items()}
+            response_headers = {str(key): str(value) for key, value in response.headers.items()}
+            response_headers["X-Lean-Constellation-Final-URL"] = response.geturl()
+            return response_headers
 
     def _output_root(self, temp_root: Path | None, output_root: Path | None) -> Path:
         root = Path(output_root or temp_root).expanduser().resolve(strict=False)  # type: ignore[arg-type]
@@ -657,6 +722,56 @@ class MaterialAcquisitionExtractionClient:
         text = "\n".join(f"{key}: {value}" for key, value in sorted(headers.items()))
         limit = self.config.headers_summary_chars
         return text if len(text) <= limit else text[:limit] + "\n...[truncated]"
+
+    @staticmethod
+    def _header_value(headers: dict[str, str], name: str) -> str | None:
+        expected = name.casefold()
+        for key, value in headers.items():
+            if key.casefold() == expected:
+                normalized = value.strip()
+                return normalized or None
+        return None
+
+    def _download_identity_name(
+        self,
+        *,
+        original_url: str,
+        metadata: dict[str, str],
+        fallback_stem: str,
+        resolved_kind: str,
+        mime_type: str | None,
+    ) -> str:
+        candidates: list[str] = []
+        disposition = metadata.get("content_disposition")
+        if disposition:
+            match = re.search(r"filename\*?=(?:UTF-8''|\")?([^\";]+)", disposition, re.IGNORECASE)
+            if match:
+                candidates.append(match.group(1).strip())
+        for url in (metadata.get("final_url"), original_url):
+            if url:
+                candidate = Path(urlparse(url).path).name
+                if candidate:
+                    candidates.append(candidate)
+        candidates.append(fallback_stem)
+        stem = self._safe_name(Path(candidates[0]).stem if candidates else fallback_stem)
+        extension = self._extension_for_resolved_kind(resolved_kind, mime_type=mime_type)
+        return f"{stem}{extension}"
+
+    @staticmethod
+    def _extension_for_resolved_kind(kind: str, *, mime_type: str | None) -> str:
+        if kind == "pdf":
+            return ".pdf"
+        if kind == "html":
+            return ".html"
+        if kind == "plain_text":
+            return ".txt"
+        if kind == "tex_source_archive":
+            normalized_mime = mime_type.split(";", 1)[0].strip().lower() if mime_type else None
+            return {
+                "application/zip": ".zip",
+                "application/x-tar": ".tar",
+            }.get(normalized_mime, ".tar.gz")
+        return ".bin"
 
     def _html_to_text(self, value: str) -> str:
         value = re.sub(r"(?is)<(script|style).*?>.*?</\1>", " ", value)

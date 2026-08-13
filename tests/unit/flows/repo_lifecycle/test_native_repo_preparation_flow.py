@@ -7,7 +7,7 @@ from agent_runtime_kit.flow.models import BaseFlowError, FlowPosition, FlowStatu
 from lean_constellation.app.runtime import ApplicationSnapshotRuntime
 
 from lean_constellation.domain.interface import DeclInterface, DeclKind
-from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
+from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode, SourceMaterialInput
 from lean_constellation.flows.common.submissions import new_submission_id
 from lean_constellation.flows.common.testing import FakeLeanFlowRuntime, create_fake_lean_flow_runtime
 from lean_constellation.flows.repo_lifecycle.submissions import (
@@ -160,12 +160,39 @@ def _prepare_native_repo_for_source_prepare(lean_runtime, repo_root: Path, *, so
             goal="Prepare source corpus in a custom root.",
             source_corpus_mode=SourceCorpusMode.PREPARE,
             source_corpus_relpath=source_corpus_relpath,
+            source_material_inputs=[
+                SourceMaterialInput(
+                    target="fixture://primary-source",
+                    included_scope="Complete unit-test source fixture.",
+                    role="primary_source",
+                )
+            ],
             interface_inputs=[],
         ),
     )
     assert written.ok
     initialized = lean_runtime.repo_workspace.initialize_repo_as_native(repo_root, project_name=repo_root.name)
     assert initialized.ok
+
+
+def _write_source_draft_candidate(source_root: Path) -> None:
+    source_root.mkdir(parents=True, exist_ok=True)
+    (source_root / "article").mkdir(exist_ok=True)
+    (source_root / "article" / "main.md").write_text("Faithful source fixture.\n", encoding="utf-8")
+    (source_root / "README.md").write_text(
+        "Prepared source corpus\n"
+        "Source identity: unit-test source.\n"
+        "Source provenance: local prepared source fixture.\n"
+        "License/access: test fixture with local access.\n"
+        "Included scope: complete fixture. Excluded scope: none; omitted: none.\n"
+        "File inventory: README.md and article/main.md.\n"
+        "Reading order: this README, then article/main.md as the main material.\n"
+        "Main material: article/main.md.\n"
+        "Input-to-final mapping: fixture://primary-source maps to article/main.md.\n"
+        "Known gaps and extraction limits: no missing source sections are known.\n"
+        "Corrections: none.\n",
+        encoding="utf-8",
+    )
 
 
 def _start_native(runtime: FakeLeanFlowRuntime, repo_root: Path) -> str:
@@ -526,7 +553,9 @@ def test_native_preparation_source_prepare_workdir_uses_preparation_relpath(tmp_
     assert runtime.flow_service.get_flow(flow_id).state.position.phase == "source_corpus"
     _advance_and_run(runtime, flow_id)
 
-    assert runtime.agent_service.start_records[-1].workdir == str(repo_root / "custom_sources")
+    assert runtime.agent_service.start_records[-1].workdir == str(
+        repo_root / ".lean_constellation" / "source_draft"
+    )
 
 
 def test_native_preparation_source_prepare_accepted_submission_finalizes_manifest(tmp_path: Path) -> None:
@@ -537,16 +566,10 @@ def test_native_preparation_source_prepare_accepted_submission_finalizes_manifes
 
     _advance_and_run(runtime, flow_id)
     assert runtime.flow_service.get_flow(flow_id).state.position.phase == "source_corpus"
-    source_root = repo_root / "custom_sources"
-    source_root.mkdir(parents=True)
-    (source_root / "README.md").write_text(
-        "Prepared source corpus\n"
-        "Source provenance: local prepared source fixture.\n"
-        "Reading order: this README is the entry and main material.\n"
-        "Main material: compactness facts for downstream indexing.\n"
-        "Known gaps and extraction limits: no missing source sections are known.\n",
-        encoding="utf-8",
-    )
+    source_root = repo_root / ".lean_constellation" / "source_draft"
+    _write_source_draft_candidate(source_root)
+    (source_root / "_work" / "original").mkdir(parents=True)
+    (source_root / "_work" / "original" / "paper.pdf").write_bytes(b"%PDF-1.4\nfixture")
     runtime.agent_service.queue_submission(
         SourceCorpusBuilderReadySubmission(
             submission_id=new_submission_id("sub"),
@@ -576,6 +599,8 @@ def test_native_preparation_source_prepare_accepted_submission_finalizes_manifes
     assert manifest.ok and manifest.value is not None
     assert manifest.value.relpath == "custom_sources"
     assert manifest.value.entry_path == "README.md"
+    assert not (repo_root / "custom_sources" / "_work").exists()
+    assert not (repo_root / "custom_sources" / "paper.pdf").exists()
 
 
 def test_source_corpus_reviewer_rejection_retries_prepare_builder(tmp_path: Path) -> None:
@@ -584,15 +609,8 @@ def test_source_corpus_reviewer_rejection_retries_prepare_builder(tmp_path: Path
     _prepare_native_repo_for_source_prepare(lean_runtime, repo_root, source_corpus_relpath="custom_sources")
     flow_id = _start_native(runtime, repo_root)
     _advance_and_run(runtime, flow_id)
-    source_root = repo_root / "custom_sources"
-    source_root.mkdir(parents=True)
-    (source_root / "README.md").write_text(
-        "Prepared source corpus\n"
-        "Source provenance: local fixture.\n"
-        "Reading order: this README is the main material.\n"
-        "Known gaps and extraction limits: none.\n",
-        encoding="utf-8",
-    )
+    source_root = repo_root / ".lean_constellation" / "source_draft"
+    _write_source_draft_candidate(source_root)
     runtime.agent_service.queue_submission(
         SourceCorpusBuilderReadySubmission(
             submission_id=new_submission_id("builder"),
@@ -631,15 +649,8 @@ def test_source_corpus_builder_candidate_survives_restart_before_review(tmp_path
     _prepare_native_repo_for_source_prepare(lean_runtime, repo_root, source_corpus_relpath="custom_sources")
     flow_id = _start_native(runtime, repo_root)
     _advance_and_run(runtime, flow_id)
-    source_root = repo_root / "custom_sources"
-    source_root.mkdir(parents=True)
-    (source_root / "README.md").write_text(
-        "Prepared source corpus\n"
-        "Source provenance: local fixture.\n"
-        "Reading order: this README is the main material.\n"
-        "Known gaps and extraction limits: none.\n",
-        encoding="utf-8",
-    )
+    source_root = repo_root / ".lean_constellation" / "source_draft"
+    _write_source_draft_candidate(source_root)
     runtime.agent_service.queue_submission(
         SourceCorpusBuilderReadySubmission(
             submission_id=new_submission_id("builder"),

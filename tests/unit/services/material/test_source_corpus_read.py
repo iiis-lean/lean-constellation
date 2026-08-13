@@ -15,7 +15,7 @@ from lean_constellation.services.external_clients import (
 )
 from lean_constellation.services.material import MaterialService
 from lean_constellation.services.material import source_corpus as source_corpus_module
-from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
+from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode, SourceMaterialInput
 from lean_constellation.domain.refs import SourceRef
 
 
@@ -24,7 +24,7 @@ def test_source_pdf_page_preview_validates_corpus_and_reuses_cache(
     monkeypatch,
 ) -> None:
     runtime = make_runtime()
-    source_root = tmp_path / ".lean_constellation" / "source"
+    source_root = tmp_path / ".lean_constellation" / "source_draft" / "_work"
     source_root.mkdir(parents=True)
     (source_root / "paper.pdf").write_bytes(b"%PDF-1.4\nfixture")
     (source_root / "notes.txt").write_text("not a pdf\n", encoding="utf-8")
@@ -45,17 +45,17 @@ def test_source_pdf_page_preview_validates_corpus_and_reuses_cache(
 
     first = runtime.material.render_source_pdf_page(
         tmp_path,
-        path="paper.pdf",
+        path="_work/paper.pdf",
         page_number=2,
     )
     second = runtime.material.render_source_pdf_page(
         tmp_path,
-        path="paper.pdf",
+        path="_work/paper.pdf",
         page_number=2,
     )
-    non_pdf = runtime.material.render_source_pdf_page(tmp_path, path="notes.txt", page_number=1)
+    non_pdf = runtime.material.render_source_pdf_page(tmp_path, path="_work/notes.txt", page_number=1)
     escaped = runtime.material.render_source_pdf_page(tmp_path, path="../paper.pdf", page_number=1)
-    out_of_range = runtime.material.render_source_pdf_page(tmp_path, path="paper.pdf", page_number=3)
+    out_of_range = runtime.material.render_source_pdf_page(tmp_path, path="_work/paper.pdf", page_number=3)
 
     assert first.ok and first.value is not None
     assert first.value.width == 640 and first.value.height == 480
@@ -65,6 +65,8 @@ def test_source_pdf_page_preview_validates_corpus_and_reuses_cache(
     assert not non_pdf.ok and non_pdf.issues[0].kind == "source_pdf_type_mismatch"
     assert not escaped.ok and escaped.issues[0].kind == "source_pdf_preview_path_escape"
     assert not out_of_range.ok and out_of_range.issues[0].kind == "source_pdf_page_out_of_range"
+    assert first.value.image_path.startswith(str(source_root / "previews"))
+    assert not (tmp_path / ".agent_runtime" / "material_previews").exists()
 
 
 class FakeMaterialClient:
@@ -218,46 +220,83 @@ def _fake_material_service() -> tuple[MaterialService, FakeMaterialClient]:
     return runtime.material, fake
 
 
+def _write_source_prepare_input(runtime, repo_root: Path, targets: list[str]) -> None:
+    written = runtime.repo_workspace.preparation.write_preparation_input(
+        repo_root,
+        input=RepoPreparationInput(
+            goal="Prepare exact source fixtures.",
+            source_corpus_mode=SourceCorpusMode.PREPARE,
+            source_material_inputs=[
+                SourceMaterialInput(
+                    target=target,
+                    included_scope="Complete unit-test fixture.",
+                    role="primary_source",
+                )
+                for target in targets
+            ],
+        ),
+    )
+    assert written.ok
+
+
 def _source_entry_text(*, main_path: str = "notes/section.md") -> str:
     return (
         "# Source corpus\n\n"
+        "Source identity: unit-test source corpus.\n"
         "Source provenance: imported from local markdown source material.\n"
+        "License/access: test fixture with local access.\n"
+        f"File inventory: README.md and `{main_path}`.\n"
         f"Reading order: start with this entry, then read `{main_path}` as the main material.\n"
         f"Main material: `{main_path}` contains the formal background used for indexing.\n"
-        "Original mapping: retained originals are preserved and mechanically normalized or extracted.\n"
+        f"Input-to-final mapping: authorized fixture maps to `{main_path}`.\n"
         "Known gaps and extraction limits: no missing source sections are known in this fixture.\n"
-        "Corrections: none.\nSource boundary: complete fixture; omitted: none.\n"
+        "Corrections: none.\nIncluded scope: complete fixture. Excluded scope: none; omitted: none.\n"
     )
 
 
-def test_source_acquisition_uses_current_preparation_relpath(tmp_path: Path) -> None:
+def test_source_acquisition_uses_draft_work_and_preserves_canonical_destination(tmp_path: Path) -> None:
     fake = FakeMaterialClient()
     runtime = make_runtime(external_overrides={"material_acquisition": fake})
+    local = tmp_path / "note.md"
+    local.write_text(_source_entry_text(main_path="original/raw.md"), encoding="utf-8")
     written = runtime.repo_workspace.preparation.write_preparation_input(
         tmp_path,
         input=RepoPreparationInput(
             goal="Use a custom source root.",
             source_corpus_mode=SourceCorpusMode.PREPARE,
             source_corpus_relpath="custom_sources",
+            source_material_inputs=[
+                SourceMaterialInput(
+                    target=str(local.resolve()),
+                    included_scope="Complete local note.",
+                    role="primary_source",
+                )
+            ],
         ),
     )
     assert written.ok
-    local = tmp_path / "note.md"
-    local.write_text(_source_entry_text(main_path="original/raw.md"), encoding="utf-8")
 
     imported = runtime.material.import_source_material(tmp_path, source_path=str(local), as_name="raw.md")
-    normalized = runtime.material.normalize_source_text_material(tmp_path, material_ref="original/raw.md")
-    (tmp_path / "custom_sources" / "README.md").write_text(
-        _source_entry_text(main_path="normalized/raw.txt"),
+    normalized = runtime.material.normalize_source_text_material(tmp_path, material_ref="_work/original/raw.md")
+    draft_root = tmp_path / ".lean_constellation" / "source_draft"
+    draft_root.mkdir(parents=True, exist_ok=True)
+    (draft_root / "article").mkdir()
+    (draft_root / "article" / "raw.md").write_text("faithful source text\n", encoding="utf-8")
+    (draft_root / "README.md").write_text(
+        _source_entry_text(main_path="article/raw.md"),
         encoding="utf-8",
     )
-    gate = runtime.material.check_source_corpus_draft(tmp_path, entry_path="original/raw.md")
+    gate = runtime.material.check_source_corpus_draft(
+        tmp_path,
+        relpath=".lean_constellation/source_draft",
+        entry_path="README.md",
+    )
 
     assert imported.ok and imported.value is not None, imported.issues
     assert normalized.ok and normalized.value is not None, normalized.issues
     assert gate.ok and gate.value is not None and gate.value.passed
-    assert (tmp_path / "custom_sources" / "original" / "raw.md").is_file()
-    assert (tmp_path / "custom_sources" / "normalized" / "raw.txt").is_file()
+    assert (draft_root / "_work" / "original" / "raw.md").is_file()
+    assert (draft_root / "_work" / "normalized" / "raw.txt").is_file()
     assert not (tmp_path / ".lean_constellation" / "source" / "original" / "raw.md").exists()
 
 
@@ -426,22 +465,23 @@ def test_source_corpus_gate_rejects_pdf_magic_renamed_as_text_entry(tmp_path: Pa
 
 def test_material_service_uses_injected_fake_provider_for_acquire_and_extract(tmp_path: Path) -> None:
     service, fake = _fake_material_service()
+    _write_source_prepare_input(service.runtime, tmp_path, ["https://example.test/paper"])
 
     acquired = service.acquire_source_material(tmp_path, target="https://example.test/paper", preferred_kind="web_page")
     assert acquired.ok
     assert acquired.value is not None
-    assert acquired.value.primary_artifact_ref == "original/page.html"
+    assert acquired.value.primary_artifact_ref == "_work/original/page.html"
     assert acquired.value.acquisition_kind == "web_page"
 
     extracted = service.extract_source_artifact(
         tmp_path,
-        artifact_ref="original/page.html",
+        artifact_ref="_work/original/page.html",
         acquisition_kind=acquired.value.acquisition_kind,
         mime_type=acquired.value.mime_type,
     )
     assert extracted.ok
     assert extracted.value is not None
-    assert extracted.value.primary_material_ref == "normalized/page.md"
+    assert extracted.value.primary_material_ref == "_work/normalized/page.md"
     assert extracted.value.resolved_artifact_kind == "html"
     assert extracted.value.extraction_kind == "html_main_text"
     assert [call[0] for call in fake.calls] == ["fetch_web_page", "extract_web_main_text"]
@@ -453,6 +493,16 @@ def test_acquire_source_material_fake_provider_branches_and_kind_gate(tmp_path: 
     local_file.write_text("input\n", encoding="utf-8")
     local_dir = tmp_path / "input-dir"
     local_dir.mkdir()
+    _write_source_prepare_input(
+        service.runtime,
+        tmp_path,
+        [
+            "arxiv:2401.00001",
+            "https://example.test/page",
+            str(local_file),
+            str(local_dir),
+        ],
+    )
 
     arxiv_source = service.acquire_source_material(tmp_path, target="arxiv:2401.00001", preferred_kind="arxiv_source")
     arxiv_pdf = service.acquire_source_material(tmp_path, target="arxiv:2401.00001", preferred_kind="arxiv_pdf")
@@ -475,15 +525,15 @@ def test_acquire_source_material_fake_provider_branches_and_kind_gate(tmp_path: 
 
 def test_extract_source_artifact_fake_provider_branches_and_invalid_ref(tmp_path: Path) -> None:
     service, fake = _fake_material_service()
-    source_root = tmp_path / ".lean_constellation" / "source" / "original"
+    source_root = tmp_path / ".lean_constellation" / "source_draft" / "_work" / "original"
     source_root.mkdir(parents=True)
     for name in ("paper.pdf", "page.html", "paper.tex", "notes.txt"):
         (source_root / name).write_text("payload\n", encoding="utf-8")
 
-    pdf = service.extract_source_artifact(tmp_path, artifact_ref="original/paper.pdf")
-    html = service.extract_source_artifact(tmp_path, artifact_ref="original/page.html")
-    tex = service.extract_source_artifact(tmp_path, artifact_ref="original/paper.tex")
-    text = service.extract_source_artifact(tmp_path, artifact_ref="original/notes.txt")
+    pdf = service.extract_source_artifact(tmp_path, artifact_ref="_work/original/paper.pdf")
+    html = service.extract_source_artifact(tmp_path, artifact_ref="_work/original/page.html")
+    tex = service.extract_source_artifact(tmp_path, artifact_ref="_work/original/paper.tex")
+    text = service.extract_source_artifact(tmp_path, artifact_ref="_work/original/notes.txt")
     invalid = service.extract_source_artifact(tmp_path, artifact_ref="../outside.txt")
 
     assert pdf.ok and html.ok and tex.ok and text.ok
@@ -501,6 +551,7 @@ def test_import_source_material_success_missing_and_safe_filename(tmp_path: Path
     service = make_runtime().material
     local = tmp_path / "paper draft.md"
     local.write_text("paper\n", encoding="utf-8")
+    _write_source_prepare_input(service.runtime, tmp_path, [str(local.resolve())])
 
     imported = service.import_source_material(tmp_path, source_path=str(local))
     missing = service.import_source_material(tmp_path, source_path=str(tmp_path / "missing.md"))
@@ -508,7 +559,7 @@ def test_import_source_material_success_missing_and_safe_filename(tmp_path: Path
 
     assert imported.ok
     assert imported.value is not None
-    assert imported.value.primary_artifact_ref == "original/paper_draft.md"
+    assert imported.value.primary_artifact_ref == "_work/original/paper_draft.md"
     assert not missing.ok
     assert missing.issues[0].kind == "missing_local_file"
     assert not unsafe_name.ok
@@ -517,17 +568,17 @@ def test_import_source_material_success_missing_and_safe_filename(tmp_path: Path
 
 def test_normalize_source_text_material_success_missing_and_invalid_ref(tmp_path: Path) -> None:
     service, _fake = _fake_material_service()
-    source_root = tmp_path / ".lean_constellation" / "source" / "original"
+    source_root = tmp_path / ".lean_constellation" / "source_draft" / "_work" / "original"
     source_root.mkdir(parents=True)
     (source_root / "note.txt").write_text("alpha\n", encoding="utf-8")
 
-    normalized = service.normalize_source_text_material(tmp_path, material_ref="original/note.txt")
-    missing = service.normalize_source_text_material(tmp_path, material_ref="original/missing.txt")
+    normalized = service.normalize_source_text_material(tmp_path, material_ref="_work/original/note.txt")
+    missing = service.normalize_source_text_material(tmp_path, material_ref="_work/original/missing.txt")
     invalid = service.normalize_source_text_material(tmp_path, material_ref="../outside.txt")
 
     assert normalized.ok
     assert normalized.value is not None
-    assert normalized.value.primary_material_ref == "normalized/note.txt"
+    assert normalized.value.primary_material_ref == "_work/normalized/note.txt"
     assert not missing.ok
     assert missing.issues[0].kind == "missing_text"
     assert not invalid.ok
@@ -604,7 +655,7 @@ def test_get_manifest_falls_back_to_scan_and_validate_source_ref_errors(tmp_path
     fallback = service.source_corpus.get_source_corpus_manifest(tmp_path)
     outside = service.source_corpus.validate_source_ref(tmp_path, path="../outside.md", start_line=1, end_line=1)
     missing = service.source_corpus.validate_source_ref(tmp_path, path="missing.md", start_line=1, end_line=1)
-    invalid_range = service.source_corpus.validate_source_ref(tmp_path, path="README.md", start_line=10, end_line=11)
+    invalid_range = service.source_corpus.validate_source_ref(tmp_path, path="README.md", start_line=100, end_line=101)
 
     assert fallback.ok
     assert fallback.value is not None
@@ -742,7 +793,8 @@ def test_source_corpus_pdf_transcription_retains_structure_and_page_mapping(tmp_
 
     gate = make_runtime().material.check_source_corpus_draft(tmp_path, entry_path="README.md")
 
-    assert gate.ok and gate.value is not None and gate.value.passed
+    assert gate.ok and gate.value is not None and not gate.value.passed
+    assert "source_corpus_raw_container_forbidden" in {issue.kind for issue in gate.value.issues}
     assert (source_root / "transcription" / "paper.md").read_text(encoding="utf-8") == transcription
 
 
@@ -794,13 +846,47 @@ def test_source_corpus_accepts_supplied_targets_solutions_and_descriptive_titles
     }
 
 
+def test_source_draft_rejects_unauthorized_special_roles_and_control_text(tmp_path: Path) -> None:
+    service = make_runtime().material
+    _write_source_prepare_input(service.runtime, tmp_path, ["https://example.test/paper.pdf"])
+    root = tmp_path / ".lean_constellation" / "source_draft"
+    (root / "article").mkdir(parents=True)
+    (root / "article" / "main.md").write_text("bad\x00text\n", encoding="utf-8")
+    (root / "formal_target.lean").write_text("theorem target : True := by trivial\n", encoding="utf-8")
+    (root / "solution.md").write_text("An unauthorized solution.\n", encoding="utf-8")
+    (root / "expected_proof.md").write_text("An unauthorized proof.\n", encoding="utf-8")
+    (root / "assets").mkdir()
+    (root / "assets" / "figure.svg").write_text("<svg/>\n", encoding="utf-8")
+    (root / "README.md").write_text(
+        _source_entry_text(main_path="article/main.md")
+        + "Downstream readers should inspect `_work/original/paper.pdf`.\n",
+        encoding="utf-8",
+    )
+
+    gate = service.check_source_corpus_draft(
+        tmp_path,
+        relpath=".lean_constellation/source_draft",
+        entry_path="README.md",
+    )
+
+    assert gate.ok and gate.value is not None and not gate.value.passed
+    assert {
+        "source_corpus_control_characters_forbidden",
+        "source_corpus_formal_target_unauthorized",
+        "source_corpus_solution_unauthorized",
+        "source_corpus_proof_reference_unauthorized",
+        "source_corpus_asset_unauthorized",
+        "source_corpus_work_reference_forbidden",
+    } <= {issue.kind for issue in gate.value.issues}
+
+
 def test_source_corpus_partial_extraction_and_corrections_require_records(tmp_path: Path) -> None:
     source_root = tmp_path / ".lean_constellation" / "source"
     source_root.mkdir(parents=True)
     readme = _source_entry_text(main_path="selected_excerpt.md").replace(
         "Corrections: none.",
         "Corrections: repaired OCR symbol on line 2.",
-    ).replace("Source boundary: complete fixture; omitted: none.\n", "")
+    ).replace("Included scope: complete fixture. Excluded scope: none; omitted: none.\n", "")
     (source_root / "README.md").write_text(readme, encoding="utf-8")
     (source_root / "selected_excerpt.md").write_text("selected source text\n", encoding="utf-8")
     service = make_runtime().material

@@ -751,6 +751,30 @@ class ValidateAndInitializeNativePreparationStep(BaseStep):
                     message="Native preparation requires source_corpus_mode to be existing or prepare.",
                 )
             )
+        if source_mode == SourceCorpusMode.PREPARE and not prep_input.source_material_inputs:
+            return ctx.complete_step(
+                _native_validate_result(
+                    input_model.repo_key,
+                    outcome="invalid_input",
+                    code="source_material_inputs_missing",
+                    message=(
+                        "Source preparation requires at least one exact source_material_inputs boundary "
+                        "with target, included_scope, and role."
+                    ),
+                )
+            )
+        if source_mode == SourceCorpusMode.PREPARE:
+            initialized_draft = _material(ctx).source_corpus.initialize_source_corpus_draft(repo_root)
+            if not initialized_draft.ok:
+                return ctx.complete_step(
+                    _native_validate_result_from_issues(
+                        input_model.repo_key,
+                        initialized_draft.issues,
+                        outcome="blocked",
+                        fallback_code="source_corpus_draft_initialize_failed",
+                        fallback_message="Source corpus draft could not be initialized.",
+                    )
+                )
 
         transition = repo_workspace.run.validate_repo_run_transition(
             repo_root, run_spec=input_model.run_spec, start_kind="initial", base_release_id=None

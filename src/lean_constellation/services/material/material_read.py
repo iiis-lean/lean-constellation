@@ -132,7 +132,7 @@ class MaterialReadComponent:
                 if not manifest.ok or manifest.value is None:
                     return self.runtime.foundation.fail(manifest.issues)
                 for item in sorted(manifest.value.files, key=lambda value: value.path):
-                    if item.category != "normalized" or item.readable_kind is None:
+                    if item.readable_kind is None:
                         continue
                     resolved = self._resource_file_path(
                         repo_root,
@@ -221,7 +221,7 @@ class MaterialReadComponent:
         if not isinstance(resource_key, str) or not resource_key.strip():
             return self.runtime.foundation.fail(self.runtime.foundation.issue("invalid_resource_key", "resource_key must be non-empty."))
         try:
-            entry = self.resource_library.normalized_entry_path(repo_root, resource_key)
+            entry = self.resource_library.canonical_entry_path(repo_root, resource_key)
         except ValueError as exc:
             return self.runtime.foundation.fail(self.runtime.foundation.issue("invalid_resource_key", str(exc), object_ref=str(resource_key)))
         if not entry.ok or entry.value is None:

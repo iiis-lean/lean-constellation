@@ -219,8 +219,10 @@ def test_resource_curator_local_submit_validates_active_draft_without_finalizing
     assert draft.ok and draft.value is not None, draft.issues
     draft_root = Path(draft.value.draft_root)
     (draft_root / "README.md").write_text(valid_resource_readme(), encoding="utf-8")
-    (draft_root / "original" / "raw.txt").write_text("raw resource text\n", encoding="utf-8")
-    (draft_root / "normalized" / "main.md").write_text("normalized resource text\n", encoding="utf-8")
+    (draft_root / "_work" / "original").mkdir(parents=True)
+    (draft_root / "_work" / "original" / "raw.txt").write_text("raw resource text\n", encoding="utf-8")
+    (draft_root / "article").mkdir()
+    (draft_root / "article" / "main.md").write_text("faithful resource text\n", encoding="utf-8")
     runtime.ark.flow_service = FakeResourceFlowService(active_draft_id=draft.value.draft.draft_id)
     assert register_submit_tooling(runtime).ok
 
@@ -258,8 +260,10 @@ def test_resource_curator_local_submit_gateway_missing_does_not_finalize_draft(t
     assert draft.ok and draft.value is not None, draft.issues
     draft_root = Path(draft.value.draft_root)
     (draft_root / "README.md").write_text(valid_resource_readme(), encoding="utf-8")
-    (draft_root / "original" / "raw.txt").write_text("raw resource text\n", encoding="utf-8")
-    (draft_root / "normalized" / "main.md").write_text("normalized resource text\n", encoding="utf-8")
+    (draft_root / "_work" / "original").mkdir(parents=True)
+    (draft_root / "_work" / "original" / "raw.txt").write_text("raw resource text\n", encoding="utf-8")
+    (draft_root / "article").mkdir()
+    (draft_root / "article" / "main.md").write_text("faithful resource text\n", encoding="utf-8")
     runtime.ark.flow_service = FakeResourceFlowService(active_draft_id=draft.value.draft.draft_id)
     assert register_submit_tooling(runtime).ok
 

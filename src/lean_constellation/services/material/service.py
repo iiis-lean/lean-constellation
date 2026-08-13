@@ -550,12 +550,12 @@ class MaterialService:
         repo_root: Path,
         *,
         draft_id: str,
-        canonical_normalized_entry: str | None = None,
+        canonical_entry: str | None = None,
     ) -> ServiceResult[ResourceMaterialManifest]:
         return self.resource_library.refresh_resource_draft_manifest(
             repo_root,
             draft_id=draft_id,
-            canonical_normalized_entry=canonical_normalized_entry,
+            canonical_entry=canonical_entry,
         )
 
     def get_resource_draft(self, repo_root: Path, *, draft_id: str) -> ServiceResult[ResourceDraftView]:

@@ -17,8 +17,8 @@ def _register_resource(service: MaterialService, repo_root: Path) -> str:
     target = service.normalize_resource_target("https://example.com/resource")
     assert target.ok and target.value is not None
     temp = repo_root / "resource_tmp"
-    (temp / "normalized").mkdir(parents=True)
-    (temp / "normalized" / "resource.md").write_text("resource alpha\nresource theorem\n", encoding="utf-8")
+    (temp / "article").mkdir(parents=True)
+    (temp / "article" / "resource.md").write_text("resource alpha\nresource theorem\n", encoding="utf-8")
     registered = service.register_local_resource(
         repo_root,
         target=target.value,
@@ -33,12 +33,12 @@ def _register_multifile_resource(service: MaterialService, repo_root: Path) -> s
     target = service.normalize_resource_target("https://example.com/multifile-resource")
     assert target.ok and target.value is not None
     temp = repo_root / "multifile_resource_tmp"
-    (temp / "normalized").mkdir(parents=True)
-    (temp / "normalized" / "main.md").write_text("canonical-only token\n", encoding="utf-8")
-    (temp / "normalized" / "appendix.md").write_text("appendix-only token\n", encoding="utf-8")
+    (temp / "article").mkdir(parents=True)
+    (temp / "article" / "main.md").write_text("canonical-only token\n", encoding="utf-8")
+    (temp / "article" / "appendix.md").write_text("appendix-only token\n", encoding="utf-8")
     selected = service.resource_library._refresh_material_manifest(
         temp,
-        canonical_normalized_entry="normalized/main.md",
+        canonical_entry="article/main.md",
     )
     assert selected.ok and selected.value is not None
     registered = service.register_local_resource(
@@ -68,7 +68,7 @@ def test_list_material_files_source_resource_all_and_invalid_kind(tmp_path: Path
     assert {item.locator for item in source.value.files} == {"README.md", "chapter.md", "image.bin"}
     assert any(not item.readable for item in source.value.files if item.locator == "image.bin")
     assert resource.ok and resource.value is not None
-    assert resource.value.files[0].locator == f"{resource_key}:normalized/resource.md"
+    assert resource.value.files[0].locator == f"{resource_key}:article/resource.md"
     assert all_files.ok and all_files.value is not None
     assert {item.kind for item in all_files.value.files} == {"source", "resource"}
     assert not invalid.ok
@@ -161,14 +161,14 @@ def test_resource_search_scans_each_manifest_file_once_and_preserves_path(tmp_pa
         for hit in searched.value.hits
     } == {
         (
-            "normalized/main.md",
+            "article/main.md",
             "canonical-only token",
-            f"resource:{resource_key}/normalized/main.md#L1-L1",
+            f"resource:{resource_key}/article/main.md#L1-L1",
         ),
         (
-            "normalized/appendix.md",
+            "article/appendix.md",
             "appendix-only token",
-            f"resource:{resource_key}/normalized/appendix.md#L1-L1",
+            f"resource:{resource_key}/article/appendix.md#L1-L1",
         ),
     }
 

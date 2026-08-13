@@ -122,22 +122,22 @@ class RequirementNameArgs(StrictModel):
 
 
 class SourceCorpusCheckArgs(StrictModel):
-    relpath: str = Field(default=".lean_constellation/source", description="Source corpus path relative to the repo root.")
+    relpath: str = Field(default=".lean_constellation/source_draft", description="Source draft path relative to the repo root; Source Builder and Reviewer are bound to the active draft.")
     entry_path: str | None = Field(default=None, description="Optional entry file path relative to the source corpus root.")
 
 
 class SourcePdfPageRenderArgs(StrictModel):
-    path: str = Field(description="PDF path relative to the current SourceCorpus root.")
+    path: str = Field(description="Draft-relative PDF artifact reference returned by acquisition, beginning with _work/.")
     page_number: int = Field(ge=1, description="One-based PDF page number to render.")
     dpi: int = Field(default=160, ge=96, le=240, description="Preview resolution between 96 and 240 DPI.")
 
 
 class SourceCorpusScanArgs(StrictModel):
-    relpath: str = Field(default=".lean_constellation/source", description="Source corpus path relative to the repo root.")
+    relpath: str = Field(default=".lean_constellation/source", description="Canonical SourceCorpus path; Source Builder and Reviewer are automatically bound to the active source draft candidate.")
 
 
 class SourceMaterialAcquireArgs(StrictModel):
-    target: str = Field(description="Source target to acquire, such as an arXiv id, URL, local file, or local directory.")
+    target: str = Field(description="Exact source target from preparation_input.source_material_inputs; arbitrary extra targets are rejected.")
     preferred_kind: Literal["arxiv_source", "arxiv_pdf", "web_page", "local_file", "local_dir"] | None = Field(
         default=None,
         description="Optional acquisition kind override.",
@@ -203,9 +203,9 @@ class ResourceMaterialNormalizeArgs(StrictModel):
 
 
 class ResourceManifestRefreshArgs(StrictModel):
-    canonical_normalized_entry: str | None = Field(
+    canonical_entry: str | None = Field(
         default=None,
-        description="Explicit resource draft normalized/... entry to select when more than one validated readable output exists.",
+        description="Explicit readable resource draft candidate path outside _work to select when the draft has multiple readable files.",
     )
 
 

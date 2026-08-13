@@ -308,7 +308,7 @@ class ResourceCurationFlow(LeanBusinessFlow):
                 resource_key=finalized.value.resource_key,
                 resource_ref_summary=f"Resource {finalized.value.resource_key}",
                 locator_summary=f"{submission.target_kind}:{submission.target}",
-                normalized_entry=finalized.value.normalized_entry,
+                canonical_entry=finalized.value.canonical_entry,
                 classification_reason=finalized.value.classification_reason or submission.classification_reason,
                 resource_role=finalized.value.resource_role or submission.resource_role,
                 consumer_formalization_scope=(
@@ -386,7 +386,7 @@ def _resource_curator_prompt(input_model: ResourceCurationInput, state: Resource
         "For local curation, read and apply $faithful-material-preservation and $resource-draft-curation.",
         "Current working directory: the active resource draft.",
         "Allowed write boundary: this directory and its descendants.",
-        "Logical files: README.md, original/, normalized/, assets/, supplementary/; manifest.json is service-generated.",
+        "Use _work/ only for downloaded originals and processing scratch. Durable candidate files belong outside _work/ in natural paths such as article/, assets/, or supplementary/; manifest.json is service-generated.",
     ]
     if input_model.caller_context.node_path:
         parts.append(f"Caller node: {input_model.caller_context.node_path}.")

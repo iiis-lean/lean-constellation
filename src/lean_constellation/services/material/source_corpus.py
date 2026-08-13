@@ -138,6 +138,21 @@ class SourceCorpusComponent:
     def __init__(self, runtime: LeanRuntimeServices) -> None:
         self.runtime = runtime
 
+    def initialize_source_corpus_draft(self, repo_root: Path) -> ServiceResult[str]:
+        draft_root = self._draft_root(repo_root)
+        work_root = self._work_root(repo_root)
+        if self._source_root(repo_root).exists():
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "source_corpus_already_exists",
+                    "Source prepare mode requires an empty canonical SourceCorpus destination.",
+                    object_ref=str(self._source_root(repo_root)),
+                )
+            )
+        draft_root.mkdir(parents=True, exist_ok=True)
+        work_root.mkdir(parents=True, exist_ok=True)
+        return self.runtime.foundation.ok(str(draft_root))
+
     def scan_source_corpus(
         self,
         repo_root: Path,
@@ -169,6 +184,39 @@ class SourceCorpusComponent:
         )
         return self.runtime.foundation.ok(manifest)
 
+    def scan_source_corpus_draft(
+        self,
+        repo_root: Path,
+        *,
+        overview: str | None = None,
+        entry_path: str | None = None,
+    ) -> ServiceResult[SourceCorpusManifestView]:
+        root = self._draft_root(repo_root)
+        if not root.exists() or not root.is_dir():
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "source_corpus_draft_missing",
+                    f"Source corpus draft directory does not exist: {root}",
+                )
+            )
+        tree_issues = self._source_tree_issues(root, ignored_top_level={"_work"})
+        if tree_issues:
+            return self.runtime.foundation.fail(tree_issues)
+        files = [
+            self._file_view(root, item)
+            for item in sorted(root.rglob("*"))
+            if item.is_file() and item.relative_to(root).parts[0] != "_work"
+        ]
+        manifest = SourceCorpusManifestView(
+            relpath=self._source_relpath(repo_root),
+            overview=overview,
+            entry_path=entry_path or self._default_entry(root, files),
+            created_from_mode="prepared",
+            files=files,
+            summary=f"Scanned {len(files)} source draft candidate files; _work was excluded.",
+        )
+        return self.runtime.foundation.ok(manifest)
+
     def render_source_pdf_page(
         self,
         repo_root: Path,
@@ -190,27 +238,23 @@ class SourceCorpusComponent:
         normalized = requested.as_posix()
         if normalized.startswith("./"):
             normalized = normalized[2:]
-        manifest = self.get_source_corpus_manifest(repo_root)
-        if not manifest.ok or manifest.value is None:
-            return self.runtime.foundation.fail(manifest.issues)
-        entry = next((item for item in manifest.value.files if item.path == normalized), None)
-        if entry is None:
+        draft_root = self._draft_root(repo_root).resolve(strict=False)
+        if not Path(normalized).parts or Path(normalized).parts[0] != "_work":
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
-                    "source_pdf_not_in_corpus",
-                    "PDF preview path is not recorded in current SourceCorpus truth.",
+                    "source_pdf_preview_path_outside_work",
+                    "PDF preview path must be the draft-relative _work artifact reference returned by acquisition.",
                     object_ref=path,
                 )
             )
-        root = self._source_root(repo_root).resolve(strict=False)
-        source = (root / normalized).resolve(strict=False)
+        source = (draft_root / normalized).resolve(strict=False)
         try:
-            source.relative_to(root)
+            source.relative_to(self._work_root(repo_root).resolve(strict=False))
         except ValueError:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
                     "source_pdf_preview_path_escape",
-                    "PDF preview path escapes the SourceCorpus root.",
+                    "PDF preview path escapes the current Source draft _work root.",
                     object_ref=path,
                 )
             )
@@ -274,7 +318,7 @@ class SourceCorpusComponent:
                 )
             )
         source_sha = self._hash_file(source)
-        cache_root = repo_root / ".agent_runtime" / "material_previews" / "source_corpus" / source_sha
+        cache_root = self._work_root(repo_root).resolve(strict=False) / "previews" / source_sha
         output = cache_root / f"page_{page_number:04d}_{dpi}dpi.png"
         reused = output.is_file()
         if not reused:
@@ -332,7 +376,7 @@ class SourceCorpusComponent:
                 height=height,
                 cache_reused=reused,
                 summary=(
-                    f"Rendered SourceCorpus PDF page {page_number}/{page_count}. The exact image_path is authorized "
+                    f"Rendered Source draft PDF page {page_number}/{page_count}. The exact image_path is authorized "
                     "for image inspection; do not traverse its parent cache directory."
                 ),
             )
@@ -609,7 +653,10 @@ class SourceCorpusComponent:
         target: str,
         preferred_kind: Literal["arxiv_source", "arxiv_pdf", "web_page", "local_file", "local_dir"] | None = None,
     ) -> ServiceResult[SourceAcquisitionView]:
-        root = self._source_root(repo_root)
+        authorized = self._authorize_source_target(repo_root, target)
+        if authorized is not None:
+            return self.runtime.foundation.fail(authorized)
+        root = self._work_root(repo_root)
         root.mkdir(parents=True, exist_ok=True)
         try:
             normalized = self.runtime.external.material.normalize_target(target)
@@ -636,7 +683,7 @@ class SourceCorpusComponent:
             result = self.runtime.external.material.import_local_dir(Path(normalized.value), root)
         else:
             result = self.runtime.external.material.import_local_file(source_path=Path(normalized.value), output_root=root)
-        view = self._acquisition_view(target, result, root)
+        view = self._acquisition_view(target, result, self._draft_root(repo_root))
         if not result.ok:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(result.issue_code or "source_acquisition_failed", result.summary or "Source acquisition failed")
@@ -652,9 +699,10 @@ class SourceCorpusComponent:
         acquisition_kind: str | None = None,
         mime_type: str | None = None,
     ) -> ServiceResult[SourceExtractionView]:
-        root = self._source_root(repo_root)
+        draft_root = self._draft_root(repo_root)
+        work_root = self._work_root(repo_root)
         try:
-            artifact = self._resolve_inside(root, artifact_ref)
+            artifact = self._resolve_inside(draft_root, artifact_ref)
         except ValueError as exc:
             return self.runtime.foundation.fail(self.runtime.foundation.issue("source_artifact_ref_invalid", str(exc)))
         resolution = self.runtime.external.material.resolve_artifact_kind(
@@ -674,22 +722,22 @@ class SourceCorpusComponent:
             )
         extraction_kind = resolution.extraction_kind
         if extraction_kind == "pdf_text":
-            result = self.runtime.external.material.extract_pdf_text(pdf_path=artifact, output_root=root)
+            result = self.runtime.external.material.extract_pdf_text(pdf_path=artifact, output_root=work_root)
         elif extraction_kind == "html_main_text":
             result = self.runtime.external.material.extract_web_main_text(
                 html_path=artifact,
-                output_root=root,
+                output_root=work_root,
                 acquisition_kind=acquisition_kind,
                 mime_type=mime_type,
             )
         elif extraction_kind == "tex_source":
-            result = self.runtime.external.material.extract_arxiv_tex(source_root_or_archive=artifact, output_root=root)
+            result = self.runtime.external.material.extract_arxiv_tex(source_root_or_archive=artifact, output_root=work_root)
         else:
-            result = self.runtime.external.material.normalize_text_material(input_path=artifact, output_root=root)
+            result = self.runtime.external.material.normalize_text_material(input_path=artifact, output_root=work_root)
         view = self._extraction_view(
             artifact_ref,
             result,
-            root,
+            draft_root,
             resolved_artifact_kind=resolution.kind,
             extraction_kind=extraction_kind,
         )
@@ -711,7 +759,10 @@ class SourceCorpusComponent:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue("missing_local_file", f"Local source material not found: {source}")
             )
-        root = self._source_root(repo_root)
+        authorized = self._authorize_source_target(repo_root, str(source))
+        if authorized is not None:
+            return self.runtime.foundation.fail(authorized)
+        root = self._work_root(repo_root)
         try:
             dest_name = self.runtime.foundation.layout.ensure_safe_key(as_name) if as_name else self._safe_source_filename(source.name)
         except ValueError as exc:
@@ -728,19 +779,20 @@ class SourceCorpusComponent:
             content_hash=self._hash_file(dest),
             summary="Imported local source material.",
         )
-        return self.runtime.foundation.ok(self._acquisition_view(str(source), result, root))
+        return self.runtime.foundation.ok(self._acquisition_view(str(source), result, self._draft_root(repo_root)))
 
     def normalize_source_text_material(self, repo_root: Path, *, material_ref: str) -> ServiceResult[SourceExtractionView]:
-        root = self._source_root(repo_root)
+        draft_root = self._draft_root(repo_root)
+        work_root = self._work_root(repo_root)
         try:
-            source = self._resolve_inside(root, material_ref)
+            source = self._resolve_inside(draft_root, material_ref)
         except ValueError as exc:
             return self.runtime.foundation.fail(self.runtime.foundation.issue("source_material_ref_invalid", str(exc)))
-        result = self.runtime.external.material.normalize_text_material(input_path=source, output_root=root)
+        result = self.runtime.external.material.normalize_text_material(input_path=source, output_root=work_root)
         view = self._extraction_view(
             material_ref,
             result,
-            root,
+            draft_root,
             resolved_artifact_kind="plain_text",
             extraction_kind="text_normalize",
         )
@@ -757,18 +809,33 @@ class SourceCorpusComponent:
         relpath: str = ".lean_constellation/source",
         entry_path: str | None = None,
     ) -> ServiceResult[GateReport]:
-        relpath = self._effective_relpath(repo_root, relpath)
-        scan = self.scan_source_corpus(repo_root, relpath=relpath, entry_path=entry_path)
+        is_active_draft = relpath == ".lean_constellation/source_draft"
+        if is_active_draft:
+            scan = self.scan_source_corpus_draft(repo_root, entry_path=entry_path)
+            root = self._draft_root(repo_root)
+        else:
+            relpath = self._effective_relpath(repo_root, relpath)
+            scan = self.scan_source_corpus(repo_root, relpath=relpath, entry_path=entry_path)
+            root = self.runtime.foundation.layout.source_corpus_root(FoundationContext(repo_root=Path(repo_root)), relpath)
         if not scan.ok or scan.value is None:
             return self.runtime.foundation.ok(self.runtime.foundation.gate_failed("source_corpus_draft", scan.issues, summary="Source corpus scan failed."))
         manifest = scan.value
-        root = self.runtime.foundation.layout.source_corpus_root(FoundationContext(repo_root=Path(repo_root)), relpath)
         issues: list[ServiceIssue] = []
         if not manifest.files:
             issues.append(self.runtime.foundation.issue("source_corpus_empty", "Source corpus contains no files."))
         readable = [item for item in manifest.files if item.readable_text and item.line_count > 0]
         if not readable:
             issues.append(self.runtime.foundation.issue("source_corpus_no_readable_text", "Source corpus has no readable text files."))
+        if is_active_draft and not any(
+            item.readable_text and item.line_count > 0 and Path(item.path).name.lower() != "readme.md"
+            for item in manifest.files
+        ):
+            issues.append(
+                self.runtime.foundation.issue(
+                    "source_corpus_material_missing",
+                    "Source draft requires readable source material in addition to README.md.",
+                )
+            )
         entry = manifest.entry_path or entry_path
         entry_view: SourceCorpusFileView | None = None
         entry_text = ""
@@ -844,18 +911,34 @@ class SourceCorpusComponent:
             else:
                 readme_text = readme.read_text(encoding="utf-8")
         if readme_text:
-            if any(item.path.startswith("original/") for item in manifest.files) and not re.search(
-                r"\boriginal\b.{0,160}\b(?:extract|transcri|normaliz|map|correspond|preserv)",
-                readme_text,
-                flags=re.IGNORECASE | re.DOTALL,
-            ):
-                issues.append(
-                    self.runtime.foundation.issue(
-                        "source_corpus_original_mapping_missing",
-                        "README must explain how retained original artifacts relate to readable or extracted material.",
-                        object_ref="README.md",
+            if is_active_draft:
+                readme_requirements = {
+                    "source_corpus_identity_missing": (r"\b(?:source identity|title)\s*:", "README must identify the source."),
+                    "source_corpus_access_missing": (r"\b(?:license|licence|access)\b", "README must record license or access conditions."),
+                    "source_corpus_scope_missing": (r"\b(?:included scope|source boundary)\b", "README must state the included source scope."),
+                    "source_corpus_omitted_scope_missing": (r"\b(?:excluded scope|omitted)\b", "README must state excluded or omitted source scope."),
+                    "source_corpus_inventory_missing": (r"\bfile inventory\b", "README must include a file inventory."),
+                    "source_corpus_material_map_missing": (r"\binput(?:-to-final| to final)\b", "README must map each authorized input to final candidate content."),
+                }
+                for kind, (pattern, message) in readme_requirements.items():
+                    if not re.search(pattern, readme_text, flags=re.IGNORECASE):
+                        issues.append(self.runtime.foundation.issue(kind, message, object_ref="README.md"))
+                if "_work/" in readme_text or str(self._work_root(repo_root)) in readme_text:
+                    issues.append(
+                        self.runtime.foundation.issue(
+                            "source_corpus_work_reference_forbidden",
+                            "Canonical SourceCorpus documentation must not require downstream readers to inspect _work.",
+                            object_ref="README.md",
+                        )
                     )
-                )
+                if re.search(r"\b(?:nodetree|declgraph|mathlib plan|formalization plan|proof plan)\b", readme_text, flags=re.IGNORECASE):
+                    issues.append(
+                        self.runtime.foundation.issue(
+                            "source_corpus_agent_planning_forbidden",
+                            "SourceCorpus README must not contain formalization or repository-planning content.",
+                            object_ref="README.md",
+                        )
+                    )
             partial_files = [
                 item.path
                 for item in manifest.files
@@ -891,6 +974,54 @@ class SourceCorpusComponent:
                             "source_corpus_correction_ledger_missing",
                             "Declared corrections require a supplementary correction ledger.",
                             object_ref="README.md",
+                        )
+                    )
+        roles = self._source_input_roles(repo_root) if is_active_draft else set()
+        for item in manifest.files:
+            candidate = root / item.path
+            resolved = self.runtime.external.material.resolve_artifact_kind(candidate)
+            if self._contains_forbidden_control_chars(candidate):
+                issues.append(
+                    self.runtime.foundation.issue(
+                        "source_corpus_control_characters_forbidden",
+                        "Readable SourceCorpus material contains forbidden control characters.",
+                        object_ref=item.path,
+                    )
+                )
+            if resolved.kind in {"pdf", "html", "tex_source_archive"} or (
+                resolved.kind == "unknown_binary" and "asset" not in roles
+            ):
+                issues.append(
+                    self.runtime.foundation.issue(
+                        "source_corpus_raw_container_forbidden",
+                        "Final Source candidate cannot contain raw textual containers or unknown binary artifacts; keep them under _work.",
+                        object_ref=item.path,
+                        current=resolved.kind,
+                    )
+                )
+        if is_active_draft:
+            role_paths = {
+                "formal_target": [item.path for item in manifest.files if Path(item.path).name == "formal_target.lean"],
+                "solution": [
+                    item.path
+                    for item in manifest.files
+                    if re.search(r"(?:^|/)(?:solution|expected_answer)(?:[._/-]|$)", item.path, flags=re.IGNORECASE)
+                ],
+                "proof_reference": [
+                    item.path
+                    for item in manifest.files
+                    if re.search(r"(?:^|/)(?:proof_reference|expected_proof)(?:[._/-]|$)", item.path, flags=re.IGNORECASE)
+                ],
+                "asset": [item.path for item in manifest.files if Path(item.path).parts[:1] == ("assets",)],
+            }
+            for role, paths in role_paths.items():
+                if paths and role not in roles:
+                    issues.append(
+                        self.runtime.foundation.issue(
+                            f"source_corpus_{role}_unauthorized",
+                            f"Candidate paths {paths} require an exact source material input with role={role}.",
+                            object_ref=paths[0],
+                            details={"paths": paths},
                         )
                     )
         if entry and not entry_path and entry_view is not None and not self._is_canonical_entry(entry):
@@ -954,27 +1085,40 @@ class SourceCorpusComponent:
         preparation_summary: str,
         relpath: str = ".lean_constellation/source",
     ) -> ServiceResult[SourceCorpusPreparedView]:
-        prepared = self.check_source_corpus_prepared(
+        gate = self.check_source_corpus_draft(
             repo_root,
+            relpath=".lean_constellation/source_draft",
             entry_path=entry_path,
-            overview=overview,
-            preparation_summary=preparation_summary,
-            relpath=relpath,
         )
-        if not prepared.ok or prepared.value is None:
-            return self.runtime.foundation.fail(prepared.issues)
-        manifest = prepared.value.manifest
-        write = self.runtime.foundation.store.write_json_atomic(self._manifest_path(repo_root), manifest)
-        if not write.ok:
-            return self.runtime.foundation.fail(write.issues)
-        return self.runtime.foundation.ok(
-            SourceCorpusPreparedView(
-                prepared=True,
-                manifest=manifest,
-                preparation_summary=preparation_summary.strip(),
-                summary="Source corpus prepared and manifest written.",
+        if not gate.ok or gate.value is None:
+            return self.runtime.foundation.fail(gate.issues)
+        if not gate.value.passed:
+            return self.runtime.foundation.fail(gate.value.issues)
+        draft_root = self._draft_root(repo_root)
+        projection_root = self._work_root(repo_root) / f"projection_{uuid.uuid4().hex}"
+        projection_root.mkdir(parents=True, exist_ok=False)
+        try:
+            for item in draft_root.iterdir():
+                if item.name == "_work":
+                    continue
+                destination = projection_root / item.name
+                if item.is_dir():
+                    shutil.copytree(item, destination, copy_function=shutil.copy2)
+                else:
+                    shutil.copy2(item, destination)
+            imported = self.import_local_source_corpus(
+                repo_root,
+                source_dir=projection_root,
+                entry_path=entry_path,
+                overview=overview,
+                preparation_summary=preparation_summary,
+                replace_existing=False,
             )
-        )
+            if not imported.ok or imported.value is None:
+                return self.runtime.foundation.fail(imported.issues)
+            return self.runtime.foundation.ok(imported.value.prepared)
+        finally:
+            shutil.rmtree(projection_root, ignore_errors=True)
 
     def submit_source_corpus_prepared(
         self,
@@ -985,13 +1129,22 @@ class SourceCorpusComponent:
         preparation_summary: str,
         relpath: str = ".lean_constellation/source",
     ) -> ServiceResult[SourceCorpusPreparedView]:
-        return self.finalize_source_corpus_prepared(
+        prepared = self.check_source_corpus_prepared(
             repo_root,
             entry_path=entry_path,
             overview=overview,
             preparation_summary=preparation_summary,
             relpath=relpath,
         )
+        if not prepared.ok or prepared.value is None:
+            return self.runtime.foundation.fail(prepared.issues)
+        written = self.runtime.foundation.store.write_json_atomic(
+            self._manifest_path(repo_root),
+            prepared.value.manifest,
+        )
+        if not written.ok:
+            return self.runtime.foundation.fail(written.issues)
+        return self.runtime.foundation.ok(prepared.value)
 
     def submit_source_corpus_blocked(
         self,
@@ -1217,6 +1370,16 @@ class SourceCorpusComponent:
         repo_root = Path(repo_root)
         return self.runtime.foundation.layout.source_corpus_root(FoundationContext(repo_root=repo_root), self._source_relpath(repo_root))
 
+    def _draft_root(self, repo_root: Path) -> Path:
+        return self.runtime.foundation.layout.source_corpus_draft_root(
+            FoundationContext(repo_root=Path(repo_root))
+        )
+
+    def _work_root(self, repo_root: Path) -> Path:
+        return self.runtime.foundation.layout.source_corpus_work_root(
+            FoundationContext(repo_root=Path(repo_root))
+        )
+
     def _source_relpath(self, repo_root: Path) -> str:
         preparation = self.runtime.repo_workspace.preparation.get_preparation_input(Path(repo_root))
         if preparation.ok and preparation.value is not None:
@@ -1341,10 +1504,18 @@ class SourceCorpusComponent:
         except (OSError, UnicodeDecodeError):
             return ""
 
-    def _source_tree_issues(self, root: Path) -> list[ServiceIssue]:
+    def _source_tree_issues(
+        self,
+        root: Path,
+        *,
+        ignored_top_level: set[str] | None = None,
+    ) -> list[ServiceIssue]:
         issues: list[ServiceIssue] = []
+        ignored_top_level = ignored_top_level or set()
         for path in root.rglob("*"):
             relative = path.relative_to(root)
+            if relative.parts and relative.parts[0] in ignored_top_level:
+                continue
             if path.is_symlink():
                 issues.append(
                     self.runtime.foundation.issue(
@@ -1362,6 +1533,42 @@ class SourceCorpusComponent:
                     )
                 )
         return issues
+
+    def _authorize_source_target(self, repo_root: Path, target: str) -> ServiceIssue | None:
+        preparation = self.runtime.repo_workspace.preparation.get_preparation_input(Path(repo_root))
+        if not preparation.ok or preparation.value is None:
+            return self.runtime.foundation.issue(
+                "source_material_input_missing",
+                "Source material acquisition requires a persisted preparation input.",
+                current=target,
+            )
+        authorized_targets = {item.target for item in preparation.value.input.source_material_inputs}
+        if target not in authorized_targets:
+            return self.runtime.foundation.issue(
+                "source_material_target_unauthorized",
+                "Source material target is outside the exact preparation input boundary.",
+                current=target,
+                details={"authorized_targets": sorted(authorized_targets)},
+            )
+        return None
+
+    def _source_input_roles(self, repo_root: Path) -> set[str]:
+        preparation = self.runtime.repo_workspace.preparation.get_preparation_input(Path(repo_root))
+        if not preparation.ok or preparation.value is None:
+            return set()
+        return {item.role for item in preparation.value.input.source_material_inputs}
+
+    @staticmethod
+    def _contains_forbidden_control_chars(path: Path) -> bool:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return False
+        return any(
+            (ord(char) < 32 and char not in {"\n", "\r", "\t"})
+            or 127 <= ord(char) <= 159
+            for char in text
+        )
 
     @staticmethod
     def _is_forbidden_source_artifact(relative: Path) -> bool:

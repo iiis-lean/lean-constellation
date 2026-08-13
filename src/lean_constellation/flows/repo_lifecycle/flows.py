@@ -68,6 +68,7 @@ from lean_constellation.flows.repo_lifecycle.submissions import (
 from lean_constellation.services.validation_snapshot.release_finalizer import (
     PreparedRepoReleaseView,
 )
+from lean_constellation.services.foundation import FoundationContext
 
 
 class RequirementGroupRepoBootstrapParams(LeanFlowParams):
@@ -1460,12 +1461,9 @@ def _agent_env(agent_type: str, app_view: str, submit_view: str) -> dict[str, st
 
 
 def _source_corpus_workdir(ctx: FlowContext, repo_root: Path) -> Path:
-    relpath = ".lean_constellation/source"
-    preparation = ctx.app.repo_workspace.preparation.get_preparation_input(repo_root)
-    if preparation.ok and preparation.value is not None:
-        relpath = preparation.value.input.source_corpus_relpath or relpath
-    path = Path(relpath)
-    return path if path.is_absolute() else repo_root / path
+    return ctx.app.foundation.layout.source_corpus_draft_root(
+        FoundationContext(repo_root=repo_root)
+    )
 
 
 def _source_corpus_builder_prompt(
@@ -1474,11 +1472,11 @@ def _source_corpus_builder_prompt(
     return "\n".join(
         [
             f"Build the source corpus candidate for native repo {input_model.repo_key}.",
-            "Current working directory: the source corpus root.",
-            "Allowed write boundary: this directory and its descendants.",
-            f"Configured logical corpus path: {logical_path}.",
-            "Read and apply $faithful-material-preservation and $source-corpus-faithful-preparation.",
-            "Preserve supplied specifications, solutions, proof references, and author structure; do not invent or relabel Agent-authored material as supplied source truth.",
+            "Current working directory: the active Source draft root.",
+            "Use _work only for acquired containers, extraction scratch, and previews; write the self-contained final candidate elsewhere in this draft.",
+            f"Configured draft path: {logical_path}; the canonical destination is recorded in preparation input.",
+            "Read and apply $faithful-material-preservation, $pdf-faithful-transcription, $material-fidelity-check, and $source-corpus-draft-curation.",
+            "Process only the exact source_material_inputs target/scope/role boundaries; do not search for or invent additional source material.",
             "Read the repository preparation input through tools and submit builder ready or blocked.",
             f"Latest independent reviewer feedback: {reviewer_feedback}" if reviewer_feedback else "This is the initial Builder pass.",
         ]
@@ -1494,11 +1492,11 @@ def _source_corpus_reviewer_prompt(
 ) -> str:
     return "\n".join(
         [
-            f"Independently review the complete current SourceCorpus for native repo {input_model.repo_key}.",
+            f"Independently review the complete current Source draft candidate for native repo {input_model.repo_key}.",
             f"Review round: {review_round + 1}.",
             f"Builder/scan summary for orientation only: {builder_summary}",
             f"Previous findings to regress after the fresh pass: {previous_feedback}" if previous_feedback else "No previous reviewer findings.",
-            "Use retained originals and PDF page previews where applicable. Submit one approved or rejected full-current decision.",
+            "Treat _work artifacts only as comparison evidence: downstream readers receive only the candidate outside _work. Submit one approved or rejected fresh full-current decision.",
         ]
     )
 

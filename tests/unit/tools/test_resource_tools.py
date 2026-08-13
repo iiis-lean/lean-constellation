@@ -160,14 +160,13 @@ def test_resource_draft_view_exposes_request_context_and_readme_contract(tmp_pat
 
 def test_resource_acquisition_writes_active_draft_not_source_corpus(tmp_path: Path) -> None:
     runtime = create_test_runtime_services(register_application_tools=True)
-    target = runtime.material.normalize_resource_target("https://example.com/resource")
+    source = tmp_path / "source.txt"
+    source.write_text("resource text\n", encoding="utf-8")
+    target = runtime.material.normalize_resource_target(str(source))
     assert target.ok and target.value is not None
     draft = runtime.material.allocate_resource_draft(tmp_path, target=target.value, title_hint="Resource")
     assert draft.ok and draft.value is not None
     runtime.ark.flow_service = _FakeResourceFlowService(flow_id="flow_resource", draft_id=draft.value.draft.draft_id)
-    source = tmp_path / "source.txt"
-    source.write_text("resource text\n", encoding="utf-8")
-
     imported = runtime.tool_facade.invoke_agent_tool(
         _resource_raw(tmp_path),
         tool_name="import_resource_material",
@@ -176,24 +175,43 @@ def test_resource_acquisition_writes_active_draft_not_source_corpus(tmp_path: Pa
     normalized = runtime.tool_facade.invoke_agent_tool(
         _resource_raw(tmp_path),
         tool_name="normalize_resource_text_material",
-        flat_args={"material_ref": "original/raw.txt"},
+        flat_args={"material_ref": "_work/original/raw.txt"},
     )
 
     assert imported.ok and imported.value is not None and imported.value.ok is True
     assert normalized.ok and normalized.value is not None and normalized.value.ok is True
-    assert normalized.value.value["primary_material_ref"] == "normalized/raw.txt"
+    assert normalized.value.value["primary_material_ref"] == "_work/normalized/raw.txt"
     draft_root = Path(draft.value.draft_root)
+    (draft_root / "article").mkdir()
+    (draft_root / "article" / "raw.md").write_text("resource text\n", encoding="utf-8")
     manifest = runtime.material.refresh_resource_draft_manifest(
         tmp_path,
         draft_id=draft.value.draft.draft_id,
     )
     assert manifest.ok and manifest.value is not None
-    assert manifest.value.extraction_relations[0].source_artifact_path == "original/raw.txt"
-    assert manifest.value.extraction_relations[0].normalized_paths == ["normalized/raw.txt"]
-    assert (draft_root / "original" / "raw.txt").is_file()
-    assert (draft_root / "normalized" / "raw.txt").is_file()
+    assert manifest.value.canonical_entry == "article/raw.md"
+    assert (draft_root / "_work" / "original" / "raw.txt").is_file()
+    assert (draft_root / "_work" / "normalized" / "raw.txt").is_file()
     assert (draft_root / "manifest.json").is_file()
     assert not (tmp_path / ".lean_constellation" / "source" / "original" / "raw.txt").exists()
+
+
+def test_resource_acquisition_rejects_non_draft_target(tmp_path: Path) -> None:
+    runtime = create_test_runtime_services(register_application_tools=True)
+    target = runtime.material.normalize_resource_target("https://example.com/assigned")
+    assert target.ok and target.value is not None
+    draft = runtime.material.allocate_resource_draft(tmp_path, target=target.value)
+    assert draft.ok and draft.value is not None
+    runtime.ark.flow_service = _FakeResourceFlowService(flow_id="flow_resource", draft_id=draft.value.draft.draft_id)
+
+    result = runtime.tool_facade.invoke_agent_tool(
+        _resource_raw(tmp_path),
+        tool_name="acquire_resource_material",
+        flat_args={"target": "https://example.com/other", "preferred_kind": "web_page"},
+    )
+
+    assert result.ok and result.value is not None and not result.value.ok
+    assert result.value.issues[0].kind == "resource_material_target_unauthorized"
 
 
 def test_resource_manifest_tool_selects_explicit_canonical_entry(tmp_path: Path) -> None:
@@ -205,14 +223,15 @@ def test_resource_manifest_tool_selects_explicit_canonical_entry(tmp_path: Path)
         draft_id=draft.value.draft.draft_id,
     )
     root = Path(draft.value.draft_root)
-    (root / "normalized" / "a.md").write_text("A\n", encoding="utf-8")
-    (root / "normalized" / "b.md").write_text("B\n", encoding="utf-8")
+    (root / "article").mkdir()
+    (root / "article" / "a.md").write_text("A\n", encoding="utf-8")
+    (root / "article" / "b.md").write_text("B\n", encoding="utf-8")
 
     refreshed = runtime.tool_facade.invoke_agent_tool(
         _resource_raw(tmp_path),
         tool_name="refresh_resource_draft_manifest",
-        flat_args={"canonical_normalized_entry": "normalized/b.md"},
+        flat_args={"canonical_entry": "article/b.md"},
     )
 
     assert refreshed.ok and refreshed.value is not None and refreshed.value.ok
-    assert refreshed.value.value["canonical_normalized_entry"] == "normalized/b.md"
+    assert refreshed.value.value["canonical_entry"] == "article/b.md"

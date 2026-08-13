@@ -37,15 +37,18 @@ def test_skill_registry_builds_all_fixed_skills() -> None:
     specs = build_skill_specs()
 
     assert "material-acquisition" not in specs
-    assert "source-material-acquisition" in specs
-    assert "resource-material-acquisition" in specs
+    assert "source-material-acquisition" not in specs
+    assert "resource-material-acquisition" not in specs
+    assert "pdf-faithful-transcription" in specs
+    assert "material-fidelity-check" in specs
+    assert "source-corpus-draft-curation" in specs
     assert "resource-request-submission" in specs
     assert "resource-result-closeout" in specs
     assert "repo-format-discovery" in specs
     assert "resource-request-handling" not in specs
     assert "lean-proof-formalization" in specs
-    assert specs["source-material-acquisition"].description
-    assert "## Workflow" in specs["source-material-acquisition"].body
+    assert specs["pdf-faithful-transcription"].description
+    assert "## Workflow" in specs["pdf-faithful-transcription"].body
 
 
 def test_repo_format_discovery_skill_owns_route_workflow_and_current_submit_contract() -> None:
@@ -61,14 +64,14 @@ def test_repo_format_discovery_skill_owns_route_workflow_and_current_submit_cont
 def test_skill_materialization_writes_skill_md_without_registry_references(tmp_path: Path) -> None:
     paths = materialize_skill_specs(
         tmp_path,
-        ["source-material-acquisition", "resource-request-submission"],
+        ["pdf-faithful-transcription", "resource-request-submission"],
     )
 
-    material_skill = paths["source-material-acquisition"]
+    material_skill = paths["pdf-faithful-transcription"]
     request_skill = paths["resource-request-submission"]
 
     assert (material_skill / "SKILL.md").read_text(encoding="utf-8").startswith("---")
-    assert 'name: "source-material-acquisition"' in (material_skill / "SKILL.md").read_text(encoding="utf-8")
+    assert 'name: "pdf-faithful-transcription"' in (material_skill / "SKILL.md").read_text(encoding="utf-8")
     assert not (material_skill / "references" / "tool_groups.md").exists()
     assert not (request_skill / "references" / "tool_groups.md").exists()
 
@@ -250,26 +253,18 @@ def test_visible_node_dependency_recon_skill_spells_out_dependency_evidence_poli
     assert "Open-only or newer open candidates are not dependency evidence" in body
 
 
-def test_source_and_resource_acquisition_skills_reference_visible_tools() -> None:
+def test_shared_material_skills_do_not_claim_role_specific_tools() -> None:
     specs = build_skill_specs()
-    reports = build_agent_surface_reports()
 
-    source_refs = _tool_refs(specs["source-material-acquisition"].body)
-    source_visible = {tool.name for tool in reports["SourceCorpusBuilderAgent"].application_tools}
-    assert source_refs <= source_visible
-    assert "acquire_resource_material" not in specs["source-material-acquisition"].body
-
-    resource_refs = _tool_refs(specs["resource-material-acquisition"].body)
-    resource_visible = {tool.name for tool in reports["ResourceCuratorAgent"].application_tools}
-    assert resource_refs <= resource_visible
-    assert "acquire_source_material" not in specs["resource-material-acquisition"].body
+    assert not _tool_refs(specs["pdf-faithful-transcription"].body)
+    assert not _tool_refs(specs["material-fidelity-check"].body)
 
 
 def test_source_corpus_preparation_skill_preserves_supplied_formal_material() -> None:
-    body = build_skill_specs()["source-corpus-faithful-preparation"].body
+    body = build_skill_specs()["source-corpus-draft-curation"].body
 
-    assert "Preserve supplied Lean specifications, formal targets, solutions, and proof references" in body
-    assert "Do not invent targets, answers, proofs, expected node trees" in body
+    assert "formal_target.lean" in body
+    assert "Do not extend the requested source scope" in body
     assert "Do not create generated summaries" not in body
 
 

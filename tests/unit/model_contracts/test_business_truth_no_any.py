@@ -6,7 +6,7 @@ from typing import Any, get_args, get_origin
 import pytest
 from pydantic import ValidationError
 
-from lean_constellation.domain.preparation import RepoDependencyRequirement, RepoPreparationInput
+from lean_constellation.domain.preparation import RepoDependencyRequirement, RepoPreparationInput, SourceMaterialInput
 from lean_constellation.domain.repo_release import RepoRelease
 from lean_constellation.services.decl_graph import (
     Decl,
@@ -105,7 +105,7 @@ def test_business_truth_models_do_not_embed_bare_any_or_view_types() -> None:
                     "canonical_locator": "https://example.com",
                     "summary": "View-only field.",
                 },
-                "normalized_entry": "normalized/main.md",
+                "canonical_entry": "normalized/main.md",
             },
             "summary",
         ),
@@ -138,6 +138,32 @@ def test_business_truth_models_reject_known_legacy_or_view_fields(model: type, p
     with pytest.raises(ValidationError) as exc_info:
         model.model_validate(payload)
     assert legacy_field in str(exc_info.value)
+
+
+def test_source_material_input_requires_exact_current_fields_and_role() -> None:
+    item = SourceMaterialInput(
+        target="  https://example.test/paper.pdf  ",
+        included_scope="  Complete paper.  ",
+        role="primary_source",
+    )
+    assert item.target == "https://example.test/paper.pdf"
+    assert item.included_scope == "Complete paper."
+
+    with pytest.raises(ValidationError):
+        SourceMaterialInput.model_validate({"target": "https://example.test/paper.pdf", "role": "primary_source"})
+    with pytest.raises(ValidationError):
+        SourceMaterialInput.model_validate(
+            {"target": "https://example.test/paper.pdf", "included_scope": "Complete paper.", "role": "unknown"}
+        )
+    with pytest.raises(ValidationError):
+        RepoPreparationInput(
+            goal="Prepare source.",
+            source_corpus_mode="prepare",
+            source_material_inputs=[
+                SourceMaterialInput(target="x", included_scope="all", role="primary_source"),
+                SourceMaterialInput(target="x", included_scope="all", role="primary_source"),
+            ],
+        )
 
 
 def _contains_bare_any(annotation: object) -> bool:

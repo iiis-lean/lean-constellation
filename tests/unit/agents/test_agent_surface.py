@@ -8,13 +8,13 @@ from lean_constellation.tools import build_application_tool_specs, build_submit_
 
 EXPECTED_SURFACE_COUNTS = {
     "RepoFormatDiscoveryAgent": (6, 12, 1, 2, 1),
-    "SourceCorpusBuilderAgent": (5, 12, 1, 2, 3),
-    "SourceCorpusReviewerAgent": (4, 8, 1, 1, 2),
+    "SourceCorpusBuilderAgent": (5, 12, 1, 2, 4),
+    "SourceCorpusReviewerAgent": (4, 8, 1, 1, 3),
     "SourceIndexBuilderAgent": (6, 25, 1, 1, 1),
     "SourceIndexReviewerAgent": (5, 14, 1, 1, 1),
     "RootInterfacePrepareAgent": (7, 15, 1, 1, 1),
     "AdapterDeclCatalogAgent": (12, 38, 1, 2, 0),
-    "ResourceCuratorAgent": (8, 25, 1, 4, 4),
+    "ResourceCuratorAgent": (8, 25, 1, 4, 5),
     "RepoResourceDiscoveryAgent": (9, 22, 1, 1, 2),
     "RepoLeanProviderDiscoveryAgent": (11, 26, 1, 1, 1),
     "RepoMathlibReconAgent": (9, 27, 1, 1, 4),

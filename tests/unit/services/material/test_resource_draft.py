@@ -11,8 +11,10 @@ from lean_constellation.services.material import ResourceDraft, ResourceDraftSta
 
 def _write_valid_draft_files(draft_root: Path, *, text: str = "alpha\nbeta theorem\n") -> None:
     (draft_root / "README.md").write_text(valid_resource_readme(), encoding="utf-8")
-    (draft_root / "original" / "raw.txt").write_text("raw material\n", encoding="utf-8")
-    (draft_root / "normalized" / "main.md").write_text(text, encoding="utf-8")
+    (draft_root / "_work" / "original").mkdir(parents=True, exist_ok=True)
+    (draft_root / "_work" / "original" / "raw.txt").write_text("raw material\n", encoding="utf-8")
+    (draft_root / "article").mkdir(parents=True, exist_ok=True)
+    (draft_root / "article" / "main.md").write_text(text, encoding="utf-8")
 
 
 def _load_draft(repo_root: Path, metadata_path: str) -> ResourceDraft:
@@ -35,8 +37,7 @@ def test_allocate_resource_draft_creates_metadata_and_work_dirs(tmp_path: Path) 
     assert draft.value.draft.status == ResourceDraftStatus.ALLOCATED
     assert draft.value.draft.target.canonical_locator == "https://example.com/math/page"
     assert Path(draft.value.draft_root).is_dir()
-    assert Path(draft.value.original_dir).is_dir()
-    assert Path(draft.value.normalized_dir).is_dir()
+    assert Path(draft.value.work_dir).is_dir()
     assert Path(draft.value.metadata_path).is_file()
 
 
@@ -51,7 +52,7 @@ def test_check_resource_draft_requires_readme_manifest_and_normalized_artifact(t
     assert missing.value.passed is False
     issue_kinds = {issue.kind for issue in missing.value.issues}
     assert "resource_draft_readme_missing" in issue_kinds
-    assert "resource_draft_normalized_artifact_missing" in issue_kinds
+    assert "resource_draft_canonical_entry_missing" in issue_kinds
 
     _write_valid_draft_files(Path(draft.value.draft_root))
     passed = service.check_resource_draft(tmp_path, draft_id=draft.value.draft.draft_id)
@@ -79,9 +80,12 @@ def test_finalize_resource_draft_promotes_to_resource_library_and_reloads(tmp_pa
     assert finalized.ok and finalized.value is not None
     resource_key = finalized.value.resource.resource_key
     assert finalized.value.resource.title == "Final resource"
-    assert finalized.value.resource.normalized_entry == "normalized/main.md"
+    assert finalized.value.resource.canonical_entry == "article/main.md"
     assert (tmp_path / ".lean_constellation" / "resources" / "items" / resource_key / "resource.json").is_file()
-    assert (tmp_path / ".lean_constellation" / "resources" / "items" / resource_key / "normalized" / "main.md").is_file()
+    final_root = tmp_path / ".lean_constellation" / "resources" / "items" / resource_key
+    assert (final_root / "article" / "main.md").is_file()
+    assert not (final_root / "_work").exists()
+    assert not (final_root / "draft.json").exists()
     reloaded_draft = _load_draft(tmp_path, draft.value.metadata_path)
     assert reloaded_draft.status == ResourceDraftStatus.FINALIZED
     assert reloaded_draft.resource_key == resource_key
@@ -129,20 +133,20 @@ def test_resource_manifest_requires_explicit_canonical_when_outputs_are_ambiguou
     root = Path(draft.value.draft_root)
     (root / "README.md").write_text(
         valid_resource_readme(
-            canonical_entry="normalized/b.md",
-            original_ref="Original unavailable: the fixture intentionally contains normalized alternatives only.",
+            canonical_entry="article/b.md",
             title="Ambiguous resource fixture",
         ),
         encoding="utf-8",
     )
-    (root / "normalized" / "a.md").write_text("first entry\n", encoding="utf-8")
-    (root / "normalized" / "b.md").write_text("selected entry\n", encoding="utf-8")
+    (root / "article").mkdir()
+    (root / "article" / "a.md").write_text("first entry\n", encoding="utf-8")
+    (root / "article" / "b.md").write_text("selected entry\n", encoding="utf-8")
 
     ambiguous = service.check_resource_draft(tmp_path, draft_id=draft.value.draft.draft_id)
     selected = service.refresh_resource_draft_manifest(
         tmp_path,
         draft_id=draft.value.draft.draft_id,
-        canonical_normalized_entry="normalized/b.md",
+        canonical_entry="article/b.md",
     )
     checked = service.check_resource_draft(tmp_path, draft_id=draft.value.draft.draft_id)
     finalized = service.finalize_resource_draft(
@@ -156,21 +160,22 @@ def test_resource_manifest_requires_explicit_canonical_when_outputs_are_ambiguou
         issue.kind for issue in ambiguous.value.issues
     }
     assert selected.ok and selected.value is not None
-    assert selected.value.canonical_normalized_entry == "normalized/b.md"
+    assert selected.value.canonical_entry == "article/b.md"
     assert checked.ok and checked.value is not None and checked.value.passed
     assert finalized.ok and finalized.value is not None
-    assert finalized.value.resource.normalized_entry == "normalized/b.md"
+    assert finalized.value.resource.canonical_entry == "article/b.md"
     assert finalized.value.resource.content_hash == hashlib.sha256(b"selected entry\n").hexdigest()
 
 
-def test_resource_manifest_rejects_old_schema_and_binary_normalized_entry(tmp_path: Path) -> None:
+def test_resource_manifest_rejects_old_schema_and_binary_canonical_entry(tmp_path: Path) -> None:
     service = make_runtime().material
     old = service.allocate_resource_draft(tmp_path, target="https://example.com/old-manifest")
     assert old.ok and old.value is not None
     old_root = Path(old.value.draft_root)
     (old_root / "README.md").write_text("# Old\n", encoding="utf-8")
-    (old_root / "normalized" / "main.md").write_text("readable\n", encoding="utf-8")
-    Path(old.value.manifest_path).write_text(json.dumps({"normalized_entry": "normalized/main.md"}), encoding="utf-8")
+    (old_root / "article").mkdir()
+    (old_root / "article" / "main.md").write_text("readable\n", encoding="utf-8")
+    Path(old.value.manifest_path).write_text(json.dumps({"canonical_entry": "article/main.md"}), encoding="utf-8")
 
     old_checked = service.check_resource_draft(tmp_path, draft_id=old.value.draft.draft_id)
 
@@ -178,13 +183,14 @@ def test_resource_manifest_rejects_old_schema_and_binary_normalized_entry(tmp_pa
     assert binary.ok and binary.value is not None
     binary_root = Path(binary.value.draft_root)
     (binary_root / "README.md").write_text("# Binary\n", encoding="utf-8")
-    (binary_root / "normalized" / "paper.txt").write_bytes(b"%PDF-1.4\nfixture")
+    (binary_root / "article").mkdir()
+    (binary_root / "article" / "paper.txt").write_bytes(b"%PDF-1.4\nfixture")
     binary_checked = service.check_resource_draft(tmp_path, draft_id=binary.value.draft.draft_id)
 
     assert old_checked.ok and old_checked.value is not None and not old_checked.value.passed
     assert any(issue.kind == "schema_version_missing" for issue in old_checked.value.issues)
     assert binary_checked.ok and binary_checked.value is not None and not binary_checked.value.passed
-    assert "resource_draft_normalized_artifact_missing" in {
+    assert "resource_draft_canonical_entry_missing" in {
         issue.kind for issue in binary_checked.value.issues
     }
 
@@ -205,8 +211,7 @@ def test_resource_manifest_records_file_truth_and_matches_final_metadata(tmp_pat
     assert refreshed.ok and refreshed.value is not None
     assert {item.path for item in refreshed.value.files} == {
         "README.md",
-        "normalized/main.md",
-        "original/raw.txt",
+        "article/main.md",
     }
     assert finalized.ok and finalized.value is not None
     manifest_loaded = make_runtime().foundation.store.read_json(
@@ -216,9 +221,9 @@ def test_resource_manifest_records_file_truth_and_matches_final_metadata(tmp_pat
     canonical = next(
         item
         for item in manifest_loaded.value.files
-        if item.path == manifest_loaded.value.canonical_normalized_entry
+        if item.path == manifest_loaded.value.canonical_entry
     )
-    assert finalized.value.resource.normalized_entry == manifest_loaded.value.canonical_normalized_entry
+    assert finalized.value.resource.canonical_entry == manifest_loaded.value.canonical_entry
     assert finalized.value.resource.content_hash == canonical.sha256
 
 
@@ -233,7 +238,7 @@ def test_resource_manifest_records_file_truth_and_matches_final_metadata(tmp_pat
             "resource_readme_access_missing",
         ),
         (
-            "## Material map\n\n`original/raw.txt` maps to `normalized/main.md`.",
+            "## Input-to-final mapping\n\nInput mapping: `the exact acquired input` maps to `article/main.md`.",
             "## File relationship\n\n`raw.txt` maps to `main.md`.",
             "resource_readme_material_map_missing",
         ),
@@ -271,22 +276,16 @@ def test_resource_readme_requires_each_frozen_contract_marker(
     assert expected_issue in {issue.kind for issue in checked.value.issues}
 
 
-def test_resource_readme_requires_original_absence_reason_and_correction_ledger(tmp_path: Path) -> None:
+def test_resource_readme_requires_correction_ledger(tmp_path: Path) -> None:
     service = make_runtime().material
     draft = service.allocate_resource_draft(tmp_path, target="https://example.com/no-original")
     assert draft.ok and draft.value is not None
     root = Path(draft.value.draft_root)
     (root / "README.md").write_text(valid_resource_readme(), encoding="utf-8")
-    (root / "normalized" / "main.md").write_text("faithful text\n", encoding="utf-8")
-
-    missing_reason = service.check_resource_draft(tmp_path, draft_id=draft.value.draft.draft_id)
-    assert missing_reason.ok and missing_reason.value is not None and not missing_reason.value.passed
-    assert "resource_readme_original_missing_reason_required" in {
-        issue.kind for issue in missing_reason.value.issues
-    }
+    (root / "article").mkdir()
+    (root / "article" / "main.md").write_text("faithful text\n", encoding="utf-8")
 
     readme = valid_resource_readme(
-        original_ref="Original unavailable: canonical access did not provide the raw artifact.",
     ).replace("Corrections: none.", "Corrections: fixed one OCR symbol.")
     (root / "README.md").write_text(readme, encoding="utf-8")
     missing_ledger = service.check_resource_draft(tmp_path, draft_id=draft.value.draft.draft_id)

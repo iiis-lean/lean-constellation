@@ -39,7 +39,7 @@ class ResourceAgentView(StrictModel):
     title: str | None = None
     kind: str
     canonical_locator: str
-    normalized_entry: str
+    canonical_entry: str
     source_url: str | None = None
     notes: str | None = None
     summary: str
@@ -57,14 +57,14 @@ class ResourceDraftAgentView(StrictModel):
     purpose_hint: str | None = None
     resource_key: str | None = None
     logical_files: list[str] = Field(
-        default_factory=lambda: ["README.md", "manifest.json", "original/", "normalized/", "assets/", "supplementary/"]
+        default_factory=lambda: ["README.md", "_work/", "article/ or another natural content tree", "assets/", "supplementary/"]
     )
     readme_required_sections: list[str] = Field(
         default_factory=lambda: [
             "bibliographic identity",
             "source provenance and canonical locator",
             "license and access",
-            "original-to-normalized material map",
+            "input-to-final material map",
             "canonical reading order",
             "selected scope and consumer need",
             "extraction/OCR limits and correction status",
@@ -100,9 +100,8 @@ class ResourceExtractionAgentView(StrictModel):
 
 
 class ResourceManifestAgentView(StrictModel):
-    canonical_normalized_entry: str
+    canonical_entry: str
     file_paths: list[str] = Field(default_factory=list)
-    extraction_relation_count: int
     summary: str
 
 
@@ -222,7 +221,7 @@ def _get_resource(runtime, ctx: ToolExecutionContext, args: ResourceKeyArgs):
             title=resource.title,
             kind=resource.target.kind,
             canonical_locator=resource.target.canonical_locator,
-            normalized_entry=resource.normalized_entry,
+            canonical_entry=resource.canonical_entry,
             source_url=resource.source_url,
             notes=resource.notes,
             summary=loaded.value.summary,
@@ -346,16 +345,15 @@ def _refresh_resource_draft_manifest(runtime, ctx: ToolExecutionContext, args: R
     refreshed = runtime.material.refresh_resource_draft_manifest(
         ctx.repo_root,
         draft_id=draft_id.value,
-        canonical_normalized_entry=args.canonical_normalized_entry,
+        canonical_entry=args.canonical_entry,
     )
     if not refreshed.ok or refreshed.value is None:
         return runtime.foundation.fail(refreshed.issues)
     manifest = refreshed.value
     return runtime.foundation.ok(
         ResourceManifestAgentView(
-            canonical_normalized_entry=manifest.canonical_normalized_entry,
+            canonical_entry=manifest.canonical_entry,
             file_paths=[item.path for item in manifest.files],
-            extraction_relation_count=len(manifest.extraction_relations),
             summary="Refreshed the deterministic resource material manifest.",
         ),
         warnings=refreshed.issues,
@@ -425,7 +423,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="acquire_resource_material",
-            description="Acquire raw resource material such as arXiv source, PDF, web page, or local target into the current active resource draft acquisition area.",
+            description="Acquire raw resource material into the current active resource draft _work area; only the exact Resource target is authorized.",
             args_model=ResourceMaterialAcquireArgs,
             capability=ToolCapability.WRITE,
             result_view="resource_acquisition_handles",
@@ -435,7 +433,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="extract_resource_artifact",
-            description="Resolve an active draft artifact from acquisition truth, MIME, magic, and suffix, then run the compatible extractor into normalized material. Pass acquisition_kind and mime_type through from acquire_resource_material.",
+            description="Resolve an active draft _work artifact from acquisition truth, MIME, magic, and suffix, then run the compatible extractor in _work. Pass acquisition_kind and mime_type through unchanged.",
             args_model=ResourceArtifactExtractArgs,
             capability=ToolCapability.WRITE,
             result_view="resource_extraction_handles",
@@ -445,7 +443,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="import_resource_material",
-            description="Import a local file into the current active resource draft original material area.",
+            description="Import the exact local Resource target into the current active draft _work area.",
             args_model=ResourceMaterialImportArgs,
             capability=ToolCapability.WRITE,
             result_view="resource_acquisition_handles",
@@ -465,7 +463,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="refresh_resource_draft_manifest",
-            description="Deterministically classify active draft files, validate readable normalized outputs, and write the current resource manifest. Supply canonical_normalized_entry only to resolve multiple validated outputs.",
+            description="Scan candidate files outside _work, validate readable content, and write the current Resource manifest. Supply canonical_entry only when multiple readable candidate files exist.",
             args_model=ResourceManifestRefreshArgs,
             capability=ToolCapability.WRITE,
             result_view="resource_material_manifest",

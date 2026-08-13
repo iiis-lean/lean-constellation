@@ -548,8 +548,8 @@ def make_runtime(
 
 def valid_resource_readme(
     *,
-    canonical_entry: str = "normalized/main.md",
-    original_ref: str = "original/raw.txt",
+    canonical_entry: str = "article/main.md",
+    original_ref: str = "the exact acquired input",
     title: str = "Curated resource fixture",
 ) -> str:
     """Return a complete current-schema Resource README fixture."""
@@ -569,13 +569,13 @@ Source: deterministic test fixture.
 
 License: test fixture terms. Access: local and unrestricted.
 
-## Material map
+## Input-to-final mapping
 
-`{original_ref}` maps to `{canonical_entry}`.
+Input mapping: `{original_ref}` maps to `{canonical_entry}`.
 
 ## Reading order
 
-Read `{canonical_entry}` first; it is the canonical normalized entry.
+Read `{canonical_entry}` first; it is the canonical entry.
 
 ## Selected scope and consumer need
 
