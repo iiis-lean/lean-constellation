@@ -1387,7 +1387,7 @@ def test_proof_nl_typed_tools_write_text_origins_and_deps(tmp_path: Path) -> Non
         ProofSourceOriginAddArgs(decl_name="main_result", source_path="proof.md", start_line=3, end_line=5, note="Proof argument."),
     )
     assert not missing_source.ok
-    assert missing_source.issues[0].kind == "proof_origin_source_index_missing"
+    assert missing_source.issues[0].kind == "proof_origin_source_missing"
     resource_key = _create_local_resource(runtime, tmp_path)
     origin = _add_proof_resource_origin(
         runtime,

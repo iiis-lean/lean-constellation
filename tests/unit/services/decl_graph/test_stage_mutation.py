@@ -71,7 +71,7 @@ def test_statement_and_proof_stage_mutations_write_candidates_without_advancing_
         round_id=round_id,
         decl_name="main_result",
         nl="The main result states True.",
-        origin=[{"kind": "source", "ref": "source:main"}],
+        origin=[{"kind": "source", "source_path": "main", "start_line": 1, "end_line": 1}],
         deps=["supporting_lemma"],
     )
     assert statement_nl.ok and statement_nl.value is not None
@@ -86,7 +86,9 @@ def test_statement_and_proof_stage_mutations_write_candidates_without_advancing_
     assert statement_revision.value.statement.nl is not None
     assert statement_revision.value.statement.nl.origin[0].model_dump(exclude_none=True) == {
         "kind": "source",
-        "ref": "source:main",
+        "source_path": "main",
+        "start_line": 1,
+        "end_line": 1,
     }
     assert [item.ref.name for item in statement_revision.value.statement.deps] == ["supporting_lemma"]
 

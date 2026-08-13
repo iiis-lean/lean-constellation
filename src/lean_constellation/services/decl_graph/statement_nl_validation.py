@@ -15,6 +15,7 @@ from lean_constellation.services.decl_graph.models import (
     MathlibDeclDep,
     RepoDeclDep,
 )
+from lean_constellation.services.decl_graph.origin_validation import validate_nl_origin
 from lean_constellation.services.foundation import ServiceResult
 
 
@@ -102,48 +103,12 @@ def _validate_statement_origin(
     origin: DeclOriginRef,
     decl_name: str,
 ):
-    ref = origin.ref or origin.source_path or origin.resource_key
-    if origin.kind == "source":
-        if ref is None:
-            return runtime.foundation.issue(
-                "statement_origin_invalid",
-                "Statement NL source origin must include a stable source path or ref.",
-                object_ref=decl_name,
-            )
-        index = runtime.material.get_committed_source_index(repo_root)
-        if not index.ok or index.value is None:
-            return runtime.foundation.issue(
-                "statement_origin_source_index_missing",
-                "Statement NL source origin requires a committed SourceIndex.",
-                object_ref=decl_name,
-            )
-        if not _source_origin_ref_exists(index.value, ref):
-            return runtime.foundation.issue(
-                "statement_origin_source_missing",
-                f"Statement NL source origin does not match committed SourceIndex: {ref}.",
-                object_ref=decl_name,
-            )
-        return None
-    if origin.kind == "resource":
-        if ref is None:
-            return runtime.foundation.issue(
-                "statement_origin_invalid",
-                "Statement NL resource origin must include a stable resource key.",
-                object_ref=decl_name,
-            )
-        resource_key = ref.split("#", 1)[0].split(":", 1)[-1].strip()
-        resource = _get_resource(runtime, repo_root, resource_key)
-        if not resource.ok:
-            return runtime.foundation.issue(
-                "statement_origin_resource_missing",
-                f"Statement NL resource origin does not match an active resource: {ref}.",
-                object_ref=decl_name,
-            )
-        return None
-    return runtime.foundation.issue(
-        "statement_origin_kind_invalid",
-        f"Statement NL origin kind is not a stable source/resource origin: {origin.kind}.",
-        object_ref=decl_name,
+    return validate_nl_origin(
+        runtime,
+        repo_root,
+        origin=origin,
+        decl_name=decl_name,
+        stage="statement",
     )
 
 
@@ -275,12 +240,6 @@ def _round_refs(
     return runtime.foundation.ok({ref.decl_name: ref.revision for ref in round_record.value.revision_refs})
 
 
-def _get_resource(runtime: Any, repo_root: Path, resource_key: str):
-    if hasattr(runtime.material, "get_resource"):
-        return runtime.material.get_resource(repo_root, resource_key=resource_key)
-    return runtime.material.resource_library.get_resource(repo_root, resource_key=resource_key)
-
-
 def _record_timing(sink: dict[str, float] | None, key: str, started: float) -> None:
     if sink is not None:
         sink[key] = sink.get(key, 0.0) + round((perf_counter() - started) * 1000, 3)
@@ -310,19 +269,6 @@ def statement_nl_validation_message(
             or "Statement NL candidate failed validation."
         )
     return "Statement NL candidate failed validation."
-
-
-def _source_origin_ref_exists(index, ref: str) -> bool:
-    if ref in getattr(index, "blocks", {}) or ref in getattr(index, "files", {}):
-        return True
-    ref_path = ref.split("#", 1)[0].split(":", 1)[0]
-    if ref_path in getattr(index, "files", {}):
-        return True
-    return any(
-        ref == getattr(block_ref, "ref_id", None) or ref_path == getattr(block_ref, "path", None)
-        for block in getattr(index, "blocks", {}).values()
-        for block_ref in getattr(block, "refs", [])
-    )
 
 
 def _effective_node(dep_node: str, *, node_path: str) -> str:

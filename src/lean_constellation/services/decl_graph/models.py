@@ -111,8 +111,8 @@ class DeclOriginRef(StrictModel):
     ref: str | None = None
     source_path: str | None = None
     resource_key: str | None = None
-    start_line: int | None = None
-    end_line: int | None = None
+    start_line: int | None = Field(default=None, ge=1)
+    end_line: int | None = Field(default=None, ge=1)
     start_locator: str | None = None
     end_locator: str | None = None
     note: str | None = None
@@ -129,6 +129,19 @@ class DeclOriginRef(StrictModel):
             return None
         text = value.strip()
         return text or None
+
+    @model_validator(mode="after")
+    def _validate_source_range(self) -> DeclOriginRef:
+        if self.kind == "source":
+            if self.source_path is None:
+                raise ValueError("source origin requires source_path")
+            if self.start_line is None or self.end_line is None:
+                raise ValueError("source origin requires explicit start_line and end_line")
+            if self.start_line > self.end_line:
+                raise ValueError("source origin start_line must be <= end_line")
+        elif (self.start_line is None) != (self.end_line is None):
+            raise ValueError("origin start_line and end_line must be present together")
+        return self
 
 
 class DeclNaturalLanguageSection(StrictModel):

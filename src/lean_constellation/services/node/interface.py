@@ -17,7 +17,7 @@ from lean_constellation.domain.interface import (
     normalize_decl_kind,
 )
 from lean_constellation.domain.preparation import RepoPreparationInput
-from lean_constellation.domain.refs import DeclRef, MaterialRef
+from lean_constellation.domain.refs import DeclRef, MaterialRef, SourceRef
 from lean_constellation.domain.repo import ProofAvailability, RepoFormat
 from lean_constellation.services.foundation import FoundationContext, GateReport, ServiceResult
 from lean_constellation.services.decl_graph.models import DeclRevisionStatus
@@ -463,6 +463,12 @@ class InterfaceComponent:
         prep = self._load_preparation_input(repo_root)
         if not prep.ok or prep.value is None:
             return self.runtime.foundation.fail(prep.issues)
+        source_refs = self._validate_interface_source_refs(
+            repo_root,
+            interfaces=prep.value.interface_inputs,
+        )
+        if not source_refs.ok:
+            return self.runtime.foundation.fail(source_refs.issues)
         opened = self.contract.get_edit_contract(repo_root, node_path=node_path)
         if not opened.ok or opened.value is None:
             return self.runtime.foundation.fail(opened.issues)
@@ -494,6 +500,12 @@ class InterfaceComponent:
         if not view.ok or view.value is None:
             return self.runtime.foundation.fail(view.issues)
         issues = []
+        source_refs = self._validate_interface_source_refs(
+            repo_root,
+            interfaces=prep.value.interface_inputs,
+        )
+        if not source_refs.ok:
+            issues.extend(source_refs.issues)
         names = [interface.name for interface in view.value.contract.interfaces]
         duplicate_names = sorted({name for name in names if names.count(name) > 1})
         for duplicate in duplicate_names:
@@ -1147,6 +1159,41 @@ class InterfaceComponent:
                 self.runtime.foundation.issue("preparation_input_missing", "Preparation input is missing or invalid.", object_ref=str(path))
             )
         return loaded
+
+    def _validate_interface_source_refs(
+        self,
+        repo_root: Path,
+        *,
+        interfaces: list[DeclInterface],
+    ) -> ServiceResult[None]:
+        refs = [
+            material.ref
+            for interface in interfaces
+            for material in interface.source_refs
+            if material.kind == "source" and isinstance(material.ref, SourceRef)
+        ]
+        if not refs:
+            return self.runtime.foundation.ok(None)
+        validated = self.runtime.material.source_corpus.validate_source_refs(
+            repo_root,
+            refs=refs,
+        )
+        if not validated.ok or validated.value is None:
+            return self.runtime.foundation.fail(validated.issues)
+        issues = [
+            self.runtime.foundation.issue(
+                "interface_source_ref_invalid",
+                result.summary,
+                object_ref=result.path,
+                current=f"{result.start_line}-{result.end_line}",
+                details={"source_issue_code": result.issue_code},
+            )
+            for result in validated.value
+            if not result.valid
+        ]
+        if issues:
+            return self.runtime.foundation.fail(issues)
+        return self.runtime.foundation.ok(None)
 
     def _save_contract(self, repo_root: Path, node_path: str, contract: object) -> ServiceResult[object]:
         node = self.runtime.node.node_tree.node_store.resolve_active_node(repo_root, path=node_path)

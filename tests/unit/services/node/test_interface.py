@@ -386,6 +386,62 @@ def test_sync_and_check_protected_root_interfaces(tmp_path: Path) -> None:
     assert gate.value.passed is True
 
 
+def test_protected_interface_source_refs_validate_against_corpus_without_source_index(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / ".lean_constellation" / "source"
+    source_root.mkdir(parents=True)
+    (source_root / "article.md").write_text("one\ntwo\nthree\n", encoding="utf-8")
+    protected = DeclInterface(
+        name="main_result",
+        kind=DeclKind.THEOREM,
+        summary="Main theorem.",
+        source_refs=[
+            MaterialRef(
+                kind="source",
+                ref=SourceRef(path="article.md", start_line=2, end_line=3),
+            )
+        ],
+    )
+    _write_preparation_input(tmp_path, interfaces=[protected])
+    assert make_runtime().node.node_tree.ensure_root_scope_node(tmp_path).ok
+
+    synced = make_runtime().node.interface.sync_protected_root_interfaces_from_preparation_input(
+        tmp_path
+    )
+
+    assert synced.ok, synced.issues
+
+
+def test_protected_interface_source_ref_missing_from_corpus_is_rejected(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / ".lean_constellation" / "source"
+    source_root.mkdir(parents=True)
+    (source_root / "article.md").write_text("one\n", encoding="utf-8")
+    protected = DeclInterface(
+        name="main_result",
+        kind=DeclKind.THEOREM,
+        summary="Main theorem.",
+        source_refs=[
+            MaterialRef(
+                kind="source",
+                ref=SourceRef(path="missing.md", start_line=1, end_line=1),
+            )
+        ],
+    )
+    _write_preparation_input(tmp_path, interfaces=[protected])
+    assert make_runtime().node.node_tree.ensure_root_scope_node(tmp_path).ok
+
+    synced = make_runtime().node.interface.sync_protected_root_interfaces_from_preparation_input(
+        tmp_path
+    )
+
+    assert not synced.ok
+    assert synced.issues[0].kind == "interface_source_ref_invalid"
+    assert synced.issues[0].details["source_issue_code"] == "source_ref_file_missing"
+
+
 def test_sync_protected_root_interfaces_rejects_conflict(tmp_path: Path) -> None:
     protected = DeclInterface(name="main_result", kind=DeclKind.THEOREM, summary="Main theorem.")
     _write_preparation_input(tmp_path, interfaces=[protected])
