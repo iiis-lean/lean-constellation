@@ -140,7 +140,7 @@ def test_business_truth_models_reject_known_legacy_or_view_fields(model: type, p
     assert legacy_field in str(exc_info.value)
 
 
-def test_source_material_input_requires_exact_current_fields_and_role() -> None:
+def test_source_material_input_requires_current_flat_fields_and_role() -> None:
     item = SourceMaterialInput(
         target="  https://example.test/paper.pdf  ",
         included_scope="  Complete paper.  ",

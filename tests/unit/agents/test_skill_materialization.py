@@ -260,18 +260,38 @@ def test_shared_material_skills_do_not_claim_role_specific_tools() -> None:
     assert not _tool_refs(specs["material-fidelity-check"].body)
 
 
+def test_shared_material_skills_separate_work_evidence_from_static_truth() -> None:
+    specs = build_skill_specs()
+    preservation = specs["faithful-material-preservation"].body
+    pdf = specs["pdf-faithful-transcription"].body
+    fidelity = specs["material-fidelity-check"].body
+
+    assert "structured request" in preservation
+    assert "Separate Work Evidence From Durable Material" in preservation
+    assert "Do not record request payloads" in preservation
+    assert "future Agent should not need the PDF" in pdf
+    assert "entire current durable tree" in fidelity
+    assert "resolved locator need not equal the request text" in fidelity
+    assert "old passed marks and patch summaries do not carry forward" in fidelity
+
+
 def test_source_corpus_preparation_skill_preserves_supplied_formal_material() -> None:
     body = build_skill_specs()["source-corpus-draft-curation"].body
 
     assert "formal_target.lean" in body
+    assert "structured material request, not an exact network allowlist" in body
     assert "Do not extend the requested source scope" in body
-    assert "Do not create generated summaries" not in body
+    assert "Do not include preparation inputs, resolved download locations" in body
+    assert "projected to canonical SourceCorpus" in body
 
 
 def test_resource_draft_skill_keeps_requested_use_advisory() -> None:
     body = build_skill_specs()["resource-draft-curation"].body
 
     assert "formal_dependency as strong provider evidence rather than an irreversible classification" in body
+    assert "structured Resource request rather than an exact locator allowlist" in body
+    assert "finalization copies only those bytes" in body
+    assert "must not record the request payload" in body
     assert "record the corrected ownership in the README and submission" in body
     assert "Do not submit a local Resource when" not in body
 

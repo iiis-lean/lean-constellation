@@ -463,7 +463,8 @@ def test_source_reviewer_routes_corpus_fidelity_blocker_outside_builder_authorit
     text = render_agent_instruction("SourceIndexReviewerAgent")
 
     assert "source_corpus_fidelity_blocker:" in text
-    assert "retained originals, acquisition provenance, or other canonical evidence" in text
+    assert "canonical SourceCorpus, stable source notes, and exact source ranges" in text
+    assert "do not rely on acquisition records, retained working originals" in text
     assert "Do not reject material merely because the supplied source is a Lean specification" in text
     assert "do not modify source files" in text
     assert "separately authorized SourceCorpus repair" in text
@@ -472,18 +473,22 @@ def test_source_reviewer_routes_corpus_fidelity_blocker_outside_builder_authorit
 def test_source_builder_preserves_supplied_targets_without_inventing_source_truth() -> None:
     text = render_agent_instruction("SourceCorpusBuilderAgent")
 
-    assert "exact targets and included scopes" in text
-    assert "Keep downloads, originals, OCR, screenshots, and extraction scratch under `_work/`" in text
-    assert "do not summarize, extend the requested scope, invent formal targets" in text
-    assert "Do not replace source truth with" not in text
+    assert "structured material requests" in text
+    assert "resolve it with available network and acquisition tools" in text
+    assert "Keep downloads, originals, OCR, screenshots, extraction scratch, previews" in text
+    assert "do not summarize, extend the requested scope, invent role-sensitive material" in text
+    assert "Everything outside `_work/` will be copied unchanged" in text
+    assert "resolved download locations" in text
 
 
 def test_source_corpus_reviewer_is_independent_read_only_and_full_current() -> None:
     text = render_agent_instruction("SourceCorpusReviewerAgent")
 
     assert "You are read-only" in text
-    assert "independently compare it with authorized evidence under `_work/`" in text
-    assert "review the entire current candidate from the beginning" in text
+    assert "A resolved URL or local path need not equal the request text" in text
+    assert "independently compare it with relevant evidence under `_work/`" in text
+    assert "review the entire current durable tree from the beginning" in text
+    assert "processing history may not" in text
     assert "submit_source_corpus_review" in text
 
 
@@ -492,4 +497,7 @@ def test_resource_curator_treats_requested_use_as_advisory_evidence() -> None:
 
     assert "formal-dependency as strong provider evidence, not an irreversible classification" in text
     assert "direct inspection shows that the actual target is narrow supporting material" in text
+    assert "request may be a DOI, title, description, URL, or local clue" in text
+    assert "Everything outside `_work/` is final-facing static material" in text
+    assert "do not include acquisition, extraction, Curator, or round history" in text
     assert "cannot become a local Resource" not in text

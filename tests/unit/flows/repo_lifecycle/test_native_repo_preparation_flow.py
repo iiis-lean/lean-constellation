@@ -140,11 +140,8 @@ def _prepare_native_repo(
     source_root = repo_root / ".lean_constellation" / "source"
     source_root.mkdir(parents=True, exist_ok=True)
     (source_root / "README.md").write_text(
-        "Topology facts\n"
-        "Source provenance: local source corpus fixture.\n"
-        "Reading order: start with this entry and then use it as the main material.\n"
-        "Main material: compactness facts using open covers and finite subcovers.\n"
-        "Known gaps and extraction limits: no missing source sections are known.\n",
+        "# Topology facts\n\n"
+        "This complete fixture records compactness facts using open covers and finite subcovers.\n",
         encoding="utf-8",
     )
     initialized = lean_runtime.repo_workspace.initialize_repo_as_native(repo_root, project_name=repo_root.name)
@@ -180,17 +177,11 @@ def _write_source_draft_candidate(source_root: Path) -> None:
     (source_root / "article").mkdir(exist_ok=True)
     (source_root / "article" / "main.md").write_text("Faithful source fixture.\n", encoding="utf-8")
     (source_root / "README.md").write_text(
-        "Prepared source corpus\n"
-        "Source identity: unit-test source.\n"
-        "Source provenance: local prepared source fixture.\n"
-        "License/access: test fixture with local access.\n"
-        "Included scope: complete fixture. Excluded scope: none; omitted: none.\n"
+        "# Prepared source corpus\n\n"
+        "This static unit-test SourceCorpus contains the complete fixture.\n"
         "File inventory: README.md and article/main.md.\n"
         "Reading order: this README, then article/main.md as the main material.\n"
-        "Main material: article/main.md.\n"
-        "Input-to-final mapping: fixture://primary-source maps to article/main.md.\n"
-        "Known gaps and extraction limits: no missing source sections are known.\n"
-        "Corrections: none.\n",
+        "No representation limits affect reading this fixture.\n",
         encoding="utf-8",
     )
 
@@ -589,6 +580,11 @@ def test_native_preparation_source_prepare_accepted_submission_finalizes_manifes
     flow = runtime.flow_service.get_flow(flow_id)
     assert flow.state.position.phase == "source_corpus_review"
     assert flow.state.source_corpus_ready is False
+    approved_bytes = {
+        path.relative_to(source_root).as_posix(): path.read_bytes()
+        for path in source_root.rglob("*")
+        if path.is_file() and path.relative_to(source_root).parts[0] != "_work"
+    }
 
     _approve_source_corpus(runtime)
     _advance_and_run(runtime, flow_id)
@@ -599,6 +595,13 @@ def test_native_preparation_source_prepare_accepted_submission_finalizes_manifes
     assert manifest.ok and manifest.value is not None
     assert manifest.value.relpath == "custom_sources"
     assert manifest.value.entry_path == "README.md"
+    canonical_root = repo_root / "custom_sources"
+    canonical_bytes = {
+        path.relative_to(canonical_root).as_posix(): path.read_bytes()
+        for path in canonical_root.rglob("*")
+        if path.is_file()
+    }
+    assert canonical_bytes == approved_bytes
     assert not (repo_root / "custom_sources" / "_work").exists()
     assert not (repo_root / "custom_sources" / "paper.pdf").exists()
 

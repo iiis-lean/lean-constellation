@@ -11,6 +11,7 @@ from lean_constellation.domain.preparation import (
     RepoPreparationRequirementsView,
     RepoRequirementRef,
     SourceCorpusMode,
+    SourceMaterialInput,
 )
 from lean_constellation.domain.repo import (
     ProofAvailability,
@@ -95,6 +96,7 @@ class PreparationInputAgentView(StrictModel):
     source_corpus_mode: SourceCorpusMode
     logical_source_corpus_path: str
     source_description: str | None = None
+    source_material_inputs: list[SourceMaterialInput] = Field(default_factory=list)
     interface_inputs: list[DeclInterface] = Field(default_factory=list)
     allow_interface_supplement: bool
     requirement_refs: list[RepoRequirementRef] = Field(default_factory=list)
@@ -194,6 +196,7 @@ def _get_preparation_input(runtime, ctx, args: NoArgs):
                 value.source_corpus_relpath or ".lean_constellation/source"
             ),
             source_description=value.source_description,
+            source_material_inputs=value.source_material_inputs,
             interface_inputs=value.interface_inputs,
             allow_interface_supplement=value.allow_interface_supplement,
             requirement_refs=value.requirement_refs,

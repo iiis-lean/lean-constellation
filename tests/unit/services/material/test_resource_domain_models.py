@@ -8,8 +8,10 @@ from lean_constellation.services.material import ResourceMetadata, ResourceMetad
 
 def _write_valid_draft_files(draft_root: Path, *, text: str = "alpha\nbeta theorem\n") -> None:
     (draft_root / "README.md").write_text(valid_resource_readme(), encoding="utf-8")
-    (draft_root / "original" / "raw.txt").write_text("raw material\n", encoding="utf-8")
-    (draft_root / "normalized" / "main.md").write_text(text, encoding="utf-8")
+    (draft_root / "_work" / "original").mkdir(parents=True, exist_ok=True)
+    (draft_root / "_work" / "original" / "raw.txt").write_text("raw material\n", encoding="utf-8")
+    (draft_root / "article").mkdir(parents=True, exist_ok=True)
+    (draft_root / "article" / "main.md").write_text(text, encoding="utf-8")
 
 
 def test_resource_draft_and_finalized_resource_persist_domain_target_not_view(tmp_path: Path) -> None:

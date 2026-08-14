@@ -2,6 +2,8 @@ import json
 import struct
 import subprocess
 
+import pytest
+
 from tests.unit_services_helpers import make_runtime
 
 from pathlib import Path
@@ -242,15 +244,12 @@ def _write_source_prepare_input(runtime, repo_root: Path, targets: list[str]) ->
 def _source_entry_text(*, main_path: str = "notes/section.md") -> str:
     return (
         "# Source corpus\n\n"
-        "Source identity: unit-test source corpus.\n"
-        "Source provenance: imported from local markdown source material.\n"
-        "License/access: test fixture with local access.\n"
+        "A static unit-test source corpus.\n\n"
         f"File inventory: README.md and `{main_path}`.\n"
         f"Reading order: start with this entry, then read `{main_path}` as the main material.\n"
         f"Main material: `{main_path}` contains the formal background used for indexing.\n"
-        f"Input-to-final mapping: authorized fixture maps to `{main_path}`.\n"
-        "Known gaps and extraction limits: no missing source sections are known in this fixture.\n"
-        "Corrections: none.\nIncluded scope: complete fixture. Excluded scope: none; omitted: none.\n"
+        "Included scope: complete fixture.\n"
+        "No representation limits affect reading this fixture.\n"
     )
 
 
@@ -402,15 +401,10 @@ def test_source_corpus_gate_rejects_unexplained_single_note(tmp_path: Path) -> N
     assert "source_corpus_entry_not_explanatory" in {issue.kind for issue in inferred.value.issues}
     assert explicit.ok and explicit.value is not None
     assert not explicit.value.passed
-    assert {
-        "source_corpus_provenance_missing",
-        "source_corpus_reading_order_missing",
-        "source_corpus_main_material_missing",
-        "source_corpus_extraction_limits_missing",
-    } <= {issue.kind for issue in explicit.value.issues}
+    assert "source_corpus_readme_missing" in {issue.kind for issue in explicit.value.issues}
 
 
-def test_source_corpus_gate_rejects_weak_canonical_readme(tmp_path: Path) -> None:
+def test_static_readme_passes_without_workflow_provenance(tmp_path: Path) -> None:
     source_root = tmp_path / ".lean_constellation" / "source"
     source_root.mkdir(parents=True)
     (source_root / "README.md").write_text("# Source\n\nMain section overview. No missing material.\n", encoding="utf-8")
@@ -420,22 +414,14 @@ def test_source_corpus_gate_rejects_weak_canonical_readme(tmp_path: Path) -> Non
     gate = service.check_source_corpus_draft(tmp_path, entry_path="README.md")
 
     assert gate.ok and gate.value is not None
-    assert not gate.value.passed
-    assert {
-        "source_corpus_provenance_missing",
-        "source_corpus_reading_order_missing",
-        "source_corpus_extraction_limits_missing",
-    } <= {issue.kind for issue in gate.value.issues}
+    assert gate.value.passed
 
 
 def test_source_corpus_gate_accepts_explained_single_file_entry(tmp_path: Path) -> None:
     source_root = tmp_path / ".lean_constellation" / "source"
     source_root.mkdir(parents=True)
     (source_root / "paper.md").write_text(
-        "Source provenance: imported from the project paper.\n"
-        "Reading order: read this main material from top to bottom.\n"
-        "Main theorem statement and proof outline.\n"
-        "Known gaps and extraction limits: no missing source sections are known.\n",
+        "Main theorem statement and proof outline.\n",
         encoding="utf-8",
     )
     (source_root / "README.md").write_text(
@@ -485,6 +471,36 @@ def test_material_service_uses_injected_fake_provider_for_acquire_and_extract(tm
     assert extracted.value.resolved_artifact_kind == "html"
     assert extracted.value.extraction_kind == "html_main_text"
     assert [call[0] for call in fake.calls] == ["fetch_web_page", "extract_web_main_text"]
+
+
+@pytest.mark.parametrize(
+    "request_target",
+    [
+        "arXiv:2401.00001",
+        "doi:10.1000/unit-test",
+        "A structured request for the paper by its title",
+    ],
+)
+def test_acquire_source_accepts_resolved_locator_for_request(
+    tmp_path: Path,
+    request_target: str,
+) -> None:
+    service, fake = _fake_material_service()
+    _write_source_prepare_input(
+        service.runtime,
+        tmp_path,
+        [request_target],
+    )
+
+    acquired = service.acquire_source_material(
+        tmp_path,
+        target="https://example.test/resolved-paper",
+        preferred_kind="web_page",
+    )
+
+    assert acquired.ok and acquired.value is not None
+    assert acquired.value.primary_artifact_ref == "_work/original/page.html"
+    assert fake.calls == [("fetch_web_page", "https://example.test/resolved-paper")]
 
 
 def test_acquire_source_material_fake_provider_branches_and_kind_gate(tmp_path: Path) -> None:
@@ -564,6 +580,22 @@ def test_import_source_material_success_missing_and_safe_filename(tmp_path: Path
     assert missing.issues[0].kind == "missing_local_file"
     assert not unsafe_name.ok
     assert unsafe_name.issues[0].kind == "unsafe_source_filename"
+
+
+def test_import_source_accepts_resolved_local_path(tmp_path: Path) -> None:
+    service = make_runtime().material
+    local = tmp_path / "resolved-paper.md"
+    local.write_text("paper\n", encoding="utf-8")
+    _write_source_prepare_input(
+        service.runtime,
+        tmp_path,
+        ["The local manuscript identified by its title rather than an exact path"],
+    )
+
+    imported = service.import_source_material(tmp_path, source_path=str(local))
+
+    assert imported.ok and imported.value is not None
+    assert imported.value.primary_artifact_ref == "_work/original/resolved-paper.md"
 
 
 def test_normalize_source_text_material_success_missing_and_invalid_ref(tmp_path: Path) -> None:
@@ -880,32 +912,16 @@ def test_source_draft_rejects_unauthorized_special_roles_and_control_text(tmp_pa
     } <= {issue.kind for issue in gate.value.issues}
 
 
-def test_source_corpus_partial_extraction_and_corrections_require_records(tmp_path: Path) -> None:
+def test_corrected_final_text_needs_no_process_ledger(tmp_path: Path) -> None:
     source_root = tmp_path / ".lean_constellation" / "source"
     source_root.mkdir(parents=True)
-    readme = _source_entry_text(main_path="selected_excerpt.md").replace(
-        "Corrections: none.",
-        "Corrections: repaired OCR symbol on line 2.",
-    ).replace("Included scope: complete fixture. Excluded scope: none; omitted: none.\n", "")
-    (source_root / "README.md").write_text(readme, encoding="utf-8")
+    (source_root / "README.md").write_text(
+        _source_entry_text(main_path="selected_excerpt.md"),
+        encoding="utf-8",
+    )
     (source_root / "selected_excerpt.md").write_text("selected source text\n", encoding="utf-8")
     service = make_runtime().material
 
-    rejected = service.check_source_corpus_draft(tmp_path, entry_path="README.md")
-    assert rejected.ok and rejected.value is not None and not rejected.value.passed
-    assert {"source_corpus_partial_scope_missing", "source_corpus_correction_ledger_missing"} <= {
-        issue.kind for issue in rejected.value.issues
-    }
-
-    (source_root / "README.md").write_text(
-        readme + "Selected scope: Section 2 only. Omitted: all other sections.\n",
-        encoding="utf-8",
-    )
-    (source_root / "supplementary").mkdir()
-    (source_root / "supplementary" / "correction-ledger.md").write_text(
-        "Line 2: OCR symbol x corrected to y using the PDF.\n",
-        encoding="utf-8",
-    )
     passed = service.check_source_corpus_draft(tmp_path, entry_path="README.md")
     assert passed.ok and passed.value is not None and passed.value.passed
 

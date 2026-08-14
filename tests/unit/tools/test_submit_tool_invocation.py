@@ -992,7 +992,7 @@ def test_source_corpus_builder_ready_submits_configured_canonical_relpath(tmp_pa
     assert not (tmp_path / ".lean_constellation" / "source_corpus" / "manifest.json").exists()
 
 
-def test_source_corpus_builder_ready_weak_canonical_readme_rejected_before_gateway(tmp_path: Path) -> None:
+def test_source_corpus_builder_ready_accepts_concise_static_readme(tmp_path: Path) -> None:
     gateway = FakeSubmissionGateway()
     runtime = _runtime(gateway)
     assert register_submit_tooling(runtime).ok
@@ -1016,12 +1016,8 @@ def test_source_corpus_builder_ready_weak_canonical_readme_rejected_before_gatew
 
     assert result.ok
     assert result.value is not None
-    assert result.value.ok is False
-    assert gateway.accepted == []
-    assert {
-        "source_corpus_provenance_missing",
-        "source_corpus_reading_order_missing",
-    } <= {issue.kind for issue in result.value.issues}
+    assert result.value.ok is True
+    assert len(gateway.accepted) == 1
     assert not (tmp_path / ".lean_constellation" / "source_corpus" / "manifest.json").exists()
 
 

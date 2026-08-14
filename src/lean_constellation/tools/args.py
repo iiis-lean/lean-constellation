@@ -137,7 +137,12 @@ class SourceCorpusScanArgs(StrictModel):
 
 
 class SourceMaterialAcquireArgs(StrictModel):
-    target: str = Field(description="Exact source target from preparation_input.source_material_inputs; arbitrary extra targets are rejected.")
+    target: str = Field(
+        description=(
+            "Resolved material locator or local target to acquire for the current structured "
+            "Source request, such as an arXiv id, URL, local file, or local directory."
+        )
+    )
     preferred_kind: Literal["arxiv_source", "arxiv_pdf", "web_page", "local_file", "local_dir"] | None = Field(
         default=None,
         description="Optional acquisition kind override.",
@@ -161,7 +166,9 @@ class SourceArtifactExtractArgs(StrictModel):
 
 
 class SourceMaterialImportArgs(StrictModel):
-    source_path: str = Field(description="Local source file or directory path to import into the source draft area.")
+    source_path: str = Field(
+        description="Resolved local source file path to import into the active Source draft _work area."
+    )
     as_name: str | None = Field(default=None, description="Optional normalized file or directory name.")
 
 
@@ -170,7 +177,13 @@ class SourceMaterialNormalizeArgs(StrictModel):
 
 
 class ResourceMaterialAcquireArgs(StrictModel):
-    target: str = Field(description="Resource target to acquire into the current active resource draft, such as an arXiv id, URL, local file, or local directory.")
+    target: str = Field(
+        description=(
+            "Resolved material locator or local target for the current Resource request, "
+            "to acquire into the active Resource draft _work area; examples include an "
+            "arXiv id, URL, local file, or local directory."
+        )
+    )
     preferred_kind: Literal["arxiv_source", "arxiv_pdf", "web_page", "local_file", "local_dir"] | None = Field(
         default=None,
         description="Optional acquisition kind override for the resource target.",
@@ -194,7 +207,9 @@ class ResourceArtifactExtractArgs(StrictModel):
 
 
 class ResourceMaterialImportArgs(StrictModel):
-    source_path: str = Field(description="Local file or directory path to import into the current resource draft original material area.")
+    source_path: str = Field(
+        description="Resolved local file path to import into the active Resource draft _work area."
+    )
     as_name: str | None = Field(default=None, description="Optional normalized file or directory name inside the resource draft.")
 
 

@@ -116,6 +116,18 @@ def test_requirement_interface_kind_is_a_self_contained_decl_kind_enum() -> None
         assert interface["properties"]["kind"]["enum"] == expected
 
 
+def test_material_acquisition_schema_describes_resolved_targets() -> None:
+    runtime = make_mcp_runtime()
+
+    source = _tool(runtime, "source_corpus_builder", "acquire_source_material")
+    resource = _tool(runtime, "resource_curator", "acquire_resource_material")
+
+    assert "Resolved material locator" in source.input_schema["properties"]["target"]["description"]
+    assert "structured Source request" in source.input_schema["properties"]["target"]["description"]
+    assert "Resolved material locator" in resource.input_schema["properties"]["target"]["description"]
+    assert "Resource request" in resource.input_schema["properties"]["target"]["description"]
+
+
 def test_every_tool_in_repo_discovery_agent_views_has_self_contained_schema() -> None:
     runtime = make_mcp_runtime()
     reports = build_agent_surface_reports()

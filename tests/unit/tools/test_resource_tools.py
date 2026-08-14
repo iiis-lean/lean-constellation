@@ -196,22 +196,24 @@ def test_resource_acquisition_writes_active_draft_not_source_corpus(tmp_path: Pa
     assert not (tmp_path / ".lean_constellation" / "source" / "original" / "raw.txt").exists()
 
 
-def test_resource_acquisition_rejects_non_draft_target(tmp_path: Path) -> None:
+def test_resource_import_accepts_resolved_local_material_for_request(tmp_path: Path) -> None:
     runtime = create_test_runtime_services(register_application_tools=True)
     target = runtime.material.normalize_resource_target("https://example.com/assigned")
     assert target.ok and target.value is not None
     draft = runtime.material.allocate_resource_draft(tmp_path, target=target.value)
     assert draft.ok and draft.value is not None
     runtime.ark.flow_service = _FakeResourceFlowService(flow_id="flow_resource", draft_id=draft.value.draft.draft_id)
+    resolved = tmp_path / "resolved-resource.md"
+    resolved.write_text("resource material\n", encoding="utf-8")
 
     result = runtime.tool_facade.invoke_agent_tool(
         _resource_raw(tmp_path),
-        tool_name="acquire_resource_material",
-        flat_args={"target": "https://example.com/other", "preferred_kind": "web_page"},
+        tool_name="import_resource_material",
+        flat_args={"source_path": str(resolved), "as_name": "resolved-resource.md"},
     )
 
-    assert result.ok and result.value is not None and not result.value.ok
-    assert result.value.issues[0].kind == "resource_material_target_unauthorized"
+    assert result.ok and result.value is not None and result.value.ok
+    assert result.value.value["primary_artifact_ref"] == "_work/original/resolved-resource.md"
 
 
 def test_resource_manifest_tool_selects_explicit_canonical_entry(tmp_path: Path) -> None:

@@ -989,13 +989,12 @@ class ResourceLibraryComponent:
                         object_ref=item.path,
                     )
                 )
-        issues.extend(self._resource_readme_issues(draft_root, manifest.value))
+        issues.extend(self._resource_readme_issues(draft_root))
         return issues
 
     def _resource_readme_issues(
         self,
         draft_root: Path,
-        manifest: ResourceMaterialManifest,
     ) -> list[ServiceIssue]:
         readme_path = draft_root / "README.md"
         validation = self.runtime.external.material.validate_readable_text(readme_path)
@@ -1007,71 +1006,7 @@ class ResourceLibraryComponent:
                     object_ref="README.md",
                 )
             ]
-        text = readme_path.read_text(encoding="utf-8")
-        lower = text.lower()
-        requirements = {
-            "resource_readme_identity_missing": (
-                (r"\btitle\s*:", r"\bauthors?\s*:", r"\b(?:version|date)\s*:"),
-                "README must identify the title, author or authors, and version or date.",
-            ),
-            "resource_readme_provenance_missing": (
-                (r"\b(?:source|provenance)\b", r"\b(?:canonical locator|doi|arxiv|url)\s*:"),
-                "README must record source provenance and a canonical locator.",
-            ),
-            "resource_readme_access_missing": (
-                (r"\blicen[cs]e\b", r"\baccess\b"),
-                "README must record license and access conditions.",
-            ),
-            "resource_readme_material_map_missing": (
-                (r"\binput(?:-to-final| to final| mapping)\b",),
-                "README must map authorized input material to final candidate paths.",
-            ),
-            "resource_readme_reading_order_missing": (
-                (r"\breading order\b", re.escape(manifest.canonical_entry.lower())),
-                "README must give a reading order and name the canonical entry.",
-            ),
-            "resource_readme_scope_missing": (
-                (r"\b(?:selected|included) scope\b", r"\bconsumer need\b"),
-                "README must state selected scope and the consumer need.",
-            ),
-            "resource_readme_limits_missing": (
-                (r"\b(?:extraction|ocr)\b", r"\bcorrections?\b", r"\blimits?\b"),
-                "README must state extraction or OCR limits and correction status.",
-            ),
-            "resource_readme_ownership_missing": (
-                (
-                    r"\bsupporting material\b",
-                    r"\b(?:consumer|current repo(?:sitory)?)\b.{0,100}\bformalization responsibility\b",
-                    r"\bnot (?:a )?provider\b",
-                ),
-                "README must preserve supporting-material ownership and the consumer's formalization responsibility.",
-            ),
-        }
-        issues: list[ServiceIssue] = []
-        for kind, (patterns, message) in requirements.items():
-            if not all(re.search(pattern, lower, flags=re.DOTALL) for pattern in patterns):
-                issues.append(self.runtime.foundation.issue(kind, message, object_ref="README.md"))
-
-        correction_values = re.findall(
-            r"(?i)\bcorrections?\s*:\s*([^\n]+)",
-            lower,
-        )
-        no_correction_values = {"none", "no", "not required", "n/a"}
-        if any(value.rstrip(".").strip() not in no_correction_values for value in correction_values):
-            has_ledger = any(
-                item.category == "supplementary"
-                and re.search(r"(?:correction|ledger)", Path(item.path).name, flags=re.IGNORECASE)
-                for item in manifest.files
-            )
-            if not has_ledger:
-                issues.append(
-                    self.runtime.foundation.issue(
-                        "resource_correction_ledger_missing",
-                        "Declared corrections require a supplementary correction ledger.",
-                        object_ref="README.md",
-                    )
-                )
-        return issues
+        return []
 
     @staticmethod
     def _is_forbidden_draft_artifact(relative: Path) -> bool:

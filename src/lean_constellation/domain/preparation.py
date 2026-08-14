@@ -21,11 +21,24 @@ class SourceCorpusMode(StrEnum):
 
 
 class SourceMaterialInput(StrictModel):
-    """Exact external or supplied material boundary authorized for Source preparation."""
+    """Structured material request for Source preparation."""
 
-    target: str
-    included_scope: str
-    role: Literal["primary_source", "formal_target", "solution", "proof_reference", "asset"]
+    target: str = Field(
+        description=(
+            "Material identity or discovery clue, such as a URL, DOI, arXiv id, title, "
+            "local path, or natural-language description."
+        )
+    )
+    included_scope: str = Field(
+        description="Material scope that the final SourceCorpus must faithfully include."
+    )
+    role: Literal[
+        "primary_source",
+        "formal_target",
+        "solution",
+        "proof_reference",
+        "asset",
+    ] = Field(description="Semantic role authorized for durable SourceCorpus content.")
 
     @field_validator("target", "included_scope", mode="before")
     @classmethod

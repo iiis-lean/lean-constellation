@@ -9,8 +9,10 @@ from lean_constellation.services.material import ResourceDraftStatus, ResourceMe
 
 def _write_draft_files(draft_root: Path) -> None:
     (draft_root / "README.md").write_text(valid_resource_readme(), encoding="utf-8")
-    (draft_root / "original" / "raw.txt").write_text("raw\n", encoding="utf-8")
-    (draft_root / "normalized" / "main.md").write_text("line one\nline two theorem\n", encoding="utf-8")
+    (draft_root / "_work" / "original").mkdir(parents=True, exist_ok=True)
+    (draft_root / "_work" / "original" / "raw.txt").write_text("raw\n", encoding="utf-8")
+    (draft_root / "article").mkdir(parents=True, exist_ok=True)
+    (draft_root / "article" / "main.md").write_text("line one\nline two theorem\n", encoding="utf-8")
 
 
 def _resource_temp(root: Path) -> Path:
@@ -155,7 +157,7 @@ def test_resource_curation_submit_outcome_gates(tmp_path: Path) -> None:
     assert not not_ready.ok
     assert {issue.kind for issue in not_ready.issues} >= {
         "resource_draft_readme_missing",
-        "resource_draft_normalized_artifact_missing",
+        "resource_draft_canonical_entry_missing",
     }
 
     _write_draft_files(Path(draft.value.draft_root))

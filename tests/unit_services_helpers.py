@@ -549,10 +549,10 @@ def make_runtime(
 def valid_resource_readme(
     *,
     canonical_entry: str = "article/main.md",
-    original_ref: str = "the exact acquired input",
+    original_ref: str = "the supporting source material",
     title: str = "Curated resource fixture",
 ) -> str:
-    """Return a complete current-schema Resource README fixture."""
+    """Return a static Resource README fixture."""
 
     return f"""# {title}
 
@@ -560,30 +560,30 @@ Title: {title}
 Authors: Fixture Author
 Version/date: 2026-08-03
 
-## Source provenance
+## Source identity
 
 Canonical locator: https://example.com/resource-fixture
-Source: deterministic test fixture.
+This is a deterministic supporting-material fixture.
 
 ## License and access
 
 License: test fixture terms. Access: local and unrestricted.
 
-## Input-to-final mapping
+## Files
 
-Input mapping: `{original_ref}` maps to `{canonical_entry}`.
+`{canonical_entry}` contains the durable material represented from `{original_ref}`.
 
 ## Reading order
 
 Read `{canonical_entry}` first; it is the canonical entry.
 
-## Selected scope and consumer need
+## Selected scope
 
-Selected scope: the complete fixture text. Consumer need: deterministic supporting evidence.
+The resource contains the complete fixture text.
 
-## Extraction limits and corrections
+## Representation limits
 
-Extraction limits: none. Corrections: none.
+No representation limits affect reading this fixture.
 
 ## Ownership
 

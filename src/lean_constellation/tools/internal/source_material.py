@@ -1048,7 +1048,7 @@ def build_source_corpus_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="check_source_corpus_draft",
-            description="Validate the active Source draft candidate outside _work: README/entry, scope, correction ledger, readable self-contained text, authorization, and path/runtime safety.",
+            description="Validate the active Source draft outside _work: readable README/entry and material, durable role authorization, raw-container exclusion, and path/runtime safety.",
             args_model=SourceCorpusCheckArgs,
             capability=ToolCapability.READ,
             result_view="gate_report",
@@ -1069,7 +1069,7 @@ def build_source_corpus_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="acquire_source_material",
-            description="Acquire one exact authorized source target into the active Source draft _work area.",
+            description="Acquire one resolved material target for the current structured Source request into the active Source draft _work area.",
             args_model=SourceMaterialAcquireArgs,
             capability=ToolCapability.WRITE,
             result_view="source_acquisition_handles",

@@ -653,9 +653,6 @@ class SourceCorpusComponent:
         target: str,
         preferred_kind: Literal["arxiv_source", "arxiv_pdf", "web_page", "local_file", "local_dir"] | None = None,
     ) -> ServiceResult[SourceAcquisitionView]:
-        authorized = self._authorize_source_target(repo_root, target)
-        if authorized is not None:
-            return self.runtime.foundation.fail(authorized)
         root = self._work_root(repo_root)
         root.mkdir(parents=True, exist_ok=True)
         try:
@@ -759,9 +756,6 @@ class SourceCorpusComponent:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue("missing_local_file", f"Local source material not found: {source}")
             )
-        authorized = self._authorize_source_target(repo_root, str(source))
-        if authorized is not None:
-            return self.runtime.foundation.fail(authorized)
         root = self._work_root(repo_root)
         try:
             dest_name = self.runtime.foundation.layout.ensure_safe_key(as_name) if as_name else self._safe_source_filename(source.name)
@@ -838,7 +832,6 @@ class SourceCorpusComponent:
             )
         entry = manifest.entry_path or entry_path
         entry_view: SourceCorpusFileView | None = None
-        entry_text = ""
         if not entry:
             issues.append(self.runtime.foundation.issue("source_corpus_entry_missing", "Source corpus needs an entry file such as README.md."))
         elif entry not in {item.path for item in manifest.files}:
@@ -852,47 +845,12 @@ class SourceCorpusComponent:
                         f"Entry file must be readable non-empty UTF-8 text: {entry}",
                     )
                 )
-            else:
-                entry_text = self._read_source_text(root / entry)
-        if entry and entry_view is not None and entry_view.readable_text:
-            if not self._has_provenance_marker(entry_text):
-                issues.append(
-                    self.runtime.foundation.issue(
-                        "source_corpus_provenance_missing",
-                        "Source corpus entry must explain where the source material came from.",
-                        field="entry_path",
-                    )
-                )
-            if not self._has_reading_order_marker(entry_text):
-                issues.append(
-                    self.runtime.foundation.issue(
-                        "source_corpus_reading_order_missing",
-                        "Source corpus entry must explain how downstream readers should use the material.",
-                        field="entry_path",
-                    )
-                )
-            if not self._has_main_material_marker(entry_text):
-                issues.append(
-                    self.runtime.foundation.issue(
-                        "source_corpus_main_material_missing",
-                        "Source corpus entry must identify the main material or point to separate readable source material.",
-                        field="entry_path",
-                    )
-                )
-            if not self._has_extraction_limits_marker(entry_text):
-                issues.append(
-                    self.runtime.foundation.issue(
-                        "source_corpus_extraction_limits_missing",
-                        "Source corpus entry must record known gaps, missing material, or extraction limits.",
-                        field="entry_path",
-                    )
-                )
         readme = root / "README.md"
         if not readme.is_file():
             issues.append(
                 self.runtime.foundation.issue(
                     "source_corpus_readme_missing",
-                    "SourceCorpus requires a root README.md that records provenance, layout, scope, and extraction limits.",
+                    "SourceCorpus requires a readable root README.md for its stable material identity and organization.",
                     object_ref="README.md",
                 )
             )
@@ -912,17 +870,6 @@ class SourceCorpusComponent:
                 readme_text = readme.read_text(encoding="utf-8")
         if readme_text:
             if is_active_draft:
-                readme_requirements = {
-                    "source_corpus_identity_missing": (r"\b(?:source identity|title)\s*:", "README must identify the source."),
-                    "source_corpus_access_missing": (r"\b(?:license|licence|access)\b", "README must record license or access conditions."),
-                    "source_corpus_scope_missing": (r"\b(?:included scope|source boundary)\b", "README must state the included source scope."),
-                    "source_corpus_omitted_scope_missing": (r"\b(?:excluded scope|omitted)\b", "README must state excluded or omitted source scope."),
-                    "source_corpus_inventory_missing": (r"\bfile inventory\b", "README must include a file inventory."),
-                    "source_corpus_material_map_missing": (r"\binput(?:-to-final| to final)\b", "README must map each authorized input to final candidate content."),
-                }
-                for kind, (pattern, message) in readme_requirements.items():
-                    if not re.search(pattern, readme_text, flags=re.IGNORECASE):
-                        issues.append(self.runtime.foundation.issue(kind, message, object_ref="README.md"))
                 if "_work/" in readme_text or str(self._work_root(repo_root)) in readme_text:
                     issues.append(
                         self.runtime.foundation.issue(
@@ -936,43 +883,6 @@ class SourceCorpusComponent:
                         self.runtime.foundation.issue(
                             "source_corpus_agent_planning_forbidden",
                             "SourceCorpus README must not contain formalization or repository-planning content.",
-                            object_ref="README.md",
-                        )
-                    )
-            partial_files = [
-                item.path
-                for item in manifest.files
-                if re.search(r"(?:partial|excerpt|selected)", Path(item.path).stem, flags=re.IGNORECASE)
-            ]
-            if partial_files and not re.search(
-                r"\b(?:selected scope|included scope|source boundary|omitted)\b",
-                readme_text,
-                flags=re.IGNORECASE,
-            ):
-                issues.append(
-                    self.runtime.foundation.issue(
-                        "source_corpus_partial_scope_missing",
-                        "README must identify the exact selected scope and omitted material for partial extraction files.",
-                        object_ref="README.md",
-                        details={"partial_files": partial_files},
-                    )
-                )
-            correction_values = re.findall(
-                r"(?i)\bcorrections?\s*:\s*([^\n]+)",
-                readme_text,
-            )
-            no_correction_values = {"none", "no", "not required", "n/a"}
-            if any(value.rstrip(".").strip().lower() not in no_correction_values for value in correction_values):
-                has_ledger = any(
-                    item.path.startswith("supplementary/")
-                    and re.search(r"(?:correction|ledger)", Path(item.path).name, flags=re.IGNORECASE)
-                    for item in manifest.files
-                )
-                if not has_ledger:
-                    issues.append(
-                        self.runtime.foundation.issue(
-                            "source_corpus_correction_ledger_missing",
-                            "Declared corrections require a supplementary correction ledger.",
                             object_ref="README.md",
                         )
                     )
@@ -1019,7 +929,7 @@ class SourceCorpusComponent:
                     issues.append(
                         self.runtime.foundation.issue(
                             f"source_corpus_{role}_unauthorized",
-                            f"Candidate paths {paths} require an exact source material input with role={role}.",
+                            f"Candidate paths {paths} require a structured source material input with role={role}.",
                             object_ref=paths[0],
                             details={"paths": paths},
                         )
@@ -1435,75 +1345,6 @@ class SourceCorpusComponent:
     def _is_canonical_entry(path: str) -> bool:
         return Path(path).name in {"README.md", "README.txt", "index.md", "main.md"}
 
-    @staticmethod
-    def _has_provenance_marker(text: str) -> bool:
-        lowered = text.lower()
-        return any(
-            re.search(pattern, lowered)
-            for pattern in (
-                r"\bsource\s+provenance\b",
-                r"\bprovenance\b",
-                r"\bsource\s+origin\b",
-                r"\borigin\b",
-                r"\bimported\s+from\b",
-                r"\bextracted\s+from\b",
-                r"\bderived\s+from\b",
-                r"\bdownloaded\s+from\b",
-                r"\btranscribed\s+from\b",
-            )
-        )
-
-    @staticmethod
-    def _has_reading_order_marker(text: str) -> bool:
-        lowered = text.lower()
-        return any(
-            re.search(pattern, lowered)
-            for pattern in (
-                r"\breading\s+order\b",
-                r"\bread\s+first\b",
-                r"\bread\s+this\b",
-                r"\bthen\s+read\b",
-                r"\bstart\s+with\b",
-                r"\bstart\s+from\b",
-                r"\bentry\s+point\b",
-                r"\buse\s+.+\s+as\s+the\s+main\s+material\b",
-                r"\buse\s+.+\s+as\s+the\s+entry\b",
-            )
-        )
-
-    @staticmethod
-    def _has_main_material_marker(text: str) -> bool:
-        lowered = text.lower()
-        return any(term in lowered for term in ("main", "material", "theorem", "definition", "chapter", "section"))
-
-    @staticmethod
-    def _has_extraction_limits_marker(text: str) -> bool:
-        lowered = text.lower()
-        return any(
-            re.search(pattern, lowered)
-            for pattern in (
-                r"\bknown\s+gap\b",
-                r"\bknown\s+gaps\b",
-                r"\bknown\s+missing\b",
-                r"\bno\s+known\s+gaps\b",
-                r"\bmissing\s+source\b",
-                r"\bmissing\s+sections\b",
-                r"\bextraction\s+limit\b",
-                r"\bextraction\s+limits\b",
-                r"\bknown\s+limit\b",
-                r"\bknown\s+limits\b",
-                r"\bknown\s+limitation\b",
-                r"\bknown\s+limitations\b",
-            )
-        )
-
-    @staticmethod
-    def _read_source_text(path: Path) -> str:
-        try:
-            return path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            return ""
-
     def _source_tree_issues(
         self,
         root: Path,
@@ -1533,24 +1374,6 @@ class SourceCorpusComponent:
                     )
                 )
         return issues
-
-    def _authorize_source_target(self, repo_root: Path, target: str) -> ServiceIssue | None:
-        preparation = self.runtime.repo_workspace.preparation.get_preparation_input(Path(repo_root))
-        if not preparation.ok or preparation.value is None:
-            return self.runtime.foundation.issue(
-                "source_material_input_missing",
-                "Source material acquisition requires a persisted preparation input.",
-                current=target,
-            )
-        authorized_targets = {item.target for item in preparation.value.input.source_material_inputs}
-        if target not in authorized_targets:
-            return self.runtime.foundation.issue(
-                "source_material_target_unauthorized",
-                "Source material target is outside the exact preparation input boundary.",
-                current=target,
-                details={"authorized_targets": sorted(authorized_targets)},
-            )
-        return None
 
     def _source_input_roles(self, repo_root: Path) -> set[str]:
         preparation = self.runtime.repo_workspace.preparation.get_preparation_input(Path(repo_root))

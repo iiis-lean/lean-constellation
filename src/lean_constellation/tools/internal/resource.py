@@ -62,12 +62,12 @@ class ResourceDraftAgentView(StrictModel):
     readme_required_sections: list[str] = Field(
         default_factory=lambda: [
             "bibliographic identity",
-            "source provenance and canonical locator",
-            "license and access",
-            "input-to-final material map",
+            "canonical source identity or locator when known",
+            "license and access facts when known",
+            "durable file inventory",
             "canonical reading order",
-            "selected scope and consumer need",
-            "extraction/OCR limits and correction status",
+            "selected material scope",
+            "representation limits that affect faithful reading",
             "supporting-material ownership",
         ]
     )
@@ -423,7 +423,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="acquire_resource_material",
-            description="Acquire raw resource material into the current active resource draft _work area; only the exact Resource target is authorized.",
+            description="Acquire one resolved material target for the current Resource request into the active resource draft _work area.",
             args_model=ResourceMaterialAcquireArgs,
             capability=ToolCapability.WRITE,
             result_view="resource_acquisition_handles",
@@ -443,7 +443,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="import_resource_material",
-            description="Import the exact local Resource target into the current active draft _work area.",
+            description="Import one resolved local material file for the current Resource request into the active draft _work area.",
             args_model=ResourceMaterialImportArgs,
             capability=ToolCapability.WRITE,
             result_view="resource_acquisition_handles",
@@ -516,7 +516,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         direct_tool(
             name="check_resource_draft",
-            description="Validate coherent metadata, faithful readable normalized material, provenance, scope, limitations, correction ledger, ownership, and required README content before local-resource submit.",
+            description="Validate coherent metadata, faithful readable durable material, static README guidance, ownership, and artifact safety before local-resource submit.",
             args_model=DraftIdArgs,
             capability=ToolCapability.READ,
             backing_service="material",

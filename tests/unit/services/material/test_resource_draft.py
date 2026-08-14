@@ -41,6 +41,26 @@ def test_allocate_resource_draft_creates_metadata_and_work_dirs(tmp_path: Path) 
     assert Path(draft.value.metadata_path).is_file()
 
 
+def test_resource_import_accepts_resolved_material_for_structured_request(tmp_path: Path) -> None:
+    service = make_runtime().material
+    draft = service.allocate_resource_draft(
+        tmp_path,
+        target="A title or DOI supplied as the Resource request",
+    )
+    assert draft.ok and draft.value is not None
+    resolved = tmp_path / "resolved-resource.md"
+    resolved.write_text("supporting material\n", encoding="utf-8")
+
+    imported = service.import_resource_material(
+        tmp_path,
+        draft_id=draft.value.draft.draft_id,
+        source_path=str(resolved),
+    )
+
+    assert imported.ok and imported.value is not None
+    assert imported.value.primary_artifact_ref == "_work/original/resolved-resource.md"
+
+
 def test_check_resource_draft_requires_readme_manifest_and_normalized_artifact(tmp_path: Path) -> None:
     service = make_runtime().material
     draft = service.allocate_resource_draft(tmp_path, target="https://example.com/missing")
@@ -227,56 +247,24 @@ def test_resource_manifest_records_file_truth_and_matches_final_metadata(tmp_pat
     assert finalized.value.resource.content_hash == canonical.sha256
 
 
-@pytest.mark.parametrize(
-    ("needle", "replacement", "expected_issue"),
-    [
-        ("Authors: Fixture Author", "Creator: Fixture Author", "resource_readme_identity_missing"),
-        ("Canonical locator:", "Reference:", "resource_readme_provenance_missing"),
-        (
-            "## License and access\n\nLicense: test fixture terms. Access:",
-            "## Terms\n\nTerms: test fixture. Availability:",
-            "resource_readme_access_missing",
-        ),
-        (
-            "## Input-to-final mapping\n\nInput mapping: `the exact acquired input` maps to `article/main.md`.",
-            "## File relationship\n\n`raw.txt` maps to `main.md`.",
-            "resource_readme_material_map_missing",
-        ),
-        ("## Reading order", "## Start here", "resource_readme_reading_order_missing"),
-        (
-            "## Selected scope and consumer need\n\nSelected scope: the complete fixture text. Consumer need: deterministic supporting evidence.",
-            "## Coverage and purpose\n\nThe complete fixture supports deterministic evidence.",
-            "resource_readme_scope_missing",
-        ),
-        (
-            "## Extraction limits and corrections\n\nExtraction limits: none. Corrections: none.",
-            "## Processing notes\n\nNo processing changes were needed.",
-            "resource_readme_limits_missing",
-        ),
-        ("Supporting material only.", "Reference only.", "resource_readme_ownership_missing"),
-    ],
-)
-def test_resource_readme_requires_each_frozen_contract_marker(
-    tmp_path: Path,
-    needle: str,
-    replacement: str,
-    expected_issue: str,
-) -> None:
+def test_resource_static_readme_needs_no_workflow_sections(tmp_path: Path) -> None:
     service = make_runtime().material
-    draft = service.allocate_resource_draft(tmp_path, target=f"https://example.com/{expected_issue}")
+    draft = service.allocate_resource_draft(tmp_path, target="https://example.com/static-readme")
     assert draft.ok and draft.value is not None
     root = Path(draft.value.draft_root)
-    _write_valid_draft_files(root)
-    readme = (root / "README.md").read_text(encoding="utf-8")
-    (root / "README.md").write_text(readme.replace(needle, replacement), encoding="utf-8")
+    (root / "README.md").write_text(
+        "# Static resource\n\nRead `article/main.md` for the complete supporting text.\n",
+        encoding="utf-8",
+    )
+    (root / "article").mkdir()
+    (root / "article" / "main.md").write_text("faithful material\n", encoding="utf-8")
 
     checked = service.check_resource_draft(tmp_path, draft_id=draft.value.draft.draft_id)
 
-    assert checked.ok and checked.value is not None and not checked.value.passed
-    assert expected_issue in {issue.kind for issue in checked.value.issues}
+    assert checked.ok and checked.value is not None and checked.value.passed
 
 
-def test_resource_readme_requires_correction_ledger(tmp_path: Path) -> None:
+def test_resource_corrected_text_needs_no_process_ledger(tmp_path: Path) -> None:
     service = make_runtime().material
     draft = service.allocate_resource_draft(tmp_path, target="https://example.com/no-original")
     assert draft.ok and draft.value is not None
@@ -285,18 +273,6 @@ def test_resource_readme_requires_correction_ledger(tmp_path: Path) -> None:
     (root / "article").mkdir()
     (root / "article" / "main.md").write_text("faithful text\n", encoding="utf-8")
 
-    readme = valid_resource_readme(
-    ).replace("Corrections: none.", "Corrections: fixed one OCR symbol.")
-    (root / "README.md").write_text(readme, encoding="utf-8")
-    missing_ledger = service.check_resource_draft(tmp_path, draft_id=draft.value.draft.draft_id)
-    assert missing_ledger.ok and missing_ledger.value is not None and not missing_ledger.value.passed
-    assert "resource_correction_ledger_missing" in {issue.kind for issue in missing_ledger.value.issues}
-
-    (root / "supplementary").mkdir()
-    (root / "supplementary" / "correction-ledger.md").write_text(
-        "Line 1: OCR x was corrected to y.\n",
-        encoding="utf-8",
-    )
     passed = service.check_resource_draft(tmp_path, draft_id=draft.value.draft.draft_id)
     assert passed.ok and passed.value is not None and passed.value.passed
 

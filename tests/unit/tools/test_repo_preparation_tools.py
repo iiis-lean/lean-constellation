@@ -1,5 +1,18 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
+from lean_constellation.domain.preparation import (
+    RepoPreparationInput,
+    SourceCorpusMode,
+    SourceMaterialInput,
+)
+from lean_constellation.tools.args import NoArgs
+from lean_constellation.tools.internal.repo_preparation import (
+    PreparationInputAgentView,
+    _get_preparation_input,
+)
+from tests.unit_services_helpers import make_runtime
 from tests.unit.tools._family_helpers import assert_group_contains, assert_tools_registered
 
 
@@ -89,3 +102,46 @@ def test_repo_preparation_agent_views_are_compact_and_named_by_shape() -> None:
         specs["inspect_github_lean_repository"].result_view
         == "github_repo_candidate_detail"
     )
+
+
+def test_get_preparation_input_exposes_source_material_requests(tmp_path) -> None:  # noqa: ANN001
+    runtime = make_runtime()
+    request = SourceMaterialInput(
+        target="arXiv:2401.00001 or the corresponding paper title",
+        included_scope="The complete paper.",
+        role="primary_source",
+    )
+    written = runtime.repo_workspace.preparation.write_preparation_input(
+        tmp_path,
+        input=RepoPreparationInput(
+            goal="Prepare a faithful SourceCorpus.",
+            source_corpus_mode=SourceCorpusMode.PREPARE,
+            source_material_inputs=[request],
+        ),
+    )
+    assert written.ok
+
+    loaded = _get_preparation_input(
+        runtime,
+        SimpleNamespace(repo_root=tmp_path),
+        NoArgs(),
+    )
+
+    assert loaded.ok and loaded.value is not None
+    assert loaded.value.source_material_inputs == [request]
+
+
+def test_preparation_input_view_schema_describes_source_material_requests() -> None:
+    schema = PreparationInputAgentView.model_json_schema()
+    request = schema["$defs"]["SourceMaterialInput"]
+    properties = request["properties"]
+
+    assert "URL, DOI, arXiv id, title" in properties["target"]["description"]
+    assert "faithfully include" in properties["included_scope"]["description"]
+    assert properties["role"]["enum"] == [
+        "primary_source",
+        "formal_target",
+        "solution",
+        "proof_reference",
+        "asset",
+    ]

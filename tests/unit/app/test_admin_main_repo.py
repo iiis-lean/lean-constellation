@@ -130,7 +130,7 @@ def test_admin_main_repo_source_corpus_validation_can_run_draft_gate(tmp_path: P
     assert validated.value.draft_gate.passed is True
 
 
-def test_admin_main_repo_source_corpus_validation_reports_draft_gate_issues(tmp_path: Path) -> None:
+def test_admin_main_repo_source_corpus_validation_reports_raw_container_issue(tmp_path: Path) -> None:
     runtime, _lake = _runtime_with_fake_lake(tmp_path)
     admin = LeanAdminApi(runtime)
     repo_root = tmp_path / "MainRepo"
@@ -139,14 +139,16 @@ def test_admin_main_repo_source_corpus_validation_reports_draft_gate_issues(tmp_
     assert admin.write_main_repo_preparation_input(
         WriteMainRepoPreparationInput(repo_root=repo_root, input=_main_input())
     ).ok
-    (source_dir / "README.md").write_text("# Notes\n", encoding="utf-8")
+    (source_dir / "README.md").write_bytes(b"%PDF-1.4\nfixture")
 
     validated = admin.validate_main_source_corpus(
         ValidateMainSourceCorpusInput(repo_root=repo_root, check_draft_gate=True)
     )
 
     assert not validated.ok
-    assert "source_corpus_provenance_missing" in {issue.kind for issue in validated.issues}
+    assert "source_corpus_raw_container_forbidden" in {
+        issue.kind for issue in validated.issues
+    }
 
 
 def test_admin_main_repo_bootstrap_can_skip_source_validation_for_prepare_mode(tmp_path: Path) -> None:

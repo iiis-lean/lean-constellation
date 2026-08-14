@@ -633,10 +633,6 @@ class ResourceCurationComponent:
             normalized = self.runtime.external.material.normalize_target(target)
         except Exception as exc:  # noqa: BLE001
             return self.runtime.foundation.fail(self.runtime.foundation.issue("invalid_material_target", str(exc)))
-        authorized = self._require_resource_draft_target(repo_root, draft_id=draft_id, target=target)
-        if not authorized.ok:
-            return self.runtime.foundation.fail(authorized.issues)
-
         mismatch = self._preferred_kind_mismatch(preferred_kind, normalized.kind)
         if mismatch is not None:
             return self.runtime.foundation.fail(
@@ -681,9 +677,6 @@ class ResourceCurationComponent:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue("missing_local_file", f"Local resource material not found: {source}")
             )
-        authorized = self._require_resource_draft_target(repo_root, draft_id=draft_id, target=str(source))
-        if not authorized.ok:
-            return self.runtime.foundation.fail(authorized.issues)
         try:
             dest_name = self.runtime.foundation.layout.ensure_safe_key(as_name) if as_name else self._safe_material_filename(source.name)
         except ValueError as exc:
@@ -851,32 +844,6 @@ class ResourceCurationComponent:
         except ValueError as exc:
             return self.runtime.foundation.fail(self.runtime.foundation.issue("resource_draft_path_escape", str(exc), object_ref=draft_id))
         return self.runtime.foundation.ok(root)
-
-    def _require_resource_draft_target(
-        self,
-        repo_root: Path,
-        *,
-        draft_id: str,
-        target: str,
-    ) -> ServiceResult[None]:
-        draft = self.resource_library.get_resource_draft(repo_root, draft_id=draft_id)
-        if not draft.ok or draft.value is None:
-            return self.runtime.foundation.fail(draft.issues)
-        normalized = self.resource_library.normalize_resource_target_model(target)
-        if not normalized.ok or normalized.value is None:
-            return self.runtime.foundation.fail(normalized.issues)
-        expected = draft.value.draft.target.canonical_locator
-        actual = normalized.value.canonical_locator
-        if actual != expected:
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue(
-                    "resource_material_target_unauthorized",
-                    "Resource material target is not the exact target assigned to this draft.",
-                    object_ref=draft_id,
-                    details={"expected_target": expected, "requested_target": actual},
-                )
-            )
-        return self.runtime.foundation.ok(None)
 
     def _artifact_view(self, target: ResourceTargetView, result: AcquiredArtifactResult) -> ResourceArtifactView:
         return ResourceArtifactView(
