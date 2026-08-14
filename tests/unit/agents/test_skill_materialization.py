@@ -270,10 +270,13 @@ def test_shared_material_skills_separate_work_evidence_from_static_truth() -> No
     assert "Separate Work Evidence From Durable Material" in preservation
     assert "Do not record request payloads" in preservation
     assert "future Agent should not need the PDF" in pdf
+    assert "LaTeX is the default durable representation" in pdf
+    assert "natural section or theorem/proof boundaries" in pdf
     assert "entire current durable tree" in fidelity
     assert "resolved locator need not equal the request text" in fidelity
     assert "math delimiters, environments, links" in fidelity
     assert "old passed marks and patch summaries do not carry forward" in fidelity
+    assert "cross-file joins" in fidelity
 
 
 def test_source_corpus_preparation_skill_preserves_supplied_formal_material() -> None:
@@ -284,6 +287,8 @@ def test_source_corpus_preparation_skill_preserves_supplied_formal_material() ->
     assert "Do not extend the requested source scope" in body
     assert "Do not include preparation inputs, resolved download locations" in body
     assert "projected to canonical SourceCorpus" in body
+    assert "complete paper or other non-brief multi-section" in body
+    assert "single durable content file only for brief material" in body
 
 
 def test_resource_draft_skill_keeps_requested_use_advisory() -> None:
@@ -294,6 +299,8 @@ def test_resource_draft_skill_keeps_requested_use_advisory() -> None:
     assert "finalization copies only those bytes" in body
     assert "must not record the request payload" in body
     assert "record the corrected ownership in the README and submission" in body
+    assert "complete or long multi-section mathematical Resource" in body
+    assert "short focused excerpt" in body
     assert "Do not submit a local Resource when" not in body
 
 

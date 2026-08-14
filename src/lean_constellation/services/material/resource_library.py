@@ -14,6 +14,7 @@ from pydantic import Field, model_validator
 
 from lean_constellation.domain.common import StrictModel, utc_now_iso
 from lean_constellation.services.foundation import FoundationContext, GateReport, ServiceIssue, ServiceResult, WriteMode
+from lean_constellation.services.material.tex_tree import find_literal_tex_include_problems
 
 if TYPE_CHECKING:
     from lean_constellation.services.runtime import LeanRuntimeServices
@@ -989,6 +990,22 @@ class ResourceLibraryComponent:
                         object_ref=item.path,
                     )
                 )
+        for problem in find_literal_tex_include_problems(
+            draft_root,
+            [item.path for item in manifest.value.files if item.readable_kind is not None],
+        ):
+            issues.append(
+                self.runtime.foundation.issue(
+                    "resource_tex_include_invalid",
+                    "Final-facing Resource TeX contains a missing or escaping literal local include.",
+                    object_ref=problem.source_path,
+                    details={
+                        "line_number": str(problem.line_number),
+                        "reason": problem.reason,
+                        "target": problem.target,
+                    },
+                )
+            )
         issues.extend(self._resource_readme_issues(draft_root))
         return issues
 

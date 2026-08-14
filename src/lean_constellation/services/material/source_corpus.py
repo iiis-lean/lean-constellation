@@ -22,6 +22,7 @@ from lean_constellation.services.external_clients import (
     ExtractedMaterialResult,
 )
 from lean_constellation.services.foundation import FoundationContext, GateReport, ServiceIssue, ServiceResult
+from lean_constellation.services.material.tex_tree import find_literal_tex_include_problems
 
 if TYPE_CHECKING:
     from lean_constellation.services.runtime import LeanRuntimeServices
@@ -920,6 +921,22 @@ class SourceCorpusComponent:
                         current=resolved.kind,
                     )
                 )
+        for problem in find_literal_tex_include_problems(
+            root,
+            [item.path for item in manifest.files if item.readable_text],
+        ):
+            issues.append(
+                self.runtime.foundation.issue(
+                    "source_corpus_tex_include_invalid",
+                    "Final-facing TeX contains a missing or escaping literal local include.",
+                    object_ref=problem.source_path,
+                    details={
+                        "line_number": str(problem.line_number),
+                        "reason": problem.reason,
+                        "target": problem.target,
+                    },
+                )
+            )
         if is_active_draft:
             role_paths = {
                 "formal_target": [item.path for item in manifest.files if Path(item.path).name == "formal_target.lean"],

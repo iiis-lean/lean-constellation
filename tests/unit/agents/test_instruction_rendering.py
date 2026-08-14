@@ -480,6 +480,8 @@ def test_source_builder_preserves_supplied_targets_without_inventing_source_trut
     assert "Everything outside `_work/` will be copied unchanged" in text
     assert "resolved download locations" in text
     assert "Markdown/LaTeX representation is syntactically intact" in text
+    assert "prefer a sectioned LaTeX tree" in text
+    assert "brief material with no natural subdivision" in text
 
 
 def test_source_corpus_reviewer_is_independent_read_only_and_full_current() -> None:
@@ -491,6 +493,8 @@ def test_source_corpus_reviewer_is_independent_read_only_and_full_current() -> N
     assert "review the entire current durable tree from the beginning" in text
     assert "processing history may not" in text
     assert "final Markdown/LaTeX representation syntax" in text
+    assert "monolithic Markdown" in text
+    assert "section boundaries" in text
     assert "submit_source_corpus_review" in text
 
 
@@ -502,4 +506,7 @@ def test_resource_curator_treats_requested_use_as_advisory_evidence() -> None:
     assert "request may be a DOI, title, description, URL, or local clue" in text
     assert "Everything outside `_work/` is final-facing static material" in text
     assert "do not include acquisition, extraction, Curator, or round history" in text
+    assert "prefer a sectioned LaTeX tree" in text
+    assert "narrow excerpt" in text
+    assert "A complete paper may remain a local Resource" in text
     assert "cannot become a local Resource" not in text

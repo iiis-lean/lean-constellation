@@ -803,6 +803,54 @@ def test_source_corpus_preserves_author_tex_tree_without_artificial_main_layout(
     assert not (source_root / "main").exists()
 
 
+def test_source_corpus_accepts_complete_local_tex_include_tree(tmp_path: Path) -> None:
+    source_root = tmp_path / ".lean_constellation" / "source"
+    sections = source_root / "article" / "sections"
+    sections.mkdir(parents=True)
+    (source_root / "README.md").write_text(
+        _source_entry_text(main_path="article/main.tex"),
+        encoding="utf-8",
+    )
+    (source_root / "article" / "main.tex").write_text(
+        "\\documentclass{article}\n"
+        "\\begin{document}\n"
+        "% \\input{sections/commented_missing}\n"
+        "\\input{\\dynamicSection}\n"
+        "\\input{sections/01_introduction}\n"
+        "\\include{sections/02_result.tex}\n"
+        "\\end{document}\n",
+        encoding="utf-8",
+    )
+    (sections / "01_introduction.tex").write_text("\\section{Introduction}\nText.\n", encoding="utf-8")
+    (sections / "02_result.tex").write_text("\\section{Result}\nTheorem.\n", encoding="utf-8")
+
+    gate = make_runtime().material.check_source_corpus_draft(tmp_path, entry_path="README.md")
+
+    assert gate.ok and gate.value is not None and gate.value.passed
+
+
+def test_source_corpus_rejects_missing_or_escaping_literal_tex_includes(tmp_path: Path) -> None:
+    source_root = tmp_path / ".lean_constellation" / "source"
+    article = source_root / "article"
+    article.mkdir(parents=True)
+    (source_root / "README.md").write_text(
+        _source_entry_text(main_path="article/main.tex"),
+        encoding="utf-8",
+    )
+    (article / "main.tex").write_text(
+        "\\input{sections/missing}\n"
+        "\\input{../../outside}\n",
+        encoding="utf-8",
+    )
+
+    gate = make_runtime().material.check_source_corpus_draft(tmp_path, entry_path="README.md")
+
+    assert gate.ok and gate.value is not None and not gate.value.passed
+    issues = [item for item in gate.value.issues if item.kind == "source_corpus_tex_include_invalid"]
+    assert {item.details["reason"] for item in issues} == {"missing", "path_escape"}
+    assert {item.details["target"] for item in issues} == {"sections/missing", "../../outside"}
+
+
 def test_source_corpus_pdf_transcription_retains_structure_and_page_mapping(tmp_path: Path) -> None:
     source_root = tmp_path / ".lean_constellation" / "source"
     (source_root / "original").mkdir(parents=True)

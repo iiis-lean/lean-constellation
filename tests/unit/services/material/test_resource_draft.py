@@ -85,6 +85,66 @@ def test_check_resource_draft_requires_readme_manifest_and_normalized_artifact(t
     assert reloaded.checked_at is not None
 
 
+def test_resource_draft_accepts_complete_multi_file_tex_tree(tmp_path: Path) -> None:
+    service = make_runtime().material
+    draft = service.allocate_resource_draft(tmp_path, target="https://example.com/tex-tree")
+    assert draft.ok and draft.value is not None
+    root = Path(draft.value.draft_root)
+    sections = root / "article" / "sections"
+    sections.mkdir(parents=True)
+    (root / "README.md").write_text(
+        valid_resource_readme(canonical_entry="article/main.tex"),
+        encoding="utf-8",
+    )
+    (root / "article" / "main.tex").write_text(
+        "\\documentclass{article}\n"
+        "\\begin{document}\n"
+        "\\input{sections/01_result}\n"
+        "\\end{document}\n",
+        encoding="utf-8",
+    )
+    (sections / "01_result.tex").write_text("\\section{Result}\nTheorem.\n", encoding="utf-8")
+    refreshed = service.refresh_resource_draft_manifest(
+        tmp_path,
+        draft_id=draft.value.draft.draft_id,
+        canonical_entry="article/main.tex",
+    )
+
+    checked = service.check_resource_draft(tmp_path, draft_id=draft.value.draft.draft_id)
+
+    assert refreshed.ok and refreshed.value is not None
+    assert checked.ok and checked.value is not None and checked.value.passed
+
+
+def test_resource_draft_rejects_missing_literal_tex_include(tmp_path: Path) -> None:
+    service = make_runtime().material
+    draft = service.allocate_resource_draft(tmp_path, target="https://example.com/broken-tex-tree")
+    assert draft.ok and draft.value is not None
+    root = Path(draft.value.draft_root)
+    (root / "article").mkdir(parents=True)
+    (root / "README.md").write_text(
+        valid_resource_readme(canonical_entry="article/main.tex"),
+        encoding="utf-8",
+    )
+    (root / "article" / "main.tex").write_text("\\input{sections/missing}\n", encoding="utf-8")
+    refreshed = service.refresh_resource_draft_manifest(
+        tmp_path,
+        draft_id=draft.value.draft.draft_id,
+        canonical_entry="article/main.tex",
+    )
+    assert refreshed.ok and refreshed.value is not None
+
+    checked = service.check_resource_draft(tmp_path, draft_id=draft.value.draft.draft_id)
+
+    assert checked.ok and checked.value is not None and not checked.value.passed
+    issue = next(item for item in checked.value.issues if item.kind == "resource_tex_include_invalid")
+    assert issue.details == {
+        "line_number": "1",
+        "reason": "missing",
+        "target": "sections/missing",
+    }
+
+
 def test_finalize_resource_draft_promotes_to_resource_library_and_reloads(tmp_path: Path) -> None:
     service = make_runtime().material
     draft = service.allocate_resource_draft(tmp_path, target="https://example.com/final", title_hint="Final resource")
