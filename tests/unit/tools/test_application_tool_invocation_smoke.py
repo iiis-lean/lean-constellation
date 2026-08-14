@@ -1836,14 +1836,14 @@ def test_coordinator_node_contract_write_tools_invoke_path_based_mutation_wrappe
         runtime.tool_facade.invoke_agent_tool(
             raw,
             tool_name="remove_node_material_ref",
-            flat_args={"node_path": "Main.Consumer", "ref": "source:notes.md#L1-L2", "reason": "No longer needed."},
+            flat_args={"node_path": "Main.Consumer", "ref": "source:notes.md#L1-L2"},
         )
     )
     removed_dep = _unwrap_tool_result(
         runtime.tool_facade.invoke_agent_tool(
             raw,
             tool_name="remove_node_dep",
-            flat_args={"node_path": "Main.Consumer", "index": 0, "reason": "No longer needed."},
+            flat_args={"node_path": "Main.Consumer", "index": 0},
         )
     )
     removed_module_hint = _unwrap_tool_result(

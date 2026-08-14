@@ -228,67 +228,6 @@ class StrategyRoundComponent:
         round_record.value.started_at = utc_now_iso()
         return self._write_round(repo_root, node_path=node_path, round_record=round_record.value)
 
-    def write_decl_change_summary(
-        self,
-        repo_root: Path,
-        *,
-        node_path: str,
-        round_id: str,
-        change_id: str,
-        summary: str,
-    ) -> ServiceResult[DeclGraphRound]:
-        if not change_id or not change_id.strip():
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue("change_id_required", "Decl change id is required.", field="change_id")
-            )
-        if not summary or not summary.strip():
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue("change_summary_required", "Decl change summary is required.", field="summary")
-            )
-        round_record = self.get_round(repo_root, node_path=node_path, round_id=round_id)
-        if not round_record.ok or round_record.value is None:
-            return self.runtime.foundation.fail(round_record.issues)
-        if change_id not in round_record.value.change_ids:
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue(
-                    "unknown_decl_change",
-                    "Decl change is not part of this round.",
-                    object_ref=change_id,
-                    expected=", ".join(round_record.value.change_ids),
-                )
-            )
-        normalized_summary = summary.strip()
-        existing = round_record.value.change_summaries.get(change_id)
-        if existing is not None:
-            if existing == normalized_summary:
-                return self.runtime.foundation.ok(round_record.value)
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue(
-                    "decl_change_summary_conflict",
-                    "A declaration change summary cannot be replaced after it has been recorded.",
-                    object_ref=change_id,
-                    current=existing,
-                    expected=normalized_summary,
-                )
-            )
-        if round_record.value.status == DeclRoundStatus.COMMITTED:
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue(
-                    "decl_change_summary_committed",
-                    "A committed round cannot accept a new declaration change summary.",
-                    object_ref=change_id,
-                )
-            )
-        updated_round = round_record.value.model_copy(
-            update={
-                "change_summaries": {
-                    **round_record.value.change_summaries,
-                    change_id: normalized_summary,
-                }
-            }
-        )
-        return self._write_round(repo_root, node_path=node_path, round_record=updated_round)
-
     def write_round_summary(
         self,
         repo_root: Path,
@@ -304,20 +243,6 @@ class StrategyRoundComponent:
         round_record = self.get_round(repo_root, node_path=node_path, round_id=round_id)
         if not round_record.ok or round_record.value is None:
             return self.runtime.foundation.fail(round_record.issues)
-        missing = [
-            change_id
-            for change_id in round_record.value.change_ids
-            if change_id not in round_record.value.change_summaries
-        ]
-        if missing:
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue(
-                    "decl_change_summary_missing",
-                    "Every round change must have its own summary before writing the round summary.",
-                    object_ref=round_id,
-                    current=", ".join(missing),
-                )
-            )
         normalized_summary = summary.strip()
         if round_record.value.summary is not None:
             if round_record.value.summary == normalized_summary:

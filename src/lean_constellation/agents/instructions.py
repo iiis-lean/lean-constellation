@@ -134,12 +134,12 @@ The contract is a durable coordination boundary between repository planning and 
 
 A content node is responsible for turning a focused mathematical goal into tracked declarations and checked Lean code.
 
-Inside a content node, work proceeds through planning and declaration rounds. The planning agent decides what declarations should be created, updated, or removed. Worker agents fill in specific parts of those declarations. Reviewer agents check semantic quality before acceptance.""",
+Inside a content node, work proceeds through planning and declaration rounds. The planning agent creates or updates declarations through strict rounds and performs safe catalog maintenance through dedicated synchronous operations. Worker agents fill in specific parts of round declarations. Reviewer agents check semantic quality before acceptance.""",
     "decl.strategy_round_revision_context": """## Declaration Strategy and Rounds
 
 Declaration work inside a content node should follow an explicit strategy. Before starting a new declaration round, the planning agent should understand the current state, previous results, dependencies, and relevant resources.
 
-A declaration round is a concrete batch of declaration changes to attempt next. It may create, update, or delete declarations when safe.""",
+A declaration round is a concrete batch of declaration creates or updates to attempt next. Historical restore and exact-closure deletion are synchronous maintenance operations outside the round pipeline.""",
     "decl.stage_pipeline_context": """## Declaration Stage Pipeline
 
 A tracked declaration represents one mathematical object. Its accepted-state pipeline is fixed:
@@ -152,7 +152,7 @@ A tracked declaration represents one mathematical object. Its accepted-state pip
 
 `proof_planned --Proof Formal--> proved`
 
-Each create or update runs the half-open interval (reset_to_state, target_state]. The Flow, not an individual Agent, selects the required stages in that interval. target_state is the round's global destination; it never expands the authority of the current stage. Later-stage artifacts may legitimately be absent while an earlier stage is running.
+Each create or update runs a strict stage interval ending at target_state; an update names the first stage to rerun with start_stage and always copies the latest committed revision. The Flow, not an individual Agent, selects the required stages in that interval. target_state is the round's global destination; it never expands the authority of the current stage. Later-stage artifacts may legitimately be absent while an earlier stage is running.
 
 Work only on the current stage transition. In particular, Statement Formal owns `specified -> declared`: it must capture a valid formal statement, but it must not require a proof plan or proof code merely because `target_state=proved`. Proof NL and Proof Formal own those later artifacts. Reviewers judge only their current layer; the deterministic final audit judges the global target.
 
@@ -205,7 +205,7 @@ SourceCorpus exact ranges are primary evidence. SourceIndex provides navigation 
 
 Read a SourceIndex ref or origin at its exact inclusive endpoints without implicit context. SourceIndex blocks are not authorization boundaries. Read other corpus-valid ranges when definitions, variables, numbered objects, abbreviations, pronouns, or cross-references are needed to interpret that evidence. Navigation context is not automatically an origin: validate and record only the exact range that supports the candidate.
 
-Before creating, updating, deleting, or resetting source-derived declaration truth, the planning role must identify the supporting SourceIndex block or source range, preserve any Coordinator-owned requirement, and make the intended relation to lower dependencies and upper consumers explicit in the round change objective. Workers implement the accepted semantic target; they do not redesign it.
+Before creating, updating, restoring, or deleting source-derived declaration truth, the planning role must identify the supporting SourceIndex block or source range, preserve any Coordinator-owned requirement, and make the intended relation to lower dependencies and upper consumers explicit. Create/update record this in the round change objective; synchronous maintenance records it through the operation's exact target and deterministic receipt. Workers implement the accepted round target; they do not redesign it.
 
 Do not strengthen a theorem, weaken a conclusion, add hidden assumptions, drop required hypotheses, or change definitions without making the reason explicit through the appropriate workflow output.""",
     "quality.lean_safety": """## Lean Safety Requirements
@@ -532,7 +532,7 @@ Maintain strategies before planning rounds. Read `decl-strategy-planning` for ro
 
 After a DeclGraphRoundFlow callback, read `decl-round-closeout`. It owns faithful per-change and round summaries, blocker evidence, and the atomic `mark_decl_round_terminal` sequence. Re-read truth after closeout before choosing another action; no new round, preparation, strategy close, or terminal submit is allowed while a round remains draft, running, or awaiting closeout.
 
-When planning a new round, re-read `content-plan-completion-policy`, `decl-strategy-planning`, and `decl-round-change-planning`. That workflow owns Source/contract fidelity, anticipated_statement_dep_names and anticipated_proof_dep_names, target-state choice, draft validation/discard, and provider-before-consumer ordering. Never omit a known dependency to make validation pass. After an accepted `submit_current_decl_round`, stop.
+When planning a new round, re-read `content-plan-completion-policy`, `decl-strategy-planning`, and `decl-round-change-planning`. That workflow owns Source/contract fidelity, actual typed dependency planning, target-state choice, draft validation/discard, and provider-before-consumer ordering. After creating or updating a draft target, record every known Statement and Proof dependency with the ordinary dependency tools before validation. Never omit a known dependency to make validation pass. After an accepted `submit_current_decl_round`, stop. Use the maintenance section of the same Skill for restore or exact-closure delete; those operations never enter a declaration round.
 
 Before a terminal decision, read `current-node-public-boundary-curation` and `content-node-completion-decision`. They own interface fit and binding, visibility repair, graph hygiene, mode-required terminal depth, the deterministic completion audit, and the ready/blocked/failed choice. A visibility change uses the visibility just observed, creates no Decl round or revision, and never silently removes a protected boundary object. Interface binding is ContentPlan closeout work when a valid current-node declaration exists.
 

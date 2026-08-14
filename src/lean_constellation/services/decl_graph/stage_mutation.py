@@ -178,8 +178,9 @@ class StageMutationComponent:
         round_id: str,
         decl_name: str,
         dep: DeclDep,
+        allow_draft: bool = False,
     ) -> ServiceResult[DeclRevision]:
-        revision = self._revision_for_stage(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name)
+        revision = self._revision_for_stage(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name, allow_draft=allow_draft)
         if not revision.ok or revision.value is None:
             return self.runtime.foundation.fail(revision.issues)
         existing = self._matching_dep(revision.value.statement.deps, dep)
@@ -222,6 +223,7 @@ class StageMutationComponent:
         round_id: str,
         decl_name: str,
         deps: list[DeclDep],
+        allow_draft: bool = False,
     ) -> ServiceResult[DeclRevision]:
         """Atomically add a validated batch to the statement dependency truth."""
 
@@ -230,6 +232,7 @@ class StageMutationComponent:
             node_path=node_path,
             round_id=round_id,
             decl_name=decl_name,
+            allow_draft=allow_draft,
         )
         if not revision.ok or revision.value is None:
             return self.runtime.foundation.fail(revision.issues)
@@ -308,8 +311,9 @@ class StageMutationComponent:
         round_id: str,
         decl_name: str,
         index: int,
+        allow_draft: bool = False,
     ) -> ServiceResult[DeclRevision]:
-        revision = self._revision_for_stage(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name)
+        revision = self._revision_for_stage(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name, allow_draft=allow_draft)
         if not revision.ok or revision.value is None:
             return self.runtime.foundation.fail(revision.issues)
         deps = list(revision.value.statement.deps)
@@ -329,8 +333,9 @@ class StageMutationComponent:
         node_path: str,
         round_id: str,
         decl_name: str,
+        allow_draft: bool = False,
     ) -> ServiceResult[DeclRevision]:
-        revision = self._revision_for_stage(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name)
+        revision = self._revision_for_stage(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name, allow_draft=allow_draft)
         if not revision.ok or revision.value is None:
             return self.runtime.foundation.fail(revision.issues)
         revision.value.statement.deps = []
@@ -515,11 +520,12 @@ class StageMutationComponent:
         round_id: str,
         decl_name: str,
         dep: DeclDep,
+        allow_draft: bool = False,
     ) -> ServiceResult[DeclRevision]:
         theorem_like = self._require_theorem_like(repo_root, node_path=node_path, decl_name=decl_name)
         if not theorem_like.ok:
             return self.runtime.foundation.fail(theorem_like.issues)
-        revision = self._revision_for_stage(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name)
+        revision = self._revision_for_stage(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name, allow_draft=allow_draft)
         if not revision.ok or revision.value is None:
             return self.runtime.foundation.fail(revision.issues)
         proof = revision.value._ensure_proof()
@@ -563,6 +569,7 @@ class StageMutationComponent:
         round_id: str,
         decl_name: str,
         deps: list[DeclDep],
+        allow_draft: bool = False,
     ) -> ServiceResult[DeclRevision]:
         """Atomically add a validated batch to the proof dependency truth."""
 
@@ -578,6 +585,7 @@ class StageMutationComponent:
             node_path=node_path,
             round_id=round_id,
             decl_name=decl_name,
+            allow_draft=allow_draft,
         )
         if not revision.ok or revision.value is None:
             return self.runtime.foundation.fail(revision.issues)
@@ -618,8 +626,9 @@ class StageMutationComponent:
         round_id: str,
         decl_name: str,
         index: int,
+        allow_draft: bool = False,
     ) -> ServiceResult[DeclRevision]:
-        revision = self._revision_for_stage(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name)
+        revision = self._revision_for_stage(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name, allow_draft=allow_draft)
         if not revision.ok or revision.value is None:
             return self.runtime.foundation.fail(revision.issues)
         deps = list(revision.value.proof.deps if revision.value.proof is not None else [])
@@ -640,8 +649,9 @@ class StageMutationComponent:
         node_path: str,
         round_id: str,
         decl_name: str,
+        allow_draft: bool = False,
     ) -> ServiceResult[DeclRevision]:
-        revision = self._revision_for_stage(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name)
+        revision = self._revision_for_stage(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name, allow_draft=allow_draft)
         if not revision.ok or revision.value is None:
             return self.runtime.foundation.fail(revision.issues)
         proof = revision.value._ensure_proof()
@@ -699,18 +709,26 @@ class StageMutationComponent:
         node_path: str,
         round_id: str,
         decl_name: str,
+        allow_draft: bool = False,
     ) -> ServiceResult[DeclRevision]:
         round_record = self.strategy_round.get_round(repo_root, node_path=node_path, round_id=round_id)
         if not round_record.ok or round_record.value is None:
             return self.runtime.foundation.fail(round_record.issues)
-        if round_record.value.status != DeclRoundStatus.RUNNING:
+        allowed_statuses = (
+            {DeclRoundStatus.DRAFT, DeclRoundStatus.RUNNING}
+            if allow_draft
+            else {DeclRoundStatus.RUNNING}
+        )
+        if round_record.value.status not in allowed_statuses:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
                     "round_not_running",
-                    "Stage mutation requires a running decl round.",
+                    "Dependency mutation requires a draft or running decl round."
+                    if allow_draft
+                    else "Stage mutation requires a running decl round.",
                     object_ref=round_id,
                     current=round_record.value.status.value,
-                    expected=DeclRoundStatus.RUNNING.value,
+                    expected=",".join(item.value for item in sorted(allowed_statuses, key=lambda item: item.value)),
                 )
             )
         target_revision: int | None = None
@@ -720,10 +738,6 @@ class StageMutationComponent:
             revision = self.decl_catalog.get_decl_revision(repo_root, node_path=node_path, name=ref.decl_name, revision=ref.revision)
             if not revision.ok or revision.value is None:
                 return self.runtime.foundation.fail(revision.issues)
-            if revision.value.change is not None and revision.value.change.kind == DeclChangeKind.DELETE:
-                return self.runtime.foundation.fail(
-                    self.runtime.foundation.issue("decl_change_is_delete", "Delete changes cannot receive stage mutations.", object_ref=decl_name)
-                )
             target_revision = ref.revision
             break
         if target_revision is None:
@@ -808,7 +822,6 @@ class StageMutationComponent:
     @staticmethod
     def _state_rank(state: DeclState) -> int:
         return {
-            DeclState.OBSOLETE: -1,
             DeclState.PLANNED: 0,
             DeclState.SPECIFIED: 1,
             DeclState.DECLARED: 2,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
@@ -15,6 +16,35 @@ if TYPE_CHECKING:
     from lean_constellation.services.runtime import LeanRuntimeServices
 
 T = TypeVar("T")
+
+
+class DeclGraphMaintenanceSnapshot:
+    """Rollback snapshot for one synchronous DeclGraph/projection maintenance mutation."""
+
+    def __init__(self, paths: list[Path]) -> None:
+        self._temp_root = Path(tempfile.mkdtemp(prefix="lean-constellation-decl-maintenance-"))
+        self._states: list[tuple[Path, bool, Path]] = []
+        for index, path in enumerate(dict.fromkeys(Path(item) for item in paths)):
+            backup = self._temp_root / str(index)
+            existed = path.exists()
+            if existed:
+                shutil.copytree(path, backup) if path.is_dir() else shutil.copy2(path, backup)
+            self._states.append((path, existed, backup))
+
+    def restore(self) -> list[str]:
+        failures: list[str] = []
+        for path, existed, backup in reversed(self._states):
+            try:
+                shutil.rmtree(path) if path.is_dir() else path.unlink(missing_ok=True)
+                if existed:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copytree(backup, path) if backup.is_dir() else shutil.copy2(backup, path)
+            except OSError as exc:
+                failures.append(f"{path}: {exc}")
+        return failures
+
+    def close(self) -> None:
+        shutil.rmtree(self._temp_root, ignore_errors=True)
 
 
 def mutate_decl_with_projection(

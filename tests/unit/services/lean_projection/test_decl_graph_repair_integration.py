@@ -5,6 +5,7 @@ from pathlib import Path
 from tests.unit_services_helpers import initialize_native_test_repo, make_runtime
 
 from lean_constellation.services.decl_graph import DeclState
+from lean_constellation.services.foundation import WriteMode
 from lean_constellation.services.external_clients import ExternalCommandResult, LeanCheckSummaryView, LeanDiagnosticsResult
 from lean_constellation.services.runtime import LeanRuntimeServices
 
@@ -174,19 +175,166 @@ def _seed_committed_proved_theorem(runtime: LeanRuntimeServices, repo_root: Path
 
 def _open_update_round(runtime: LeanRuntimeServices, repo_root: Path, *, start_state: DeclState) -> str:
     round_id = _create_round(runtime, repo_root, objective=f"Open update from {start_state.value}.")
+    start_stage = {
+        DeclState.PLANNED: "statement_nl",
+        DeclState.SPECIFIED: "statement_formal",
+        DeclState.DECLARED: "proof_nl",
+        DeclState.PROOF_PLANNED: "proof_formal",
+    }[start_state]
     update = runtime.decl_graph.open_decl_update(
         repo_root,
         node_path=NODE_PATH,
         round_id=round_id,
         name=DECL_NAME,
         objective=f"Reset current working revision to {start_state.value}.",
-        reset_to_state=start_state,
+        start_stage=start_stage,
         target_state=DeclState.PROVED,
     )
     assert update.ok, update.issues
     started = runtime.decl_graph.start_round(repo_root, node_path=NODE_PATH, round_id=round_id)
     assert started.ok, started.issues
     return round_id
+
+
+def test_restore_decl_revision_rolls_back_truth_and_projection_when_sync_fails(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime = _runtime()
+    projection_path = _seed_committed_proved_theorem(runtime, tmp_path)
+    round_id = _open_update_round(
+        runtime,
+        tmp_path,
+        start_state=DeclState.PROOF_PLANNED,
+    )
+    second = runtime.decl_graph.get_decl_revision(
+        tmp_path,
+        node_path=NODE_PATH,
+        name=DECL_NAME,
+        revision=2,
+    )
+    assert second.ok and second.value is not None
+    first = runtime.decl_graph.get_decl_revision(
+        tmp_path,
+        node_path=NODE_PATH,
+        name=DECL_NAME,
+        revision=1,
+    )
+    assert first.ok and first.value is not None
+    assert first.value.proof is not None and first.value.proof.formal is not None
+    second.value.state = DeclState.PROVED
+    assert second.value.proof is not None
+    second.value.proof.formal = first.value.proof.formal.model_copy(deep=True)
+    second.value.proof.formal.code += "\n-- replacement revision"
+    revision_path = runtime.decl_graph.graph_store.revision_path(
+        tmp_path,
+        node_path=NODE_PATH,
+        decl_name=DECL_NAME,
+        revision=2,
+    )
+    assert runtime.foundation.store.write_json_atomic(
+        revision_path,
+        second.value,
+        mode=WriteMode.UPDATE_EXISTING,
+    ).ok
+    assert runtime.decl_graph.commit_decl_revision(
+        tmp_path,
+        node_path=NODE_PATH,
+        name=DECL_NAME,
+        revision=2,
+        state=DeclState.PROVED,
+    ).ok
+    assert runtime.decl_graph.strategy_round.record_round_execution_result(
+        tmp_path,
+        node_path=NODE_PATH,
+        round_id=round_id,
+        result_kind="blocked",
+        reason="Fixture closes the update before restore.",
+    ).ok
+    assert runtime.decl_graph.strategy_round.persist_round_closeout(
+        tmp_path,
+        node_path=NODE_PATH,
+        round_id=round_id,
+        result_kind="blocked",
+        reason="Fixture closes the update before restore.",
+        acknowledged_by="test-fixture",
+    ).ok
+    before_projection = projection_path.read_bytes()
+
+    monkeypatch.setattr(
+        runtime.lean_projection,
+        "sync_decl_file_after_revision_reset",
+        lambda *_args, **_kwargs: runtime.foundation.fail(
+            runtime.foundation.issue(
+                "injected_restore_projection_failure",
+                "Injected projection failure.",
+            )
+        ),
+    )
+    restored = runtime.decl_graph.restore_decl_revision(
+        tmp_path,
+        node_path=NODE_PATH,
+        decl_name=DECL_NAME,
+        source_revision=1,
+    )
+
+    assert not restored.ok
+    assert {issue.kind for issue in restored.issues} == {
+        "injected_restore_projection_failure"
+    }
+    decl = runtime.decl_graph.get_decl(
+        tmp_path,
+        node_path=NODE_PATH,
+        name=DECL_NAME,
+    )
+    assert decl.ok and decl.value is not None
+    assert decl.value.current_revision == 2
+    assert decl.value.revision_ids == [1, 2]
+    assert not runtime.decl_graph.graph_store.revision_path(
+        tmp_path,
+        node_path=NODE_PATH,
+        decl_name=DECL_NAME,
+        revision=3,
+    ).exists()
+    assert projection_path.read_bytes() == before_projection
+
+
+def test_delete_decls_rolls_back_lifecycle_and_projection_when_rebuild_fails(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime = _runtime()
+    projection_path = _seed_committed_proved_theorem(runtime, tmp_path)
+    before_projection = projection_path.read_bytes()
+    monkeypatch.setattr(
+        runtime.decl_graph.graph_store,
+        "rebuild_index",
+        lambda *_args, **_kwargs: runtime.foundation.fail(
+            runtime.foundation.issue(
+                "injected_delete_index_failure",
+                "Injected index rebuild failure.",
+            )
+        ),
+    )
+
+    deleted = runtime.decl_graph.delete_decls(
+        tmp_path,
+        node_path=NODE_PATH,
+        decl_names=[DECL_NAME],
+    )
+
+    assert not deleted.ok
+    assert {issue.kind for issue in deleted.issues} == {
+        "injected_delete_index_failure"
+    }
+    decl = runtime.decl_graph.get_decl(
+        tmp_path,
+        node_path=NODE_PATH,
+        name=DECL_NAME,
+    )
+    assert decl.ok and decl.value is not None
+    assert decl.value.lifecycle.value == "active"
+    assert projection_path.read_bytes() == before_projection
 
 
 def _current_revision(runtime: LeanRuntimeServices, repo_root: Path):

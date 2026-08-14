@@ -26,11 +26,13 @@ from lean_constellation.tools.args import (
     MathlibDeclDependencyInput,
     MathlibDeclDependenciesAddArgs,
     NoArgs,
+    ProofDepsClearArgs,
     ProofFormalReviewPassedArgs,
     ProofFormalReviewRejectedArgs,
     ProofNlReviewPassedArgs,
     ProofNlReviewRejectedArgs,
     ProofNlSetArgs,
+    ProofOriginsClearArgs,
     ProofResourceOriginAddArgs,
     ProofSourceOriginAddArgs,
     RepoDeclDependencyInput,
@@ -41,6 +43,7 @@ from lean_constellation.tools.args import (
     StatementNlReviewPassedArgs,
     StatementNlReviewRejectedArgs,
     StatementNlSetArgs,
+    StatementOriginsClearArgs,
     StatementSourceOriginAddArgs,
 )
 from lean_constellation.tools.internal.decl_stage import (
@@ -120,6 +123,16 @@ def test_decl_stage_tools_are_registered() -> None:
     }
 
     assert_tools_registered(expected)
+
+
+def test_decl_stage_clear_schemas_do_not_expose_unused_reason() -> None:
+    for args_model in (
+        StatementOriginsClearArgs,
+        StatementDepsClearArgs,
+        ProofOriginsClearArgs,
+        ProofDepsClearArgs,
+    ):
+        assert "reason" not in args_model.model_json_schema()["properties"]
 
 
 def test_proof_dependency_batch_reads_each_provider_public_list_once() -> None:
@@ -309,6 +322,87 @@ def test_decl_stage_groups_expose_expected_tools() -> None:
     assert "check_statement_formal_policy" not in {tool.name for tool in proof_group.value}
 
 
+def test_content_plan_writes_actual_dependencies_only_to_its_unique_draft_target(
+    tmp_path: Path,
+) -> None:
+    runtime = create_test_runtime_services()
+    initialize_native_test_repo(tmp_path)
+    assert runtime.node.node_tree.ensure_root_scope_node(tmp_path).ok
+    assert runtime.node.create_scope_node(
+        tmp_path,
+        path="Main.Topic",
+        goal="Topic",
+        boundary="Topic boundary",
+    ).ok
+    assert runtime.node.create_content_node(
+        tmp_path,
+        path="Main.Topic.Core",
+        goal="Core",
+        boundary="Core boundary",
+        objective="Objective",
+        success_criteria="Ready",
+    ).ok
+    strategy = runtime.decl_graph.ensure_open_strategy(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        objective="Strategy",
+    )
+    assert strategy.ok and strategy.value is not None
+    round_record = runtime.decl_graph.create_round_draft(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        strategy_id=strategy.value.strategy_id,
+        objective="Create provider and consumer.",
+    )
+    assert round_record.ok and round_record.value is not None
+    for decl_name in ("provider", "consumer"):
+        created = runtime.decl_graph.create_decl(
+            tmp_path,
+            node_path="Main.Topic.Core",
+            round_id=round_record.value.round_id,
+            name=decl_name,
+            kind="theorem",
+            objective=f"Create {decl_name}.",
+            summary=f"{decl_name} summary.",
+            target_state=DeclState.DECLARED,
+        )
+        assert created.ok, created.issues
+
+    written = _add_statement_repo_dependencies(
+        runtime,
+        _plan_ctx(tmp_path),
+        RepoDeclDependenciesAddArgs(
+            decl_name="consumer",
+            dependencies=[RepoDeclDependencyInput(name="provider")],
+        ),
+    )
+
+    assert written.ok, written.issues
+    revision = runtime.decl_graph.get_decl_revision(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        name="consumer",
+        revision=1,
+    )
+    assert revision.ok and revision.value is not None
+    assert [item.ref.name for item in revision.value.statement.deps] == ["provider"]
+    gate = runtime.decl_graph.validate_round_draft(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=round_record.value.round_id,
+    )
+    assert gate.ok and gate.value is not None and not gate.value.passed
+    assert {issue.kind for issue in gate.value.issues} == {"round_internal_dependency"}
+
+    rejected = _clear_statement_deps(
+        runtime,
+        _plan_ctx(tmp_path),
+        StatementDepsClearArgs(decl_name="outside_round"),
+    )
+    assert not rejected.ok
+    assert rejected.issues[0].kind == "decl_planning_target_not_in_round"
+
+
 class _FakeReviewerStep:
     step_id = "review_step_1"
     step_type = "decl_stage_reviewer_agent_step"
@@ -377,6 +471,28 @@ def _review_ctx(repo_root: Path, *, round_id: str, batch_decls: list[str] | None
         node=NodeContextView(node_path="Main.Topic.Core", node_kind="content", summary="node"),
         decl_stage=DeclStageContextView(stage=stage, round_id=round_id, batch_decls=batch_decls, summary="stage"),
         actor=ActorContext(agent_type=agent_type, role="reviewer", added_by="worker", summary="reviewer"),
+    )
+
+
+def _plan_ctx(repo_root: Path) -> ToolExecutionContext:
+    return ToolExecutionContext(
+        runtime=RuntimeToolContext(
+            flow_id="flow_1",
+            step_id="plan_step_1",
+            agent_id="agent_1",
+            agent_type="ContentPlanAgent",
+            agent_role="plan",
+            expected_view_key="content_plan",
+            repo_root=repo_root,
+            node_path="Main.Topic.Core",
+        ),
+        endpoint_view_key="content_plan",
+        expected_view_key="content_plan",
+        repo_root=repo_root,
+        repo=RepoContextView(repo_key=repo_root.name, summary="repo"),
+        node=NodeContextView(node_path="Main.Topic.Core", node_kind="content", summary="node"),
+        decl_stage=None,
+        actor=ActorContext(agent_type="ContentPlanAgent", role="plan", added_by="coordinator", summary="plan"),
     )
 
 
@@ -2015,7 +2131,7 @@ def test_statement_formal_deps_tool_updates_only_current_batch_statement_deps(tm
     cleared = _clear_statement_deps(
         runtime,
         ctx,
-        StatementDepsClearArgs(decl_name="main_result", reason="No expression deps needed."),
+        StatementDepsClearArgs(decl_name="main_result"),
     )
     assert cleared.ok, cleared.issues
     assert cleared.value is not None

@@ -63,7 +63,6 @@ class RoundStartValidationStepResult(LeanRenderableStepResult):
     change_count: int = 0
     create_count: int = 0
     update_count: int = 0
-    delete_count: int = 0
     theorem_like_count: int = 0
     error: RoundTerminalReason | None = None
 
@@ -78,16 +77,14 @@ class RoundStartValidationStepResult(LeanRenderableStepResult):
             "change_count": self.change_count,
             "create_count": self.create_count,
             "update_count": self.update_count,
-            "delete_count": self.delete_count,
             "theorem_like_count": self.theorem_like_count,
             "error": self.error.message if self.error else None,
         }
 
 
-class DeleteAndNormalizeStepResult(LeanRenderableStepResult):
-    result_type: Literal["decl_round_delete_normalize"] = "decl_round_delete_normalize"
+class NormalizeRoundRevisionsStepResult(LeanRenderableStepResult):
+    result_type: Literal["decl_round_revision_normalize"] = "decl_round_revision_normalize"
     outcome: Literal["normalized", "blocked", "failed"]
-    deleted_count: int = 0
     created_count: int = 0
     updated_count: int = 0
     reset_count: int = 0
@@ -97,7 +94,6 @@ class DeleteAndNormalizeStepResult(LeanRenderableStepResult):
     def agent_fields(self) -> dict[str, object]:
         return {
             "outcome": self.outcome,
-            "deleted_count": self.deleted_count,
             "created_count": self.created_count,
             "updated_count": self.updated_count,
             "reset_count": self.reset_count,
@@ -328,19 +324,18 @@ class RoundStartValidationStep(BaseStep):
                 change_count=counts["change_count"],
                 create_count=counts["create_count"],
                 update_count=counts["update_count"],
-                delete_count=counts["delete_count"],
                 theorem_like_count=counts["theorem_like_count"],
                 summary=f"Decl round {input_model.round_id} is running with {counts['change_count']} changes.",
             )
         )
 
 
-class DeleteAndNormalizeStep(BaseStep):
-    step_type: ClassVar[str] = "decl_round_delete_normalize_step"
+class NormalizeRoundRevisionsStep(BaseStep):
+    step_type: ClassVar[str] = "decl_round_revision_normalize_step"
     State: ClassVar[type[BaseStepState]] = BaseStepState
-    Result: ClassVar[type[BaseStepResult]] = DeleteAndNormalizeStepResult
+    Result: ClassVar[type[BaseStepResult]] = NormalizeRoundRevisionsStepResult
     Results: ClassVar[dict[str, type[BaseStepResult]]] = {
-        "decl_round_delete_normalize": DeleteAndNormalizeStepResult,
+        "decl_round_revision_normalize": NormalizeRoundRevisionsStepResult,
     }
 
     def run(self, ctx: StepRunContext) -> StepTerminalReceipt:
@@ -348,12 +343,11 @@ class DeleteAndNormalizeStep(BaseStep):
         input_model = _require_decl_round_input(flow.input)
         repo_root = _repo_root(input_model)
         if repo_root is None:
-            return ctx.complete_step(_delete_normalize_failed("DeclGraphRoundFlow requires repo_path in Flow input."))
+            return ctx.complete_step(_revision_normalize_failed("DeclGraphRoundFlow requires repo_path in Flow input."))
         revisions = _round_revisions(ctx, repo_root, input_model.node_path, input_model.round_id)
         if not revisions.ok or revisions.value is None:
-            return ctx.complete_step(_delete_normalize_failed(_first_issue_message(revisions.issues, "Cannot load round revisions.")))
+            return ctx.complete_step(_revision_normalize_failed(_first_issue_message(revisions.issues, "Cannot load round revisions.")))
 
-        deleted_count = 0
         created_count = 0
         updated_count = 0
         reset_count = 0
@@ -362,36 +356,29 @@ class DeleteAndNormalizeStep(BaseStep):
         for decl_name, revision in revisions.value:
             change = revision.change
             if change is None:
-                return ctx.complete_step(_delete_normalize_failed(f"Round revision {decl_name}@{revision.revision} has no change metadata."))
-            if change.kind == DeclChangeKind.DELETE:
-                removed = projection.remove_decl_file_for_delete(repo_root, node_path=input_model.node_path, decl_name=decl_name)
-                if not removed.ok or removed.value is None:
-                    return ctx.complete_step(_delete_normalize_failed(_first_issue_message(removed.issues, "Delete projection sync failed.")))
-                deleted_count += 1
-                projection_updates += int(bool(getattr(removed.value, "changed", False)))
-            elif change.kind == DeclChangeKind.CREATE:
+                return ctx.complete_step(_revision_normalize_failed(f"Round revision {decl_name}@{revision.revision} has no change metadata."))
+            if change.kind == DeclChangeKind.CREATE:
                 synced = projection.sync_decl_file_after_revision_reset(repo_root, node_path=input_model.node_path, decl_name=decl_name)
                 if not synced.ok or synced.value is None:
-                    return ctx.complete_step(_delete_normalize_failed(_first_issue_message(synced.issues, "Create projection sync failed.")))
+                    return ctx.complete_step(_revision_normalize_failed(_first_issue_message(synced.issues, "Create projection sync failed.")))
                 created_count += 1
                 reset_count += 1
                 projection_updates += int(bool(getattr(synced.value, "changed", False)))
             elif change.kind == DeclChangeKind.UPDATE:
                 synced = projection.sync_decl_file_after_revision_reset(repo_root, node_path=input_model.node_path, decl_name=decl_name)
                 if not synced.ok or synced.value is None:
-                    return ctx.complete_step(_delete_normalize_failed(_first_issue_message(synced.issues, "Update projection sync failed.")))
+                    return ctx.complete_step(_revision_normalize_failed(_first_issue_message(synced.issues, "Update projection sync failed.")))
                 updated_count += 1
                 reset_count += 1
                 projection_updates += int(bool(getattr(synced.value, "changed", False)))
 
-        audit = _validation_snapshot(ctx).run_delete_sanity_audit(repo_root, node_path=input_model.node_path, round_id=input_model.round_id)
+        audit = _decl_graph(ctx).validate_round_draft(repo_root, node_path=input_model.node_path, round_id=input_model.round_id)
         if not audit.ok or audit.value is None:
-            return ctx.complete_step(_delete_normalize_failed(_first_issue_message(audit.issues, "Delete sanity audit failed.")))
+            return ctx.complete_step(_revision_normalize_failed(_first_issue_message(audit.issues, "Round revision normalization audit failed.")))
         if not audit.value.passed:
             return ctx.complete_step(
-                DeleteAndNormalizeStepResult(
+                NormalizeRoundRevisionsStepResult(
                     outcome="blocked",
-                    deleted_count=deleted_count,
                     created_count=created_count,
                     updated_count=updated_count,
                     reset_count=reset_count,
@@ -399,25 +386,20 @@ class DeleteAndNormalizeStep(BaseStep):
                     error=RoundTerminalReason(
                         code="projection_sync_failed",
                         message=audit.value.summary,
-                        affected_decl_names=[
-                            decl_name
-                            for decl_name, revision in revisions.value
-                            if revision.change is not None and revision.change.kind == DeclChangeKind.DELETE
-                        ],
-                        suggested_plan_action="Re-open planning and repair the delete closure before running this round.",
+                        affected_decl_names=[decl_name for decl_name, _revision in revisions.value],
+                        suggested_plan_action="Return to planning and repair the create/update draft before retrying.",
                     ),
                     summary=audit.value.summary,
                 )
             )
         return ctx.complete_step(
-            DeleteAndNormalizeStepResult(
+            NormalizeRoundRevisionsStepResult(
                 outcome="normalized",
-                deleted_count=deleted_count,
                 created_count=created_count,
                 updated_count=updated_count,
                 reset_count=reset_count,
                 projection_updates=projection_updates,
-                summary=f"Round delete/normalize completed for {len(revisions.value)} revisions.",
+                summary=f"Round revision normalization completed for {len(revisions.value)} revisions.",
             )
         )
 
@@ -732,8 +714,8 @@ def _invalid_start(input_model, message: str) -> RoundStartValidationStepResult:
     )
 
 
-def _delete_normalize_failed(message: str) -> DeleteAndNormalizeStepResult:
-    return DeleteAndNormalizeStepResult(
+def _revision_normalize_failed(message: str) -> NormalizeRoundRevisionsStepResult:
+    return NormalizeRoundRevisionsStepResult(
         outcome="failed",
         error=RoundTerminalReason(code="projection_sync_failed", message=message),
         summary=message,
@@ -769,7 +751,7 @@ def _final_audit_failed(message: str) -> RoundFinalAuditStepResult:
 
 
 def _round_change_counts(ctx: StepRunContext, repo_root: Path, node_path: str, round_id: str) -> dict[str, int]:
-    counts = {"change_count": 0, "create_count": 0, "update_count": 0, "delete_count": 0, "theorem_like_count": 0}
+    counts = {"change_count": 0, "create_count": 0, "update_count": 0, "theorem_like_count": 0}
     graph = _decl_graph(ctx)
     revisions = graph.list_round_revisions(repo_root, node_path=node_path, round_id=round_id)
     if not revisions.ok or revisions.value is None:
@@ -783,8 +765,6 @@ def _round_change_counts(ctx: StepRunContext, repo_root: Path, node_path: str, r
             counts["create_count"] += 1
         elif change.kind == DeclChangeKind.UPDATE:
             counts["update_count"] += 1
-        elif change.kind == DeclChangeKind.DELETE:
-            counts["delete_count"] += 1
         decl = graph.get_decl(repo_root, node_path=node_path, name=decl_name)
         if decl.ok and decl.value is not None and _is_theorem_like(decl.value.kind):
             counts["theorem_like_count"] += 1
@@ -805,8 +785,6 @@ def _stage_targets(ctx: StepRunContext, repo_root: Path, node_path: str, round_i
     for decl_name, revision in revisions.value:
         change = revision.change
         if change is None:
-            continue
-        if change.kind == DeclChangeKind.DELETE:
             continue
         if change.target_state is None:
             continue
@@ -836,7 +814,6 @@ def _is_theorem_like(kind: str) -> bool:
 
 def _state_rank(state: DeclState) -> int:
     return {
-        DeclState.OBSOLETE: -1,
         DeclState.PLANNED: 0,
         DeclState.SPECIFIED: 1,
         DeclState.DECLARED: 2,
@@ -869,7 +846,7 @@ def _build_result_state(state: BaseStepState) -> BuildRoundResultStepState:
 
 DECL_ROUND_STEP_TYPES: tuple[type[BaseStep], ...] = (
     RoundStartValidationStep,
-    DeleteAndNormalizeStep,
+    NormalizeRoundRevisionsStep,
     PrepareStageTargetsStep,
     StageGateAndAuditStep,
     RoundFinalAuditStep,

@@ -213,7 +213,8 @@ def test_content_plan_instruction_spells_out_operational_flow_and_tools() -> Non
     assert "mark_decl_round_terminal" in text
     assert "decl-round-change-planning" in text
     assert "submit_current_decl_round" in text
-    assert "anticipated_statement_dep_names" in text
+    assert "anticipated_statement_dep_names" not in text
+    assert "actual typed dependency" in text
     assert "Never omit a known dependency to make validation pass" in text
     assert "current-node-public-boundary-curation" in text
     assert "content-node-completion-decision" in text

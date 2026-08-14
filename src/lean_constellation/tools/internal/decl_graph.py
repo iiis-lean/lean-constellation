@@ -9,11 +9,11 @@ from lean_constellation.tools.args import (
     ChangeSummaryArgs,
     CurrentDeclVisibilityRevisionArgs,
     DeclCreateArgs,
-    DeclDeleteArgs,
     DeclFormalReadArgs,
     DeclInspectArgs,
     DeclNameArgs,
     DeclNamesArgs,
+    DeclRestoreArgs,
     NodeDeclInspectArgs,
     NodeDeclListArgs,
     NodeDeclVisibilityRevisionArgs,
@@ -198,7 +198,7 @@ def _decl_revision_item(runtime, repo_root, *, decl, revision) -> dict[str, obje
         else {
             "kind": change.kind.value,
             "base_revision": change.base_revision,
-            "reset_to_state": change.reset_to_state.value if change.reset_to_state is not None else None,
+            "start_stage": change.start_stage.value if change.start_stage is not None else None,
             "target_state": change.target_state.value if change.target_state is not None else None,
             "require_target_state_satisfied": change.require_target_state_satisfied,
             "objective": change.objective,
@@ -574,7 +574,6 @@ def _discard_round_draft(runtime, ctx, args: RoundDiscardArgs):
         ctx.repo_root,
         node_path=_node(ctx),
         round_id=_required_round_id(runtime, ctx, args.round_id),
-        reason=args.reason,
         discarded_by=ctx.runtime.agent_id or "content_plan",
     )
 
@@ -620,15 +619,31 @@ def _mark_round_terminal(runtime, ctx, args: RoundTerminalArgs):
 
 
 def _create_decl(runtime, ctx, args: DeclCreateArgs):
-    return runtime.decl_graph.create_decl(ctx.repo_root, node_path=_node(ctx), **args.model_dump())
+    payload = args.model_dump()
+    payload["name"] = payload.pop("decl_name")
+    return runtime.decl_graph.create_decl(ctx.repo_root, node_path=_node(ctx), **payload)
 
 
 def _open_decl_update(runtime, ctx, args: DeclUpdateArgs):
-    return runtime.decl_graph.open_decl_update(ctx.repo_root, node_path=_node(ctx), **args.model_dump())
+    payload = args.model_dump()
+    payload["name"] = payload.pop("decl_name")
+    return runtime.decl_graph.open_decl_update(ctx.repo_root, node_path=_node(ctx), **payload)
 
 
-def _mark_decl_delete(runtime, ctx, args: DeclDeleteArgs):
-    return runtime.decl_graph.mark_decl_delete(ctx.repo_root, node_path=_node(ctx), **args.model_dump())
+def _restore_decl_revision(runtime, ctx, args: DeclRestoreArgs):
+    return runtime.decl_graph.restore_decl_revision(
+        ctx.repo_root,
+        node_path=_node(ctx),
+        **args.model_dump(),
+    )
+
+
+def _delete_decls(runtime, ctx, args: DeclNamesArgs):
+    return runtime.decl_graph.delete_decls(
+        ctx.repo_root,
+        node_path=_node(ctx),
+        decl_names=args.decl_names,
+    )
 
 
 def _list_current_node_decls(runtime, ctx, args: NoArgs):
@@ -1105,7 +1120,7 @@ def build_tool_specs() -> list[ToolSpec]:
             name="discard_decl_round_draft",
             description=(
                 "Atomically discard one unsubmitted draft round and roll back all of its "
-                "planned create, update, and delete revisions."
+                "planned create or update revisions."
             ),
             args_model=RoundDiscardArgs,
             capability=ToolCapability.WRITE,
@@ -1166,7 +1181,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="plan_create_decl",
-            description="Plan creation of a flat-key declaration in the current draft round; native module and Lean full-name identity are derived later.",
+            description="Plan creation of a flat-key declaration in the current draft round; then record its known actual typed dependencies before draft validation.",
             args_model=DeclCreateArgs,
             capability=ToolCapability.WRITE,
             result_view="public_decl_detail",
@@ -1176,7 +1191,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="plan_update_decl",
-            description="Open a new declaration revision for an update in the current draft round.",
+            description="Copy the latest committed declaration revision into the current draft round and rerun the strict pipeline from start_stage.",
             args_model=DeclUpdateArgs,
             capability=ToolCapability.WRITE,
             result_view="public_decl_detail",
@@ -1185,14 +1200,24 @@ def build_tool_specs() -> list[ToolSpec]:
             handler=_open_decl_update,
         ),
         handler_tool(
-            name="plan_delete_decl",
-            description="Plan deletion of a declaration in the current draft round.",
-            args_model=DeclDeleteArgs,
+            name="restore_decl_revision",
+            description="Restore one historical committed revision as a new monotonic committed head without creating a declaration round or changing visibility.",
+            args_model=DeclRestoreArgs,
             capability=ToolCapability.WRITE,
-            result_view="public_decl_detail",
-            groups={AppGroup.DECL_ROUND_CHANGE_WRITE},
+            result_view="decl_restore_receipt",
+            groups={AppGroup.DECL_MAINTENANCE_WRITE},
             roles=plan_roles,
-            handler=_mark_decl_delete,
+            handler=_restore_decl_revision,
+        ),
+        handler_tool(
+            name="delete_decls",
+            description="Delete exactly the current downstream closure after rechecking all stable boundary, consumer, release, and unfinished-round blockers.",
+            args_model=DeclNamesArgs,
+            capability=ToolCapability.WRITE,
+            result_view="decl_delete_receipt",
+            groups={AppGroup.DECL_MAINTENANCE_WRITE},
+            roles=plan_roles,
+            handler=_delete_decls,
         ),
         handler_tool(
             name="list_current_node_decls",
@@ -1355,7 +1380,7 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=DeclNamesArgs,
             capability=ToolCapability.READ,
             result_view="decl_delete_closure",
-            groups={AppGroup.DECL_ROUND_CHANGE_WRITE},
+            groups={AppGroup.DECL_MAINTENANCE_WRITE},
             roles=plan_roles,
             handler=_compute_delete_closure,
         ),

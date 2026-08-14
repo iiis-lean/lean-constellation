@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal, TypeVar
 
 from lean_constellation.domain.refs import DeclRef
+from lean_constellation.domain.common import utc_now_iso
 from lean_constellation.domain.repo import ProofAvailability
 from lean_constellation.domain.repo_release import DeclAvailabilityIndex
 from lean_constellation.services.decl_graph.graph_store import GraphStoreComponent
@@ -14,6 +15,7 @@ from lean_constellation.services.decl_graph.decl_catalog import DeclCatalogCompo
 from lean_constellation.services.decl_graph.dependency import DeclDependencyComponent
 from lean_constellation.services.decl_graph.models import (
     DeclChangeView,
+    DeclDeleteReceipt,
     DeclDeleteClosureView,
     DeclDependencyClosureView,
     DeclDependencyMutationReceipt,
@@ -22,6 +24,7 @@ from lean_constellation.services.decl_graph.models import (
     DeclGraphRoundView,
     DeclGraphStoreView,
     DeclGraphStrategyView,
+    DeclLifecycle,
     DeclManagedProjectionEffect,
     DeclOriginMutationReceipt,
     DeclReviewMarkRecord,
@@ -35,6 +38,9 @@ from lean_constellation.services.decl_graph.models import (
     DeclGraphRound,
     DeclRoundResultKind,
     DeclRoundDraftDiscardReceipt,
+    DeclRoundStatus,
+    DeclRestoreReceipt,
+    DeclRevisionStatus,
     DeclStage,
     DeclState,
     DeclGraphStrategy,
@@ -60,6 +66,7 @@ from lean_constellation.services.decl_graph.round_execution import (
     RoundDraftCreatedResult,
 )
 from lean_constellation.services.decl_graph.projection_transaction import (
+    DeclGraphMaintenanceSnapshot,
     mutate_decl_truth_only,
     mutate_decl_with_projection,
 )
@@ -67,7 +74,7 @@ from lean_constellation.services.decl_graph.stage_validation import (
     DeclStageValidationResult,
     validate_round_stage_candidates,
 )
-from lean_constellation.services.foundation import GateReport, ServiceResult
+from lean_constellation.services.foundation import GateReport, ServiceResult, WriteMode
 from lean_constellation.services.lean_projection.lean_check import LeanCheckView
 from lean_constellation.services.node.export import DeclPublicView
 from lean_constellation.services.validation_snapshot.audit import AuditReport
@@ -408,14 +415,12 @@ class DeclGraphService:
         *,
         node_path: str,
         round_id: str,
-        reason: str,
         discarded_by: str,
     ) -> ServiceResult[DeclRoundDraftDiscardReceipt]:
         return self.decl_catalog.discard_round_draft(
             repo_root,
             node_path=node_path,
             round_id=round_id,
-            reason=reason,
             discarded_by=discarded_by,
         )
 
@@ -584,8 +589,6 @@ class DeclGraphService:
         public: bool = False,
         target_state: DeclState | str = DeclState.DECLARED,
         require_target_state_satisfied: bool = True,
-        anticipated_statement_dep_names: list[str] | None = None,
-        anticipated_proof_dep_names: list[str] | None = None,
     ) -> ServiceResult[DeclChangeView]:
         return self.decl_catalog.create_decl(
             repo_root,
@@ -598,8 +601,6 @@ class DeclGraphService:
             public=public,
             target_state=target_state,
             require_target_state_satisfied=require_target_state_satisfied,
-            anticipated_statement_dep_names=anticipated_statement_dep_names,
-            anticipated_proof_dep_names=anticipated_proof_dep_names,
         )
 
     def open_decl_update(
@@ -611,11 +612,8 @@ class DeclGraphService:
         name: str,
         objective: str,
         target_state: DeclState | str,
-        base_revision: int | None = None,
-        reset_to_state: DeclState | str | None = None,
+        start_stage: str,
         require_target_state_satisfied: bool = True,
-        anticipated_statement_dep_names: list[str] | None = None,
-        anticipated_proof_dep_names: list[str] | None = None,
     ) -> ServiceResult[DeclChangeView]:
         return self.decl_catalog.open_decl_update(
             repo_root,
@@ -624,29 +622,387 @@ class DeclGraphService:
             name=name,
             objective=objective,
             target_state=target_state,
-            base_revision=base_revision,
-            reset_to_state=reset_to_state,
+            start_stage=start_stage,
             require_target_state_satisfied=require_target_state_satisfied,
-            anticipated_statement_dep_names=anticipated_statement_dep_names,
-            anticipated_proof_dep_names=anticipated_proof_dep_names,
         )
 
-    def mark_decl_delete(
+    def restore_decl_revision(
         self,
         repo_root: Path,
         *,
         node_path: str,
-        round_id: str,
-        name: str,
-        objective: str,
-    ) -> ServiceResult[DeclChangeView]:
-        return self.decl_catalog.mark_decl_delete(
+        decl_name: str,
+        source_revision: int,
+    ) -> ServiceResult[DeclRestoreReceipt]:
+        """Restore historical accepted content as a new monotonic committed revision."""
+
+        repo_root = Path(repo_root)
+        decl_result = self.get_decl(repo_root, node_path=node_path, name=decl_name)
+        if not decl_result.ok or decl_result.value is None:
+            return self.runtime.foundation.fail(decl_result.issues)
+        decl = decl_result.value
+        if decl.lifecycle != DeclLifecycle.ACTIVE:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "decl_restore_inactive",
+                    "Only an active declaration can be restored.",
+                    object_ref=f"{node_path}:{decl_name}",
+                    current=decl.lifecycle.value,
+                )
+            )
+        current = self.get_decl_revision(
             repo_root,
             node_path=node_path,
-            round_id=round_id,
-            name=name,
-            objective=objective,
+            name=decl_name,
+            revision=decl.current_revision,
         )
+        if not current.ok or current.value is None:
+            return self.runtime.foundation.fail(current.issues)
+        if current.value.status != DeclRevisionStatus.COMMITTED:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "decl_restore_open_revision",
+                    "Restore requires the current declaration head to be committed.",
+                    object_ref=f"{node_path}:{decl_name}",
+                    current=f"{current.value.revision}:{current.value.status.value}",
+                )
+            )
+        source = self.get_decl_revision(
+            repo_root,
+            node_path=node_path,
+            name=decl_name,
+            revision=source_revision,
+        )
+        if not source.ok or source.value is None:
+            return self.runtime.foundation.fail(source.issues)
+        if source.value.status != DeclRevisionStatus.COMMITTED:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "decl_restore_source_not_committed",
+                    "Restore source must be a committed revision of the same declaration.",
+                    object_ref=f"{node_path}:{decl_name}@{source_revision}",
+                    current=source.value.status.value,
+                )
+            )
+        rounds = self.list_rounds(repo_root, node_path=node_path)
+        if not rounds.ok or rounds.value is None:
+            return self.runtime.foundation.fail(rounds.issues)
+        blocking_rounds = [
+            item.round_id
+            for item in rounds.value
+            if item.status in {
+                DeclRoundStatus.DRAFT,
+                DeclRoundStatus.RUNNING,
+                DeclRoundStatus.AWAITING_CLOSEOUT,
+            }
+            and any(ref.decl_name == decl_name for ref in item.revision_refs)
+        ]
+        if blocking_rounds:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "decl_restore_round_target_active",
+                    "Restore cannot race an unfinished declaration round target.",
+                    object_ref=f"{node_path}:{decl_name}",
+                    current=", ".join(blocking_rounds),
+                )
+            )
+
+        restored_revision = max(decl.revision_ids) + 1
+        candidate = source.value.model_copy(deep=True)
+        candidate.revision = restored_revision
+        candidate.status = DeclRevisionStatus.COMMITTED
+        candidate.change = None
+        candidate.restored_from_revision = source_revision
+        candidate.updated_at = utc_now_iso()
+        if decl.public and candidate.state in {DeclState.PLANNED, DeclState.SPECIFIED}:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "decl_restore_public_state_too_low",
+                    "A public declaration cannot be restored below the declared boundary.",
+                    object_ref=f"{node_path}:{decl_name}@{source_revision}",
+                    current=candidate.state.value,
+                    expected=DeclState.DECLARED.value,
+                )
+            )
+        guarded = self.release_guard.check_update_candidate(
+            repo_root,
+            node_path=node_path,
+            decl=decl,
+            candidate=candidate,
+        )
+        if not guarded.ok:
+            return self.runtime.foundation.fail(guarded.issues)
+
+        path_view = self.runtime.lean_projection.decl_file.derive_decl_file_path(
+            repo_root,
+            node_path=node_path,
+            decl_name=decl_name,
+            kind=decl.kind,
+        )
+        if not path_view.ok or path_view.value is None:
+            return self.runtime.foundation.fail(path_view.issues)
+        graph_root = self.graph_store.graph_root(repo_root, node_path=node_path)
+        projection_path = Path(path_view.value.path)
+        snapshot = DeclGraphMaintenanceSnapshot([graph_root, projection_path])
+
+        def fail_with_rollback(issues) -> ServiceResult[DeclRestoreReceipt]:  # noqa: ANN001
+            rollback_failures = snapshot.restore()
+            merged = list(issues)
+            if rollback_failures:
+                merged.append(
+                    self.runtime.foundation.issue(
+                        "decl_restore_rollback_failed",
+                        "Restore failed and rollback was incomplete.",
+                        object_ref=f"{node_path}:{decl_name}",
+                        details={"failures": "; ".join(rollback_failures)},
+                    )
+                )
+            return self.runtime.foundation.fail(merged)
+
+        try:
+            next_decl = decl.model_copy(deep=True)
+            next_decl.current_revision = restored_revision
+            next_decl.revision_ids = [*decl.revision_ids, restored_revision]
+            next_decl.updated_at = candidate.updated_at
+            with self.runtime.foundation.store.mutation("restore_decl_revision") as mutation:
+                mutation.stage_json(
+                    self.graph_store.revision_path(
+                        repo_root,
+                        node_path=node_path,
+                        decl_name=decl_name,
+                        revision=restored_revision,
+                    ),
+                    candidate,
+                    mode=WriteMode.CREATE_ONLY,
+                )
+                mutation.stage_json(
+                    self.graph_store.decl_record_path(
+                        repo_root,
+                        node_path=node_path,
+                        decl_name=decl_name,
+                    ),
+                    next_decl,
+                    mode=WriteMode.UPDATE_EXISTING,
+                )
+                committed = mutation.commit()
+            if not committed.ok:
+                return fail_with_rollback(committed.issues)
+            rebuilt = self.graph_store.rebuild_index(repo_root, node_path=node_path)
+            if not rebuilt.ok:
+                return fail_with_rollback(rebuilt.issues)
+            projected = self.runtime.lean_projection.sync_decl_file_after_revision_reset(
+                repo_root,
+                node_path=node_path,
+                decl_name=decl_name,
+            )
+            if not projected.ok or projected.value is None:
+                return fail_with_rollback(projected.issues)
+            if candidate.state in {
+                DeclState.DECLARED,
+                DeclState.PROOF_PLANNED,
+                DeclState.PROVED,
+            }:
+                target = (
+                    ProofAvailability.PROVED
+                    if candidate.state == DeclState.PROVED
+                    else ProofAvailability.DECLARED
+                )
+                ready = self.check_decl_proof_policy_satisfied(
+                    repo_root,
+                    node_path=node_path,
+                    decl_name=decl_name,
+                    target_proof_availability=target,
+                )
+                if not ready.ok or ready.value is None:
+                    return fail_with_rollback(ready.issues)
+                if not ready.value.passed:
+                    return fail_with_rollback(
+                        [
+                            self.runtime.foundation.issue(
+                                "decl_restore_consistency_failed",
+                                ready.value.summary,
+                                object_ref=f"{node_path}:{decl_name}@{restored_revision}",
+                            )
+                        ]
+                    )
+            return self.runtime.foundation.ok(
+                DeclRestoreReceipt(
+                    decl_name=decl_name,
+                    source_revision=source_revision,
+                    restored_revision=restored_revision,
+                    changed_files=list(projected.value.changed_items),
+                    summary=(
+                        f"Restored {decl_name}@{source_revision} as committed revision "
+                        f"{restored_revision}."
+                    ),
+                ),
+                warnings=[*projected.issues],
+            )
+        finally:
+            snapshot.close()
+
+    def delete_decls(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        decl_names: list[str],
+    ) -> ServiceResult[DeclDeleteReceipt]:
+        """Delete exactly the current same-node downstream closure."""
+
+        repo_root = Path(repo_root)
+        requested = sorted({name.strip() for name in decl_names if name and name.strip()})
+        closure = self.compute_delete_closure(
+            repo_root,
+            node_path=node_path,
+            decl_names=requested,
+        )
+        if not closure.ok or closure.value is None:
+            return self.runtime.foundation.fail(closure.issues)
+        if closure.value.missing_decl_names:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "decl_delete_target_missing",
+                    "Every requested deletion target must be an active declaration.",
+                    object_ref=node_path,
+                    current=", ".join(closure.value.missing_decl_names),
+                )
+            )
+        required = set(closure.value.closure_decl_names)
+        if set(requested) != required:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "decl_delete_closure_mismatch",
+                    "delete_decls requires the exact current downstream closure.",
+                    object_ref=node_path,
+                    current=", ".join(requested),
+                    expected=", ".join(sorted(required)),
+                )
+            )
+
+        decls: dict[str, Decl] = {}
+        projection_paths: list[Path] = []
+        for decl_name in sorted(required):
+            loaded = self.get_decl(repo_root, node_path=node_path, name=decl_name)
+            if not loaded.ok or loaded.value is None:
+                return self.runtime.foundation.fail(loaded.issues)
+            current = self.get_decl_revision(
+                repo_root,
+                node_path=node_path,
+                name=decl_name,
+                revision=loaded.value.current_revision,
+            )
+            if not current.ok or current.value is None:
+                return self.runtime.foundation.fail(current.issues)
+            if current.value.status != DeclRevisionStatus.COMMITTED:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "decl_delete_open_revision",
+                        "Synchronous delete requires every target head to be committed.",
+                        object_ref=f"{node_path}:{decl_name}",
+                        current=f"{current.value.revision}:{current.value.status.value}",
+                    )
+                )
+            decls[decl_name] = loaded.value
+            path_view = self.runtime.lean_projection.decl_file.derive_decl_file_path(
+                repo_root,
+                node_path=node_path,
+                decl_name=decl_name,
+                kind=loaded.value.kind,
+            )
+            if not path_view.ok or path_view.value is None:
+                return self.runtime.foundation.fail(path_view.issues)
+            projection_paths.append(Path(path_view.value.path))
+
+        rounds = self.list_rounds(repo_root, node_path=node_path)
+        if not rounds.ok or rounds.value is None:
+            return self.runtime.foundation.fail(rounds.issues)
+        blocking_rounds = sorted(
+            {
+                item.round_id
+                for item in rounds.value
+                if item.status in {
+                    DeclRoundStatus.DRAFT,
+                    DeclRoundStatus.RUNNING,
+                    DeclRoundStatus.AWAITING_CLOSEOUT,
+                }
+                and any(ref.decl_name in required for ref in item.revision_refs)
+            }
+        )
+        if blocking_rounds:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "decl_delete_round_target_active",
+                    "Delete cannot race an unfinished declaration round target.",
+                    object_ref=node_path,
+                    current=", ".join(blocking_rounds),
+                )
+            )
+        guarded = self.release_guard.check_delete_set(
+            repo_root,
+            node_path=node_path,
+            decl_names=required,
+        )
+        if not guarded.ok:
+            return self.runtime.foundation.fail(guarded.issues)
+
+        graph_root = self.graph_store.graph_root(repo_root, node_path=node_path)
+        snapshot = DeclGraphMaintenanceSnapshot([graph_root, *projection_paths])
+
+        def fail_with_rollback(issues) -> ServiceResult[DeclDeleteReceipt]:  # noqa: ANN001
+            rollback_failures = snapshot.restore()
+            merged = list(issues)
+            if rollback_failures:
+                merged.append(
+                    self.runtime.foundation.issue(
+                        "decl_delete_rollback_failed",
+                        "Delete failed and rollback was incomplete.",
+                        object_ref=node_path,
+                        details={"failures": "; ".join(rollback_failures)},
+                    )
+                )
+            return self.runtime.foundation.fail(merged)
+
+        changed_files: list[str] = []
+        try:
+            for decl_name in sorted(required):
+                removed = self.runtime.lean_projection.remove_decl_file_for_delete(
+                    repo_root,
+                    node_path=node_path,
+                    decl_name=decl_name,
+                )
+                if not removed.ok or removed.value is None:
+                    return fail_with_rollback(removed.issues)
+                changed_files.extend(removed.value.changed_items)
+            with self.runtime.foundation.store.mutation("delete_decls") as mutation:
+                for decl_name, decl in decls.items():
+                    deleted = decl.model_copy(deep=True)
+                    deleted.lifecycle = DeclLifecycle.DELETED
+                    deleted.updated_at = utc_now_iso()
+                    mutation.stage_json(
+                        self.graph_store.decl_record_path(
+                            repo_root,
+                            node_path=node_path,
+                            decl_name=decl_name,
+                        ),
+                        deleted,
+                        mode=WriteMode.UPDATE_EXISTING,
+                    )
+                committed = mutation.commit()
+            if not committed.ok:
+                return fail_with_rollback(committed.issues)
+            rebuilt = self.graph_store.rebuild_index(repo_root, node_path=node_path)
+            if not rebuilt.ok:
+                return fail_with_rollback(rebuilt.issues)
+            return self.runtime.foundation.ok(
+                DeclDeleteReceipt(
+                    deleted_decl_names=sorted(required),
+                    changed_files=sorted(set(changed_files)),
+                    summary=f"Deleted {len(required)} declarations from {node_path}.",
+                )
+            )
+        finally:
+            snapshot.close()
 
     def commit_decl_revision(
         self,
@@ -656,7 +1012,6 @@ class DeclGraphService:
         name: str,
         revision: int | None = None,
         state: DeclState | str | None = None,
-        apply_delete_lifecycle: bool = True,
     ) -> ServiceResult[DeclRevision]:
         return self.decl_catalog.commit_decl_revision(
             repo_root,
@@ -664,7 +1019,6 @@ class DeclGraphService:
             name=name,
             revision=revision,
             state=state,
-            apply_delete_lifecycle=apply_delete_lifecycle,
         )
 
     def get_decl(self, repo_root: Path, *, node_path: str, name: str) -> ServiceResult[Decl]:
@@ -876,13 +1230,14 @@ class DeclGraphService:
         decl_name: str,
         dep,
         refresh_projection: bool = True,
+        allow_draft: bool = False,
     ) -> ServiceResult[DeclDependencyMutationReceipt]:
         return self._mutate_stage(
             repo_root,
             node_path=node_path,
             decl_name=decl_name,
             refresh_projection=refresh_projection,
-            mutate=lambda: self.stage_mutation.add_statement_dep(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name, dep=dep),
+            mutate=lambda: self.stage_mutation.add_statement_dep(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name, dep=dep, allow_draft=allow_draft),
             finalize=self._collection_mutation_receipt(
                 decl_name=decl_name,
                 section="Statement",
@@ -901,6 +1256,7 @@ class DeclGraphService:
         decl_name: str,
         deps,
         refresh_projection: bool = True,
+        allow_draft: bool = False,
     ) -> ServiceResult[DeclDependencyMutationReceipt]:
         return self._mutate_stage(
             repo_root,
@@ -913,6 +1269,7 @@ class DeclGraphService:
                 round_id=round_id,
                 decl_name=decl_name,
                 deps=deps,
+                allow_draft=allow_draft,
             ),
             finalize=self._collection_mutation_receipt(
                 decl_name=decl_name,
@@ -932,13 +1289,14 @@ class DeclGraphService:
         decl_name: str,
         index: int,
         refresh_projection: bool = True,
+        allow_draft: bool = False,
     ) -> ServiceResult[DeclDependencyMutationReceipt]:
         return self._mutate_stage(
             repo_root,
             node_path=node_path,
             decl_name=decl_name,
             refresh_projection=refresh_projection,
-            mutate=lambda: self.stage_mutation.remove_statement_dep(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name, index=index),
+            mutate=lambda: self.stage_mutation.remove_statement_dep(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name, index=index, allow_draft=allow_draft),
             finalize=self._collection_mutation_receipt(
                 decl_name=decl_name,
                 section="Statement",
@@ -955,13 +1313,14 @@ class DeclGraphService:
         round_id: str,
         decl_name: str,
         refresh_projection: bool = True,
+        allow_draft: bool = False,
     ) -> ServiceResult[DeclDependencyMutationReceipt]:
         return self._mutate_stage(
             repo_root,
             node_path=node_path,
             decl_name=decl_name,
             refresh_projection=refresh_projection,
-            mutate=lambda: self.stage_mutation.clear_statement_deps(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name),
+            mutate=lambda: self.stage_mutation.clear_statement_deps(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name, allow_draft=allow_draft),
             finalize=self._collection_mutation_receipt(
                 decl_name=decl_name,
                 section="Statement",
@@ -1109,13 +1468,14 @@ class DeclGraphService:
         decl_name: str,
         dep,
         refresh_projection: bool = True,
+        allow_draft: bool = False,
     ) -> ServiceResult[DeclDependencyMutationReceipt]:
         return self._mutate_stage(
             repo_root,
             node_path=node_path,
             decl_name=decl_name,
             refresh_projection=refresh_projection,
-            mutate=lambda: self.stage_mutation.add_proof_dep(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name, dep=dep),
+            mutate=lambda: self.stage_mutation.add_proof_dep(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name, dep=dep, allow_draft=allow_draft),
             finalize=self._collection_mutation_receipt(
                 decl_name=decl_name,
                 section="Proof",
@@ -1134,6 +1494,7 @@ class DeclGraphService:
         decl_name: str,
         deps,
         refresh_projection: bool = True,
+        allow_draft: bool = False,
     ) -> ServiceResult[DeclDependencyMutationReceipt]:
         return self._mutate_stage(
             repo_root,
@@ -1146,6 +1507,7 @@ class DeclGraphService:
                 round_id=round_id,
                 decl_name=decl_name,
                 deps=deps,
+                allow_draft=allow_draft,
             ),
             finalize=self._collection_mutation_receipt(
                 decl_name=decl_name,
@@ -1165,13 +1527,14 @@ class DeclGraphService:
         decl_name: str,
         index: int,
         refresh_projection: bool = True,
+        allow_draft: bool = False,
     ) -> ServiceResult[DeclDependencyMutationReceipt]:
         return self._mutate_stage(
             repo_root,
             node_path=node_path,
             decl_name=decl_name,
             refresh_projection=refresh_projection,
-            mutate=lambda: self.stage_mutation.remove_proof_dep(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name, index=index),
+            mutate=lambda: self.stage_mutation.remove_proof_dep(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name, index=index, allow_draft=allow_draft),
             finalize=self._collection_mutation_receipt(
                 decl_name=decl_name,
                 section="Proof",
@@ -1188,13 +1551,14 @@ class DeclGraphService:
         round_id: str,
         decl_name: str,
         refresh_projection: bool = True,
+        allow_draft: bool = False,
     ) -> ServiceResult[DeclDependencyMutationReceipt]:
         return self._mutate_stage(
             repo_root,
             node_path=node_path,
             decl_name=decl_name,
             refresh_projection=refresh_projection,
-            mutate=lambda: self.stage_mutation.clear_proof_deps(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name),
+            mutate=lambda: self.stage_mutation.clear_proof_deps(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name, allow_draft=allow_draft),
             finalize=self._collection_mutation_receipt(
                 decl_name=decl_name,
                 section="Proof",

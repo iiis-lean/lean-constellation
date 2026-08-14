@@ -1,6 +1,11 @@
 from __future__ import annotations
 
 from lean_constellation.tools import build_application_tool_specs
+from lean_constellation.tools.args import (
+    CurrentMaterialRefRemoveArgs,
+    NodeDependencyRemoveArgs,
+    NodeMaterialRefRemoveArgs,
+)
 from tests.unit.tools._family_helpers import assert_group_contains, assert_tools_registered
 
 
@@ -53,6 +58,15 @@ def test_node_contract_tools_are_registered() -> None:
     }
 
     assert_tools_registered(expected)
+
+
+def test_node_contract_remove_schemas_do_not_expose_unused_reason() -> None:
+    for args_model in (
+        NodeDependencyRemoveArgs,
+        CurrentMaterialRefRemoveArgs,
+        NodeMaterialRefRemoveArgs,
+    ):
+        assert "reason" not in args_model.model_json_schema()["properties"]
 
 
 def test_node_contract_groups_expose_expected_tools() -> None:

@@ -76,8 +76,6 @@ class NodeReleaseGuard:
             )
             if not revision.ok or revision.value is None:
                 return self.runtime.foundation.fail(revision.issues)
-            if revision.value.state == DeclState.OBSOLETE:
-                continue
             if revision.value.status != DeclRevisionStatus.COMMITTED:
                 return self.runtime.foundation.fail(
                     self.runtime.foundation.issue(
@@ -171,7 +169,6 @@ class NodeReleaseGuard:
         )
         floor = required_state_for_availability(target.value.kind, required_availability)
         state_rank = {
-            DeclState.OBSOLETE: -1,
             DeclState.PLANNED: 0,
             DeclState.SPECIFIED: 1,
             DeclState.DECLARED: 2,

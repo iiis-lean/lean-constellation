@@ -345,7 +345,8 @@ def test_content_plan_specialized_skills_spell_out_operational_flow() -> None:
     assert "validate_decl_round_draft" in round_planning
     assert "discard_decl_round_draft" in round_planning
     assert "submit_current_decl_round" in round_planning
-    assert "anticipated_statement_dep_names" in round_planning
+    assert "anticipated_statement_dep_names" not in round_planning
+    assert "actual typed edge" in round_planning
     assert "Do not round or pad its end line" in round_planning
     assert "split provider before consumer" in round_planning
 

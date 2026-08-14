@@ -22,8 +22,8 @@ from lean_constellation.flows.content_node_task.decl_round.steps import (
     DeclStageReviewerStepResult,
     DeclStageWorkerStepState,
     DeclStageWorkerStepResult,
-    DeleteAndNormalizeStep,
-    DeleteAndNormalizeStepResult,
+    NormalizeRoundRevisionsStep,
+    NormalizeRoundRevisionsStepResult,
     PrepareStageTargetsStep,
     PrepareStageTargetsStepResult,
     PrepareStageTargetsStepState,
@@ -193,10 +193,10 @@ class DeclGraphRoundFlow(LeanBusinessFlow):
                     scope_id=self.scope_id,
                 )
             )
-        if phase == "delete_normalize":
+        if phase == "revision_normalize":
             return ctx.create_step(
-                DeleteAndNormalizeStep(
-                    step_id=new_decl_round_step_id("decl_round_delete_normalize"),
+                NormalizeRoundRevisionsStep(
+                    step_id=new_decl_round_step_id("decl_round_revision_normalize"),
                     flow_id=self.flow_id,
                     scope_id=self.scope_id,
                 )
@@ -283,8 +283,8 @@ class DeclGraphRoundFlow(LeanBusinessFlow):
         result = ctx.step.result
         if isinstance(result, RoundStartValidationStepResult):
             self._consume_start_validation(state, result)
-        elif isinstance(result, DeleteAndNormalizeStepResult):
-            self._consume_delete_normalize(state, result)
+        elif isinstance(result, NormalizeRoundRevisionsStepResult):
+            self._consume_revision_normalize(state, result)
         elif isinstance(result, PrepareStageTargetsStepResult):
             self._consume_stage_targets(state, result)
         elif ctx.step.step_type == "decl_stage_worker_agent_step":
@@ -301,13 +301,13 @@ class DeclGraphRoundFlow(LeanBusinessFlow):
 
     def _consume_start_validation(self, state: DeclGraphRoundState, result: RoundStartValidationStepResult) -> None:
         if result.outcome == "valid":
-            state.position = FlowPosition(phase="delete_normalize", round_index=result.round_index)
+            state.position = FlowPosition(phase="revision_normalize", round_index=result.round_index)
             return
         state.terminal_reason = result.error
         state.pending_flow_outcome = "failed"
         state.position = FlowPosition(phase="build_result")
 
-    def _consume_delete_normalize(self, state: DeclGraphRoundState, result: DeleteAndNormalizeStepResult) -> None:
+    def _consume_revision_normalize(self, state: DeclGraphRoundState, result: NormalizeRoundRevisionsStepResult) -> None:
         if result.outcome == "normalized":
             _advance_to_next_stage(state)
             return

@@ -50,7 +50,7 @@ def test_released_statement_reset_is_blocked_but_proof_reset_is_allowed(tmp_path
         round_id=round_id,
         name="PublicResult",
         objective="Illegally reopen the released statement.",
-        reset_to_state=DeclState.SPECIFIED,
+        start_stage="statement_formal",
         target_state=DeclState.PROVED,
     )
     assert not blocked.ok
@@ -62,7 +62,7 @@ def test_released_statement_reset_is_blocked_but_proof_reset_is_allowed(tmp_path
         round_id=round_id,
         name="PublicResult",
         objective="Replace only the proof.",
-        reset_to_state=DeclState.DECLARED,
+        start_stage="proof_nl",
         target_state=DeclState.PROVED,
     )
     assert allowed.ok
@@ -72,6 +72,20 @@ def test_released_statement_reset_is_blocked_but_proof_reset_is_allowed(tmp_path
     assert revision.ok and revision.value is not None
     assert revision.value.statement.formal is not None
     assert revision.value.proof is None
+
+
+def test_released_declaration_cannot_be_deleted_synchronously(tmp_path: Path) -> None:
+    runtime, versions = _prepare_release_repo(tmp_path)
+    _publish_latest(runtime, tmp_path, versions)
+
+    deleted = runtime.decl_graph.delete_decls(
+        tmp_path,
+        node_path="Main.Results",
+        decl_names=["PublicResult"],
+    )
+
+    assert not deleted.ok
+    assert deleted.issues[0].kind == "release_protected_decl_delete"
 
 
 def test_released_scope_boundary_mutation_is_rejected(tmp_path: Path) -> None:

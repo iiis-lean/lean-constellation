@@ -106,8 +106,6 @@ class DeclDraftSpec(StrictModel):
     public: bool = False
     target_state: DeclState = DeclState.DECLARED
     require_target_state_satisfied: bool = True
-    anticipated_statement_dep_names: list[str] = Field(default_factory=list)
-    anticipated_proof_dep_names: list[str] = Field(default_factory=list)
 
 
 class RoundDraftCreatedResult(StrictModel):
@@ -361,9 +359,6 @@ class DeclRoundExecutionComponent:
                         required_state=DeclState.DECLARED,
                     )
                 )
-                continue
-            if change.kind == DeclChangeKind.DELETE:
-                reached.append(revision_ref)
                 continue
             if not self._state_reaches(revision.state, change.target_state):
                 state_failures.append(
@@ -671,7 +666,6 @@ class DeclRoundExecutionComponent:
                 name=decl_name,
                 revision=revision.revision,
                 state=revision.state,
-                apply_delete_lifecycle=result_kind == DeclRoundResultKind.SUCCESS,
             )
             self._require(committed)
             committed_refs.append(round_refs[decl_name])
@@ -770,7 +764,6 @@ class DeclRoundExecutionComponent:
     @staticmethod
     def _state_reaches(current: DeclState, target: DeclState) -> bool:
         rank = {
-            DeclState.OBSOLETE: -1,
             DeclState.PLANNED: 0,
             DeclState.SPECIFIED: 1,
             DeclState.DECLARED: 2,

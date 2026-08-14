@@ -202,9 +202,24 @@ def test_discard_round_draft_rolls_back_created_decls_and_allows_replanning(
         objective="Use provider only after its round commits.",
         summary="Consumer.",
         target_state=DeclState.PROVED,
-        anticipated_statement_dep_names=["provider"],
     )
     assert provider.ok and consumer.ok
+    assert provider.value is not None
+    assert service.add_statement_dep(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=round_id,
+        decl_name="consumer",
+        dep=RepoDeclDep(
+            ref=DeclRef(
+                node="Main.Topic.Core",
+                name="provider",
+                    revision=provider.value.target_revision,
+            )
+        ),
+        refresh_projection=False,
+        allow_draft=True,
+    ).ok
     gate = service.validate_round_draft(
         tmp_path,
         node_path="Main.Topic.Core",
@@ -219,7 +234,6 @@ def test_discard_round_draft_rolls_back_created_decls_and_allows_replanning(
         tmp_path,
         node_path="Main.Topic.Core",
         round_id=round_id,
-        reason="Split provider and consumer into dependency-ordered rounds.",
         discarded_by="test-content-plan",
     )
 
@@ -234,10 +248,8 @@ def test_discard_round_draft_rolls_back_created_decls_and_allows_replanning(
     assert round_record.ok and round_record.value is not None
     assert round_record.value.status == "discarded"
     assert round_record.value.revision_refs == []
-    assert [ref.decl_name for ref in round_record.value.discarded_revision_refs] == [
-        "provider",
-        "consumer",
-    ]
+    assert round_record.value.discarded_by == "test-content-plan"
+    assert round_record.value.discarded_at is not None
     assert not service.get_decl(
         tmp_path,
         node_path="Main.Topic.Core",
@@ -260,7 +272,6 @@ def test_discard_round_draft_rolls_back_created_decls_and_allows_replanning(
         tmp_path,
         node_path="Main.Topic.Core",
         round_id=round_id,
-        reason="Split provider and consumer into dependency-ordered rounds.",
         discarded_by="test-content-plan",
     )
     assert replay.ok and replay.value is not None and replay.value.changed is False
@@ -274,7 +285,7 @@ def test_discard_round_draft_rolls_back_created_decls_and_allows_replanning(
     assert replacement.value.round_index == 2
 
 
-def test_discard_round_draft_restores_update_and_delete_heads(
+def test_discard_round_draft_restores_update_head(
     tmp_path: Path,
 ) -> None:
     _create_content_node(tmp_path)
@@ -284,11 +295,6 @@ def test_discard_round_draft_restores_update_and_delete_heads(
         round_id=seed_round_id,
         name="updated_decl",
     )
-    _seed_committed_decl(
-        tmp_path,
-        round_id=seed_round_id,
-        name="deleted_decl",
-    )
     _, round_id = _create_round(tmp_path)
     service = make_runtime().decl_graph
     updated = service.open_decl_update(
@@ -297,32 +303,23 @@ def test_discard_round_draft_restores_update_and_delete_heads(
         round_id=round_id,
         name="updated_decl",
         objective="Redo the proof.",
-        reset_to_state=DeclState.DECLARED,
+        start_stage="proof_nl",
         target_state=DeclState.PROVED,
     )
-    deleted = service.mark_decl_delete(
-        tmp_path,
-        node_path="Main.Topic.Core",
-        round_id=round_id,
-        name="deleted_decl",
-        objective="Delete this declaration.",
-    )
-    assert updated.ok and deleted.ok
+    assert updated.ok
 
     discarded = service.discard_round_draft(
         tmp_path,
         node_path="Main.Topic.Core",
         round_id=round_id,
-        reason="The batch must be replanned.",
         discarded_by="test-content-plan",
     )
 
     assert discarded.ok and discarded.value is not None
     assert discarded.value.restored_decl_revisions == {
-        "deleted_decl": 1,
         "updated_decl": 1,
     }
-    for name in ("updated_decl", "deleted_decl"):
+    for name in ("updated_decl",):
         decl = service.get_decl(
             tmp_path,
             node_path="Main.Topic.Core",
@@ -431,14 +428,14 @@ def test_open_decl_update_copies_committed_revision_and_resets_stage_fields(tmp_
         round_id=update_round_id,
         name="main_result",
         objective="Redo the proof.",
-        reset_to_state=DeclState.DECLARED,
+        start_stage="proof_nl",
         target_state=DeclState.PROVED,
     )
 
     assert update.ok and update.value is not None
     assert update.value.kind == DeclChangeKind.UPDATE
     assert update.value.base_revision == 1
-    assert update.value.reset_to_state == DeclState.DECLARED
+    assert update.value.start_stage.value == "proof_nl"
     assert update.value.target_revision == 2
 
     opened = service.get_decl_revision(tmp_path, node_path="Main.Topic.Core", name="main_result", revision=2)
@@ -452,6 +449,132 @@ def test_open_decl_update_copies_committed_revision_and_resets_stage_fields(tmp_
     assert opened.value.proof is None or opened.value.proof.deps == []
     assert opened.value.change is not None
     assert opened.value.change.base_revision == 1
+
+
+def test_restore_decl_revision_creates_monotonic_committed_copy_with_lineage(
+    tmp_path: Path,
+) -> None:
+    _create_content_node(tmp_path)
+    _, create_round_id = _create_round(tmp_path)
+    service = make_runtime().decl_graph
+    created = service.create_decl(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=create_round_id,
+        name="main_result",
+        kind="theorem",
+        objective="Create the theorem.",
+        summary="Main result.",
+        target_state=DeclState.DECLARED,
+    )
+    assert created.ok
+    first = service.get_decl_revision(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        name="main_result",
+        revision=1,
+    )
+    assert first.ok and first.value is not None
+    first.value.state = DeclState.SPECIFIED
+    first.value.statement.nl = DeclNaturalLanguageSection(text="Historical statement.")
+    _write_revision(tmp_path, decl_name="main_result", revision=first.value)
+    assert service.commit_decl_revision(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        name="main_result",
+        revision=1,
+        state=DeclState.SPECIFIED,
+    ).ok
+
+    _, update_round_id = _create_round(tmp_path, objective="Replace the statement.")
+    update = service.open_decl_update(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=update_round_id,
+        name="main_result",
+        objective="Rewrite the statement.",
+        start_stage="statement_nl",
+        target_state=DeclState.DECLARED,
+    )
+    assert update.ok
+    second = service.get_decl_revision(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        name="main_result",
+        revision=2,
+    )
+    assert second.ok and second.value is not None
+    second.value.state = DeclState.SPECIFIED
+    second.value.statement.nl = DeclNaturalLanguageSection(text="Replacement statement.")
+    _write_revision(tmp_path, decl_name="main_result", revision=second.value)
+    assert service.commit_decl_revision(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        name="main_result",
+        revision=2,
+        state=DeclState.SPECIFIED,
+    ).ok
+    _create_round(tmp_path, objective="Close the previous round.")
+
+    restored = service.restore_decl_revision(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        decl_name="main_result",
+        source_revision=1,
+    )
+
+    assert restored.ok, restored.issues
+    assert restored.value is not None
+    assert restored.value.source_revision == 1
+    assert restored.value.restored_revision == 3
+    decl = service.get_decl(tmp_path, node_path="Main.Topic.Core", name="main_result")
+    assert decl.ok and decl.value is not None
+    assert decl.value.current_revision == 3
+    assert decl.value.revision_ids == [1, 2, 3]
+    revision = service.get_decl_revision(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        name="main_result",
+        revision=3,
+    )
+    assert revision.ok and revision.value is not None
+    assert revision.value.status.value == "committed"
+    assert revision.value.restored_from_revision == 1
+    assert revision.value.change is None
+    assert revision.value.statement.nl is not None
+    assert revision.value.statement.nl.text == "Historical statement."
+
+
+def test_restore_decl_revision_rejects_open_current_head(tmp_path: Path) -> None:
+    _create_content_node(tmp_path)
+    _, round_id = _create_round(tmp_path)
+    _seed_committed_decl(
+        tmp_path,
+        round_id=round_id,
+        name="main_result",
+        state=DeclState.DECLARED,
+    )
+    service = make_runtime().decl_graph
+    _, update_round_id = _create_round(tmp_path, objective="Open an update.")
+    assert service.open_decl_update(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=update_round_id,
+        name="main_result",
+        objective="Update it.",
+        start_stage="proof_nl",
+        target_state=DeclState.PROVED,
+    ).ok
+
+    restored = service.restore_decl_revision(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        decl_name="main_result",
+        source_revision=1,
+    )
+
+    assert not restored.ok
+    assert restored.issues[0].kind == "decl_restore_open_revision"
 
 
 def test_open_decl_update_rebinds_same_node_dependencies_to_provider_head(tmp_path: Path) -> None:
@@ -479,7 +602,7 @@ def test_open_decl_update_rebinds_same_node_dependencies_to_provider_head(tmp_pa
         round_id=provider_round_id,
         name="supporting_lemma",
         objective="Create the provider's next revision.",
-        reset_to_state=DeclState.DECLARED,
+        start_stage="proof_nl",
         target_state=DeclState.PROVED,
     )
     assert provider_update.ok, provider_update.issues
@@ -498,7 +621,7 @@ def test_open_decl_update_rebinds_same_node_dependencies_to_provider_head(tmp_pa
         round_id=consumer_round_id,
         name="main_result",
         objective="Reuse the statement against the current provider.",
-        reset_to_state=DeclState.DECLARED,
+        start_stage="proof_nl",
         target_state=DeclState.PROVED,
     )
 
@@ -513,7 +636,7 @@ def test_open_decl_update_rebinds_same_node_dependencies_to_provider_head(tmp_pa
     assert [dep.ref.revision for dep in opened.value.statement.deps if isinstance(dep, RepoDeclDep)] == [2]
 
 
-def test_open_decl_update_defaults_to_committed_declared_head_and_starts_proof_pipeline(tmp_path: Path) -> None:
+def test_open_decl_update_uses_latest_committed_declared_head_and_starts_proof_pipeline(tmp_path: Path) -> None:
     _create_content_node(tmp_path)
     _, round_id = _create_round(tmp_path)
     _seed_committed_decl(tmp_path, round_id=round_id, name="main_result", state=DeclState.DECLARED)
@@ -526,19 +649,20 @@ def test_open_decl_update_defaults_to_committed_declared_head_and_starts_proof_p
         round_id=update_round_id,
         name="main_result",
         objective="Prove it.",
+        start_stage="proof_nl",
         target_state=DeclState.PROVED,
     )
 
     assert update.ok, update.issues
     assert update.value is not None
     assert update.value.base_revision == 1
-    assert update.value.reset_to_state == DeclState.DECLARED
+    assert update.value.start_stage.value == "proof_nl"
     opened = service.get_decl_revision(tmp_path, node_path="Main.Topic.Core", name="main_result", revision=2)
     assert opened.ok and opened.value is not None
     assert opened.value.state == DeclState.DECLARED
 
 
-def test_open_decl_update_requires_explicit_redo_when_base_already_reaches_target(tmp_path: Path) -> None:
+def test_open_decl_update_can_redo_proved_head_from_explicit_start_stage(tmp_path: Path) -> None:
     _create_content_node(tmp_path)
     _, round_id = _create_round(tmp_path)
     _seed_committed_decl(tmp_path, round_id=round_id, name="main_result")
@@ -551,14 +675,17 @@ def test_open_decl_update_requires_explicit_redo_when_base_already_reaches_targe
         round_id=update_round_id,
         name="main_result",
         objective="Redo it.",
+        start_stage="proof_nl",
         target_state=DeclState.PROVED,
     )
 
-    assert not update.ok
-    assert update.issues[0].kind == "decl_update_reset_required"
+    assert update.ok, update.issues
+    assert update.value is not None
+    assert update.value.base_revision == 1
+    assert update.value.start_stage.value == "proof_nl"
 
 
-def test_open_decl_update_can_branch_from_older_committed_base_with_monotonic_revision(tmp_path: Path) -> None:
+def test_open_decl_update_always_copies_latest_committed_head_with_monotonic_revision(tmp_path: Path) -> None:
     _create_content_node(tmp_path)
     _, round_id = _create_round(tmp_path)
     _seed_committed_decl(tmp_path, round_id=round_id, name="main_result")
@@ -570,7 +697,7 @@ def test_open_decl_update_can_branch_from_older_committed_base_with_monotonic_re
         round_id=second_round_id,
         name="main_result",
         objective="Redo proof.",
-        reset_to_state=DeclState.DECLARED,
+        start_stage="proof_nl",
         target_state=DeclState.PROVED,
     )
     assert second.ok and second.value is not None
@@ -589,15 +716,14 @@ def test_open_decl_update_can_branch_from_older_committed_base_with_monotonic_re
         round_id=third_round_id,
         name="main_result",
         objective="Try an alternate proof from the original revision.",
-        base_revision=1,
-        reset_to_state=DeclState.DECLARED,
+        start_stage="proof_nl",
         target_state=DeclState.PROVED,
     )
 
     assert third.ok, third.issues
     assert third.value is not None
     assert third.value.target_revision == 3
-    assert third.value.base_revision == 1
+    assert third.value.base_revision == 2
     decl = service.get_decl(tmp_path, node_path="Main.Topic.Core", name="main_result")
     assert decl.ok and decl.value is not None
     assert decl.value.current_revision == 3
@@ -607,7 +733,7 @@ def test_open_decl_update_can_branch_from_older_committed_base_with_monotonic_re
     assert revision_two.value.status == "committed"
 
 
-def test_open_decl_update_rejects_reset_later_than_base_state(tmp_path: Path) -> None:
+def test_open_decl_update_rejects_start_stage_later_than_source_state(tmp_path: Path) -> None:
     _create_content_node(tmp_path)
     _, round_id = _create_round(tmp_path)
     _seed_committed_decl(tmp_path, round_id=round_id, name="main_result", state=DeclState.DECLARED)
@@ -620,12 +746,12 @@ def test_open_decl_update_rejects_reset_later_than_base_state(tmp_path: Path) ->
         round_id=update_round_id,
         name="main_result",
         objective="Skip proof planning.",
-        reset_to_state=DeclState.PROOF_PLANNED,
+        start_stage="proof_formal",
         target_state=DeclState.PROVED,
     )
 
     assert not update.ok
-    assert update.issues[0].kind == "decl_update_reset_above_base"
+    assert update.issues[0].kind == "decl_update_start_stage_above_source"
 
 
 def test_open_decl_update_rejects_open_current_revision(tmp_path: Path) -> None:
@@ -648,6 +774,7 @@ def test_open_decl_update_rejects_open_current_revision(tmp_path: Path) -> None:
         round_id=round_id,
         name="main_result",
         objective="Update it.",
+        start_stage="statement_nl",
         target_state=DeclState.PROVED,
     )
 
@@ -655,7 +782,7 @@ def test_open_decl_update_rejects_open_current_revision(tmp_path: Path) -> None:
     assert update.issues[0].kind == "decl_revision_already_open"
 
 
-def test_delete_closure_and_round_draft_validation(tmp_path: Path) -> None:
+def test_delete_decls_requires_and_deletes_exact_current_closure(tmp_path: Path) -> None:
     _create_content_node(tmp_path)
     _, round_id = _create_round(tmp_path)
     _seed_committed_decl(tmp_path, round_id=round_id, name="A")
@@ -667,16 +794,89 @@ def test_delete_closure_and_round_draft_validation(tmp_path: Path) -> None:
     assert closure.ok and closure.value is not None
     assert closure.value.closure_decl_names == ["A", "B", "C"]
 
-    _, delete_round_id = _create_round(tmp_path, objective="Delete part of the chain.")
-    blocked = service.mark_decl_delete(
+    _create_round(tmp_path, objective="Close the seed round.")
+    blocked = service.delete_decls(
         tmp_path,
         node_path="Main.Topic.Core",
-        round_id=delete_round_id,
-        name="A",
-        objective="Delete A.",
+        decl_names=["A"],
     )
     assert not blocked.ok
-    assert blocked.issues[0].kind == "decl_delete_current_inbound_refs"
+    assert blocked.issues[0].kind == "decl_delete_closure_mismatch"
+    assert blocked.issues[0].expected == "A, B, C"
+
+    deleted = service.delete_decls(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        decl_names=["C", "A", "B"],
+    )
+
+    assert deleted.ok, deleted.issues
+    assert deleted.value is not None
+    assert deleted.value.deleted_decl_names == ["A", "B", "C"]
+    for decl_name in deleted.value.deleted_decl_names:
+        decl = service.get_decl(
+            tmp_path,
+            node_path="Main.Topic.Core",
+            name=decl_name,
+        )
+        assert decl.ok and decl.value is not None
+        assert decl.value.lifecycle.value == "deleted"
+    index = service.get_decl_graph_index(tmp_path, node_path="Main.Topic.Core")
+    assert index.ok and index.value is not None
+    assert index.value.decl_names == ["A", "B", "C"]
+
+
+def test_delete_decls_rejects_cross_repo_current_consumer(tmp_path: Path) -> None:
+    provider = tmp_path / "Provider"
+    consumer = tmp_path / "Consumer"
+    _create_content_node(provider)
+    _create_content_node(consumer)
+    _, provider_round = _create_round(provider)
+    _, consumer_round = _create_round(consumer)
+    _seed_committed_decl(provider, round_id=provider_round, name="ProviderResult")
+    _seed_committed_decl(consumer, round_id=consumer_round, name="ConsumerResult")
+    _create_round(provider, objective="Close the provider seed round.")
+    _create_round(consumer, objective="Close the consumer seed round.")
+    runtime = make_runtime()
+    revision = runtime.decl_graph.get_decl_revision(
+        consumer,
+        node_path="Main.Topic.Core",
+        name="ConsumerResult",
+        revision=1,
+    )
+    assert revision.ok and revision.value is not None
+    assert revision.value.proof is not None
+    revision.value.proof.deps = [
+        RepoDeclDep(
+            ref=DeclRef(
+                repo="Provider",
+                node="Main.Topic.Core",
+                name="ProviderResult",
+                revision=1,
+            )
+        )
+    ]
+    revision_path = runtime.decl_graph.graph_store.revision_path(
+        consumer,
+        node_path="Main.Topic.Core",
+        decl_name="ConsumerResult",
+        revision=1,
+    )
+    assert runtime.foundation.store.write_json_atomic(
+        revision_path,
+        revision.value,
+        mode=WriteMode.UPDATE_EXISTING,
+    ).ok
+
+    deleted = runtime.decl_graph.delete_decls(
+        provider,
+        node_path="Main.Topic.Core",
+        decl_names=["ProviderResult"],
+    )
+
+    assert not deleted.ok
+    assert deleted.issues[0].kind == "decl_delete_current_inbound_refs"
+    assert "workspace:decl:Consumer" in (deleted.issues[0].current or "")
 
 
 def test_round_draft_validation_rejects_internal_update_dependency(tmp_path: Path) -> None:
@@ -693,7 +893,7 @@ def test_round_draft_validation_rejects_internal_update_dependency(tmp_path: Pat
         round_id=update_round_id,
         name="A",
         objective="Update A.",
-        reset_to_state=DeclState.PROOF_PLANNED,
+        start_stage="proof_formal",
         target_state=DeclState.PROVED,
     ).ok
     assert service.open_decl_update(
@@ -702,7 +902,7 @@ def test_round_draft_validation_rejects_internal_update_dependency(tmp_path: Pat
         round_id=update_round_id,
         name="B",
         objective="Update B.",
-        reset_to_state=DeclState.PROOF_PLANNED,
+        start_stage="proof_formal",
         target_state=DeclState.PROVED,
     ).ok
 
@@ -738,7 +938,7 @@ def test_round_draft_validation_accepts_declared_definition_proof_dependency(tmp
         round_id=update_round_id,
         name="ConsumerTheorem",
         objective="Retry the proof without rebuilding its definition dependency.",
-        reset_to_state=DeclState.PROOF_PLANNED,
+        start_stage="proof_formal",
         target_state=DeclState.PROVED,
     ).ok
 
@@ -773,7 +973,7 @@ def test_round_draft_validation_still_requires_theorem_proof_dependency_proved(t
         round_id=update_round_id,
         name="ConsumerTheorem",
         objective="Retry the proof while retaining its theorem dependency.",
-        reset_to_state=DeclState.PROOF_PLANNED,
+        start_stage="proof_formal",
         target_state=DeclState.PROVED,
     ).ok
 

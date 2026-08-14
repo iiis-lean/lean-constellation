@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 from lean_constellation.services.decl_graph.models import (
     Decl,
+    DeclLifecycle,
     DeclRevision,
     DeclRoundStatus,
     DeclState,
@@ -39,8 +40,6 @@ class DeclReleaseGuard:
         if protected.value is None:
             return self.runtime.foundation.ok(None)
         baseline_decl, baseline_revision = protected.value
-        if candidate.state == DeclState.OBSOLETE:
-            return self._blocked("release_protected_decl_delete", node_path, decl.name)
         if candidate.state in {DeclState.PLANNED, DeclState.SPECIFIED}:
             return self._blocked("release_protected_statement_floor", node_path, decl.name)
         if candidate.statement.formal is None or not (candidate.statement.formal.code or "").strip():
@@ -82,6 +81,66 @@ class DeclReleaseGuard:
             )
         return self.runtime.foundation.ok(None)
 
+    def check_delete_set(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        decl_names: set[str],
+    ) -> ServiceResult[None]:
+        """Reject stable inbound references while allowing edges internal to an exact delete set."""
+
+        issues = []
+        for decl_name in sorted(decl_names):
+            protected = self._protected_entry(
+                repo_root,
+                node_path=node_path,
+                decl_name=decl_name,
+            )
+            if not protected.ok:
+                issues.extend(protected.issues)
+                continue
+            if protected.value is not None:
+                issues.extend(
+                    self._blocked(
+                        "release_protected_decl_delete",
+                        node_path,
+                        decl_name,
+                    ).issues
+                )
+                continue
+            inbound = self.current_inbound_refs(
+                repo_root,
+                node_path=node_path,
+                decl_name=decl_name,
+            )
+            if not inbound.ok or inbound.value is None:
+                issues.extend(inbound.issues)
+                continue
+            external = []
+            for ref in inbound.value:
+                parts = ref.split(":")
+                if (
+                    len(parts) == 5
+                    and parts[0:2] == ["current", "decl"]
+                    and parts[2] == node_path
+                    and parts[3] in decl_names
+                ):
+                    continue
+                external.append(ref)
+            if external:
+                issues.append(
+                    self.runtime.foundation.issue(
+                        "decl_delete_current_inbound_refs",
+                        "Declaration is still referenced outside the exact delete set.",
+                        object_ref=f"{node_path}:{decl_name}",
+                        current=", ".join(external),
+                    )
+                )
+        if issues:
+            return self.runtime.foundation.fail(issues)
+        return self.runtime.foundation.ok(None)
+
     def current_inbound_refs(self, repo_root: Path, *, node_path: str, decl_name: str) -> ServiceResult[list[str]]:
         refs: list[str] = []
         nodes = self.runtime.node.node_tree.node_store.list_nodes(repo_root)
@@ -95,6 +154,8 @@ class DeclReleaseGuard:
                 if not decls.ok or decls.value is None:
                     return self.runtime.foundation.fail(decls.issues)
                 for dependent in decls.value:
+                    if dependent.lifecycle != DeclLifecycle.ACTIVE:
+                        continue
                     revision = self.runtime.decl_graph.decl_catalog.get_decl_revision(
                         repo_root,
                         node_path=node.path,
@@ -103,8 +164,6 @@ class DeclReleaseGuard:
                     )
                     if not revision.ok or revision.value is None:
                         return self.runtime.foundation.fail(revision.issues)
-                    if revision.value.state == DeclState.OBSOLETE:
-                        continue
                     for section, deps in (("statement", revision.value.statement.deps), ("proof", revision.value.proof.deps if revision.value.proof else [])):
                         for dep in deps:
                             if not isinstance(dep, RepoDeclDep) or dep.ref.repo is not None:
@@ -196,6 +255,123 @@ class DeclReleaseGuard:
                     for ref in dep.expected_decl_refs:
                         if ref.repo is None and ref.node == node_path and ref.name == decl_name:
                             refs.append(f"current:contract:{node.path}:deps")
+        external = self._cross_repo_inbound_refs(
+            repo_root,
+            node_path=node_path,
+            decl_name=decl_name,
+        )
+        if not external.ok or external.value is None:
+            return self.runtime.foundation.fail(external.issues)
+        refs.extend(external.value)
+        return self.runtime.foundation.ok(sorted(set(refs)))
+
+    def _cross_repo_inbound_refs(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        decl_name: str,
+    ) -> ServiceResult[list[str]]:
+        """Find stable sibling-repository consumers of one current-repo declaration."""
+
+        provider_key = Path(repo_root).name
+        repos = self.runtime.repo_workspace.workspace_catalog.list_workspace_repos(
+            Path(repo_root).parent
+        )
+        if not repos.ok or repos.value is None:
+            return self.runtime.foundation.fail(repos.issues)
+        refs: list[str] = []
+        for repo in repos.value:
+            if repo.repo_key == provider_key:
+                continue
+            consumer_root = Path(repo.repo_root)
+            nodes = self.runtime.node.node_tree.node_store.list_nodes(consumer_root)
+            if not nodes.ok or nodes.value is None:
+                return self.runtime.foundation.fail(nodes.issues)
+            for node in nodes.value:
+                if node.lifecycle != NodeLifecycle.ACTIVE:
+                    continue
+                if node.kind == NodeKind.CONTENT:
+                    decls = self.runtime.decl_graph.decl_catalog.list_decls(
+                        consumer_root,
+                        node_path=node.path,
+                    )
+                    if not decls.ok or decls.value is None:
+                        return self.runtime.foundation.fail(decls.issues)
+                    for dependent in decls.value:
+                        if dependent.lifecycle != DeclLifecycle.ACTIVE:
+                            continue
+                        revision = self.runtime.decl_graph.decl_catalog.get_decl_revision(
+                            consumer_root,
+                            node_path=node.path,
+                            name=dependent.name,
+                            revision=dependent.current_revision,
+                        )
+                        if not revision.ok or revision.value is None:
+                            return self.runtime.foundation.fail(revision.issues)
+                        for section, deps in (
+                            ("statement", revision.value.statement.deps),
+                            (
+                                "proof",
+                                revision.value.proof.deps
+                                if revision.value.proof
+                                else [],
+                            ),
+                        ):
+                            if any(
+                                isinstance(dep, RepoDeclDep)
+                                and dep.ref.repo == provider_key
+                                and dep.ref.node == node_path
+                                and dep.ref.name == decl_name
+                                for dep in deps
+                            ):
+                                refs.append(
+                                    f"workspace:decl:{repo.repo_key}:{node.path}:"
+                                    f"{dependent.name}:{section}"
+                                )
+                contract_versions = sorted(
+                    {
+                        version
+                        for version in (
+                            node.active_contract_version,
+                            node.open_contract_version,
+                        )
+                        if version is not None
+                    }
+                )
+                for version in contract_versions:
+                    contract = self.runtime.foundation.store.read_json(
+                        self.runtime.node.node_tree.node_store.contract_path(
+                            consumer_root,
+                            node_id=node.node_id,
+                            version=version,
+                        ),
+                        NodeContract,
+                    )
+                    if not contract.ok or contract.value is None:
+                        return self.runtime.foundation.fail(contract.issues)
+                    candidates = [
+                        *contract.value.exports,
+                        *[
+                            item.bound_decl
+                            for item in contract.value.interfaces
+                            if item.bound_decl is not None
+                        ],
+                        *[
+                            ref
+                            for dep in contract.value.deps
+                            for ref in dep.expected_decl_refs
+                        ],
+                    ]
+                    if any(
+                        ref.repo == provider_key
+                        and ref.node == node_path
+                        and ref.name == decl_name
+                        for ref in candidates
+                    ):
+                        refs.append(
+                            f"workspace:contract:{repo.repo_key}:{node.path}"
+                        )
         return self.runtime.foundation.ok(sorted(set(refs)))
 
     def _protected_entry(self, repo_root: Path, *, node_path: str, decl_name: str):

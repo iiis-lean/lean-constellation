@@ -281,8 +281,6 @@ class ReviewGateComponent:
             revision = self.decl_catalog.get_decl_revision(repo_root, node_path=node_path, name=ref.decl_name, revision=ref.revision)
             if not revision.ok or revision.value is None:
                 return self.runtime.foundation.fail(revision.issues)
-            if revision.value.change is not None and revision.value.change.kind == DeclChangeKind.DELETE:
-                continue
             if stage in {DeclStage.PROOF_NL, DeclStage.PROOF_FORMAL}:
                 decl = self.decl_catalog.get_decl(repo_root, node_path=node_path, name=ref.decl_name)
                 if not decl.ok or decl.value is None:

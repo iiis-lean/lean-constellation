@@ -61,16 +61,9 @@ class DeclGraphViewMapper:
             status=round_record.status,
             objective=round_record.objective,
             revision_refs=list(round_record.revision_refs),
-            discarded_revision_refs=list(round_record.discarded_revision_refs),
-            discarded_created_decl_names=list(round_record.discarded_created_decl_names),
-            discarded_restored_decl_revisions=dict(
-                round_record.discarded_restored_decl_revisions
-            ),
-            discard_reason=round_record.discard_reason,
             discarded_by=round_record.discarded_by,
             discarded_at=round_record.discarded_at,
             change_ids=round_record.change_ids,
-            change_summaries=dict(round_record.change_summaries),
             summary=round_record.summary,
             execution_result_kind=round_record.execution_result_kind,
             execution_reason=round_record.execution_reason,

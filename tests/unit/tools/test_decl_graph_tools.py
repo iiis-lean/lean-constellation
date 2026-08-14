@@ -6,9 +6,13 @@ from pydantic import ValidationError
 from lean_constellation.tools import build_application_tool_specs
 from lean_constellation.tools.args import (
     CurrentDeclVisibilityRevisionArgs,
+    DeclCreateArgs,
     DeclUpdateArgs,
     NodeDeclVisibilityRevisionArgs,
+    RoundDiscardArgs,
 )
+from lean_constellation.tools.keys import ApplicationToolViewKey
+from lean_constellation.tools.views import build_application_tool_views
 
 from tests.unit.tools._family_helpers import assert_group_contains, assert_tools_registered
 
@@ -34,7 +38,8 @@ def test_decl_graph_tools_are_registered() -> None:
         "mark_decl_round_terminal",
         "plan_create_decl",
         "plan_update_decl",
-        "plan_delete_decl",
+        "restore_decl_revision",
+        "delete_decls",
         "list_current_node_decls",
         "inspect_current_node_decl",
         "list_node_decls",
@@ -63,36 +68,85 @@ def test_decl_graph_tools_are_registered() -> None:
     assert_tools_registered(expected)
 
 
-def test_decl_update_tool_schema_exposes_new_transition_fields_and_rejects_legacy_fields() -> None:
+def test_decl_planning_tool_schemas_expose_actual_transition_fields_only() -> None:
+    created = DeclCreateArgs.model_validate(
+        {
+            "round_id": "round_1",
+            "decl_name": "main_result",
+            "kind": "theorem",
+            "objective": "Create the result.",
+            "summary": "Main result.",
+        }
+    )
     parsed = DeclUpdateArgs.model_validate(
         {
             "round_id": "round_1",
-            "name": "main_result",
+            "decl_name": "main_result",
             "objective": "Continue proof work.",
             "target_state": "proved",
-            "base_revision": 2,
-            "reset_to_state": "declared",
+            "start_stage": "proof_nl",
         }
     )
-    assert parsed.base_revision == 2
-    assert parsed.reset_to_state == "declared"
+    assert created.decl_name == "main_result"
+    assert parsed.start_stage == "proof_nl"
     schema = DeclUpdateArgs.model_json_schema()["properties"]
-    assert "base_revision" in schema
-    assert "reset_to_state" in schema
+    assert "decl_name" in schema
+    assert "start_stage" in schema
     assert "target_state" in schema
+    assert "name" not in schema
+    assert "base_revision" not in schema
+    assert "reset_to_state" not in schema
+    assert "anticipated_statement_dep_names" not in schema
+    assert "anticipated_proof_dep_names" not in schema
     assert "start_before_state" not in schema
     assert "end_after_state" not in schema
 
+    for legacy_payload in (
+        {"name": "main_result", "start_stage": "proof_nl"},
+        {"decl_name": "main_result", "base_revision": 1, "start_stage": "proof_nl"},
+        {"decl_name": "main_result", "reset_to_state": "declared", "start_stage": "proof_nl"},
+        {"decl_name": "main_result", "anticipated_statement_dep_names": [], "start_stage": "proof_nl"},
+    ):
+        with pytest.raises(ValidationError):
+            DeclUpdateArgs.model_validate(
+                {
+                    "round_id": "round_1",
+                    "objective": "Legacy request.",
+                    "target_state": "proved",
+                    **legacy_payload,
+                }
+            )
+
+
+def test_discard_decl_round_draft_rejects_removed_reason_field() -> None:
+    assert RoundDiscardArgs.model_validate({"round_id": "round_1"}).round_id == "round_1"
     with pytest.raises(ValidationError):
-        DeclUpdateArgs.model_validate(
-            {
-                "round_id": "round_1",
-                "name": "main_result",
-                "objective": "Legacy request.",
-                "target_state": "proved",
-                "start_before_state": "declared",
-            }
+        RoundDiscardArgs.model_validate(
+            {"round_id": "round_1", "reason": "Legacy narrative field."}
         )
+
+
+def test_content_plan_reuses_actual_dependency_tool_groups_without_reviewer_write_expansion() -> None:
+    views = {view.key: view for view in build_application_tool_views()}
+    plan = views[ApplicationToolViewKey.CONTENT_PLAN.value]
+
+    for group in (
+        "decl_statement_dependency_read",
+        "decl_statement_repo_dependency_write",
+        "decl_statement_mathlib_dependency_write",
+        "decl_proof_dependency_read",
+        "decl_proof_repo_dependency_write",
+        "decl_proof_mathlib_dependency_write",
+    ):
+        assert group in plan.group_keys
+    for reviewer_key in (
+        ApplicationToolViewKey.STATEMENT_NL_REVIEWER.value,
+        ApplicationToolViewKey.STATEMENT_FORMAL_REVIEWER.value,
+        ApplicationToolViewKey.PROOF_NL_REVIEWER.value,
+        ApplicationToolViewKey.PROOF_FORMAL_REVIEWER.value,
+    ):
+        assert "decl_statement_repo_dependency_write" not in views[reviewer_key].group_keys
+        assert "decl_proof_repo_dependency_write" not in views[reviewer_key].group_keys
 
 
 def test_decl_graph_groups_expose_expected_tools() -> None:
@@ -113,6 +167,7 @@ def test_decl_graph_groups_expose_expected_tools() -> None:
         },
     )
     assert_group_contains("decl_round_closeout_write", {"write_decl_change_summary", "write_decl_round_summary", "mark_decl_round_terminal"})
+    assert_group_contains("decl_maintenance_write", {"restore_decl_revision", "delete_decls", "preview_decl_delete_closure"})
     assert_group_contains("decl_stage_round_read", {"get_decl_round", "run_decl_round_local_audit"})
     assert_group_contains("decl_stage_statement_nl_read", {"read_statement_nl"})
     assert_group_contains("decl_stage_proof_nl_read", {"read_proof_nl"})

@@ -530,7 +530,6 @@ class NodeDependencyAddArgs(NodePathArgs):
 
 class NodeDependencyRemoveArgs(NodePathArgs):
     index: int = Field(ge=0, description="0-based dependency index from list_node_deps or get_node_contract.")
-    reason: str | None = Field(default=None, description="Optional reason for removing this dependency.")
 
 
 class IndexReasonArgs(StrictModel):
@@ -567,7 +566,6 @@ class CurrentMaterialRefAddArgs(StrictModel):
 
 class CurrentMaterialRefRemoveArgs(StrictModel):
     ref: str = Field(description="Exact copyable material ref returned by list_current_node_material_refs.")
-    reason: str | None = Field(default=None, description="Optional removal reason.")
 
 
 class NodeMaterialRefAddArgs(NodePathArgs):
@@ -586,7 +584,6 @@ class NodeMaterialRefAddArgs(NodePathArgs):
 
 class NodeMaterialRefRemoveArgs(NodePathArgs):
     ref: str = Field(description="Exact copyable material ref returned by list_node_material_refs.")
-    reason: str | None = Field(default=None, description="Optional removal reason.")
 
 
 class MathlibIndexSearchArgs(StrictModel):
@@ -770,9 +767,7 @@ class RoundIdArgs(StrictModel):
 
 
 class RoundDiscardArgs(RoundIdArgs):
-    reason: str = Field(
-        description="Concrete reason the unsubmitted draft must be discarded and replanned."
-    )
+    pass
 
 
 class StrategyIdArgs(StrictModel):
@@ -799,7 +794,7 @@ class RoundTerminalArgs(RoundIdArgs):
 
 class DeclCreateArgs(StrictModel):
     round_id: str = Field(description="Round id in which to plan this declaration creation.")
-    name: str = Field(description="Flat Lean Constellation declaration key and native module filename segment; dots and path separators are not allowed.")
+    decl_name: str = Field(description="Flat Lean Constellation declaration key and native module filename segment; dots and path separators are not allowed.")
     kind: str = Field(description="Declaration kind.")
     objective: str = Field(description="Mathematical objective for this declaration change in the current round.")
     summary: str = Field(description="Concise stable catalog summary of the new declaration.")
@@ -809,48 +804,27 @@ class DeclCreateArgs(StrictModel):
         default=True,
         description="Whether round final audit must verify that the target state also satisfies the current proof policy.",
     )
-    anticipated_statement_dep_names: list[str] = Field(
-        default_factory=list,
-        description="Every current-node declaration already known from source, contract, or graph truth to be needed by this statement; [] explicitly asserts that none are known.",
-    )
-    anticipated_proof_dep_names: list[str] = Field(
-        default_factory=list,
-        description="Every current-node declaration already known from source, contract, or graph truth to be needed by this proof; [] explicitly asserts that none are known.",
-    )
 
 
 class DeclUpdateArgs(StrictModel):
     round_id: str = Field(description="Round id in which to plan this update.")
-    name: str = Field(description="Existing declaration name.")
+    decl_name: str = Field(description="Existing declaration name.")
     objective: str = Field(description="Objective for this update.")
     target_state: str = Field(description="Target state after this update: declared or proved.")
-    base_revision: int | None = Field(
-        default=None,
-        ge=1,
-        description="Optional committed revision to copy; defaults to the current committed head.",
-    )
-    reset_to_state: str | None = Field(
-        default=None,
-        description="Optional state boundary to retain before this round; execution begins at the next pipeline stage.",
+    start_stage: Literal[
+        "statement_nl", "statement_formal", "proof_nl", "proof_formal"
+    ] = Field(
+        description="First pipeline stage to rerun from the latest committed revision.",
     )
     require_target_state_satisfied: bool = Field(
         default=True,
         description="Whether round final audit must verify that the target state also satisfies the current proof policy.",
     )
-    anticipated_statement_dep_names: list[str] = Field(
-        default_factory=list,
-        description="Every current-node declaration already known from source, contract, or graph truth to be needed by this statement; [] explicitly asserts that none are known.",
-    )
-    anticipated_proof_dep_names: list[str] = Field(
-        default_factory=list,
-        description="Every current-node declaration already known from source, contract, or graph truth to be needed by this proof; [] explicitly asserts that none are known.",
-    )
 
 
-class DeclDeleteArgs(StrictModel):
-    round_id: str = Field(description="Round id in which to plan deletion.")
-    name: str = Field(description="Declaration name to delete.")
-    objective: str = Field(description="Reason/objective for deletion.")
+class DeclRestoreArgs(StrictModel):
+    decl_name: str = Field(description="Active declaration whose accepted content should be restored.")
+    source_revision: int = Field(ge=1, description="Historical committed revision to restore as a new committed head.")
 
 
 class DeclNameArgs(StrictModel):
@@ -1011,7 +985,6 @@ class StatementOriginRemoveArgs(StrictModel):
 
 class StatementOriginsClearArgs(StrictModel):
     decl_name: str = Field(description="Declaration name to update in the current Statement NL stage batch.")
-    reason: str | None = Field(default=None, description="Optional reason for clearing statement origins.")
 
 
 class RepoDeclDependencyInput(StrictModel):
@@ -1029,11 +1002,11 @@ class MathlibDeclDependencyInput(StrictModel):
 
 
 class RepoDeclDependencyAddArgs(RepoDeclDependencyInput):
-    decl_name: str = Field(description="Declaration name to update in the current stage batch.")
+    decl_name: str = Field(description="Declaration name to update in the current planning draft or stage batch.")
 
 
 class RepoDeclDependenciesAddArgs(StrictModel):
-    decl_name: str = Field(description="Declaration name to update in the current stage batch.")
+    decl_name: str = Field(description="Declaration name to update in the current planning draft or stage batch.")
     dependencies: list[RepoDeclDependencyInput] = Field(
         min_length=1,
         max_length=25,
@@ -1042,11 +1015,11 @@ class RepoDeclDependenciesAddArgs(StrictModel):
 
 
 class MathlibDeclDependencyAddArgs(MathlibDeclDependencyInput):
-    decl_name: str = Field(description="Declaration name to update in the current stage batch.")
+    decl_name: str = Field(description="Declaration name to update in the current planning draft or stage batch.")
 
 
 class MathlibDeclDependenciesAddArgs(StrictModel):
-    decl_name: str = Field(description="Declaration name to update in the current stage batch.")
+    decl_name: str = Field(description="Declaration name to update in the current planning draft or stage batch.")
     dependencies: list[MathlibDeclDependencyInput] = Field(
         min_length=1,
         max_length=25,
@@ -1055,13 +1028,12 @@ class MathlibDeclDependenciesAddArgs(StrictModel):
 
 
 class StatementDepRemoveArgs(StrictModel):
-    decl_name: str = Field(description="Declaration name to update in the current statement stage batch.")
+    decl_name: str = Field(description="Declaration name to update in the current planning draft or statement stage batch.")
     index: int = Field(ge=0, description="0-based dependency index from the current statement dependency list.")
 
 
 class StatementDepsClearArgs(StrictModel):
-    decl_name: str = Field(description="Declaration name to update in the current statement stage batch.")
-    reason: str | None = Field(default=None, description="Optional reason for clearing statement dependencies.")
+    decl_name: str = Field(description="Declaration name to update in the current planning draft or statement stage batch.")
 
 
 class ProofNlSetArgs(StrictModel):
@@ -1092,17 +1064,15 @@ class ProofOriginRemoveArgs(StrictModel):
 
 class ProofOriginsClearArgs(StrictModel):
     decl_name: str = Field(description="Theorem-like declaration name to update in the current Proof NL stage batch.")
-    reason: str | None = Field(default=None, description="Optional reason for clearing proof origins.")
 
 
 class ProofDepRemoveArgs(StrictModel):
-    decl_name: str = Field(description="Theorem-like declaration name to update in the current proof stage batch.")
+    decl_name: str = Field(description="Theorem-like declaration name to update in the current planning draft or proof stage batch.")
     index: int = Field(ge=0, description="0-based dependency index from the current proof dependency list.")
 
 
 class ProofDepsClearArgs(StrictModel):
-    decl_name: str = Field(description="Theorem-like declaration name to update in the current proof stage batch.")
-    reason: str | None = Field(default=None, description="Optional reason for clearing proof dependencies.")
+    decl_name: str = Field(description="Theorem-like declaration name to update in the current planning draft or proof stage batch.")
 
 
 class DeclStageFormalArgs(StrictModel):

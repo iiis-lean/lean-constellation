@@ -277,7 +277,6 @@ def _effective_node(dep_node: str, *, node_path: str) -> str:
 
 def _state_rank(state: DeclState) -> int:
     return {
-        DeclState.OBSOLETE: -1,
         DeclState.PLANNED: 0,
         DeclState.SPECIFIED: 1,
         DeclState.DECLARED: 2,

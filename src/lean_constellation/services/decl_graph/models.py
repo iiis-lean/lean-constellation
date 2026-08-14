@@ -21,7 +21,6 @@ class DeclState(StrEnum):
     DECLARED = "declared"
     PROOF_PLANNED = "proof_planned"
     PROVED = "proved"
-    OBSOLETE = "obsolete"
 
 
 class DeclChangeKind(StrEnum):
@@ -29,7 +28,6 @@ class DeclChangeKind(StrEnum):
 
     CREATE = "create"
     UPDATE = "update"
-    DELETE = "delete"
 
 
 class DeclLifecycle(StrEnum):
@@ -224,13 +222,11 @@ class DeclRevisionChange(StrictModel):
 
     kind: DeclChangeKind
     base_revision: int | None = None
-    reset_to_state: DeclState | None = None
+    start_stage: DeclStage | None = None
     target_state: DeclState | None = None
     require_target_state_satisfied: bool = True
     objective: str | None = None
     summary: str | None = None
-    anticipated_statement_dep_names: list[str] = Field(default_factory=list)
-    anticipated_proof_dep_names: list[str] = Field(default_factory=list)
 
     @field_validator("base_revision")
     @classmethod
@@ -246,12 +242,6 @@ class DeclRevisionChange(StrictModel):
             return None
         text = value.strip()
         return text or None
-
-    @field_validator("anticipated_statement_dep_names", "anticipated_proof_dep_names")
-    @classmethod
-    def _anticipated_names(cls, value: list[str]) -> list[str]:
-        return _sorted_deduped_text(value)
-
 
 class DeclRevisionRef(StrictModel):
     """Round-local reference to the revision that carries one change."""
@@ -354,13 +344,8 @@ class DeclGraphRound(StrictModel):
     status: DeclRoundStatus = DeclRoundStatus.DRAFT
     objective: str
     revision_refs: list[DeclRevisionRef] = Field(default_factory=list)
-    discarded_revision_refs: list[DeclRevisionRef] = Field(default_factory=list)
-    discarded_created_decl_names: list[str] = Field(default_factory=list)
-    discarded_restored_decl_revisions: dict[str, int] = Field(default_factory=dict)
-    discard_reason: str | None = None
     discarded_by: str | None = None
     discarded_at: str | None = None
-    change_summaries: dict[str, str] = Field(default_factory=dict)
     summary: str | None = None
     execution_result_kind: DeclRoundResultKind | None = None
     execution_reason: str | None = None
@@ -397,20 +382,16 @@ class DeclGraphRound(StrictModel):
         if self.status == DeclRoundStatus.DISCARDED:
             if self.revision_refs:
                 raise ValueError("discarded declaration rounds cannot retain active revision refs")
-            if not self.discard_reason or not self.discarded_by or not self.discarded_at:
+            if not self.discarded_by or not self.discarded_at:
                 raise ValueError("discarded declaration rounds require complete discard truth")
         elif (
-            self.discarded_revision_refs
-            or self.discarded_created_decl_names
-            or self.discarded_restored_decl_revisions
-            or self.discard_reason is not None
-            or self.discarded_by is not None
+            self.discarded_by is not None
             or self.discarded_at is not None
         ):
             raise ValueError("non-discarded declaration rounds cannot carry discard truth")
         return self
 
-    @field_validator("revision_refs", "discarded_revision_refs")
+    @field_validator("revision_refs")
     @classmethod
     def _unique_revision_refs(cls, value: list[DeclRevisionRef]) -> list[DeclRevisionRef]:
         change_ids = [item.change_id for item in value]
@@ -420,27 +401,6 @@ class DeclGraphRound(StrictModel):
         if len(set(targets)) != len(targets):
             raise ValueError("revision_refs target revisions must be unique")
         return value
-
-    @field_validator("discarded_created_decl_names")
-    @classmethod
-    def _unique_discarded_decl_names(cls, value: list[str]) -> list[str]:
-        normalized = [_required_text(item) for item in value]
-        if len(set(normalized)) != len(normalized):
-            raise ValueError("discarded_created_decl_names must be unique")
-        return sorted(normalized)
-
-    @field_validator("discarded_restored_decl_revisions")
-    @classmethod
-    def _valid_restored_decl_revisions(cls, value: dict[str, int]) -> dict[str, int]:
-        normalized = {_required_text(name): revision for name, revision in value.items()}
-        if any(revision < 1 for revision in normalized.values()):
-            raise ValueError("discarded restored declaration revisions must be >= 1")
-        return dict(sorted(normalized.items()))
-
-    @field_validator("change_summaries")
-    @classmethod
-    def _non_empty_change_summaries(cls, value: dict[str, str]) -> dict[str, str]:
-        return {_required_text(key): _required_text(summary) for key, summary in value.items()}
 
     @property
     def change_ids(self) -> list[str]:
@@ -495,6 +455,7 @@ class DeclRevision(StrictModel):
     state: DeclState = DeclState.PLANNED
     status: DeclRevisionStatus = DeclRevisionStatus.OPEN
     change: DeclRevisionChange | None = None
+    restored_from_revision: int | None = None
     statement: DeclStatement = Field(default_factory=DeclStatement)
     proof: DeclProof | None = None
     updated_at: str = Field(default_factory=utc_now_iso)
@@ -506,10 +467,10 @@ class DeclRevision(StrictModel):
             return None
         return _required_text(value)
 
-    @field_validator("revision")
+    @field_validator("revision", "restored_from_revision")
     @classmethod
-    def _revision_valid(cls, value: int) -> int:
-        if value < 1:
+    def _revision_valid(cls, value: int | None) -> int | None:
+        if value is not None and value < 1:
             raise ValueError("revision must be >= 1")
         return value
 
@@ -603,9 +564,26 @@ class DeclRoundDraftDiscardReceipt(_CompactMutationReceipt):
     discarded_change_ids: list[str] = Field(default_factory=list)
     deleted_created_decl_names: list[str] = Field(default_factory=list)
     restored_decl_revisions: dict[str, int] | None = None
-    reason: str
     discarded_by: str
     discarded_at: str
+    summary: str
+
+
+class DeclRestoreReceipt(_CompactMutationReceipt):
+    """Receipt for restoring historical accepted content as a new committed revision."""
+
+    decl_name: str
+    source_revision: int
+    restored_revision: int
+    changed_files: list[str] = Field(default_factory=list)
+    summary: str
+
+
+class DeclDeleteReceipt(_CompactMutationReceipt):
+    """Receipt for deleting one exact current downstream closure."""
+
+    deleted_decl_names: list[str]
+    changed_files: list[str] = Field(default_factory=list)
     summary: str
 
 
@@ -719,14 +697,9 @@ class DeclGraphRoundView(StrictModel):
     status: DeclRoundStatus
     objective: str
     revision_refs: list[DeclRevisionRef] = Field(default_factory=list)
-    discarded_revision_refs: list[DeclRevisionRef] = Field(default_factory=list)
-    discarded_created_decl_names: list[str] = Field(default_factory=list)
-    discarded_restored_decl_revisions: dict[str, int] = Field(default_factory=dict)
-    discard_reason: str | None = None
     discarded_by: str | None = None
     discarded_at: str | None = None
     change_ids: list[str] = Field(default_factory=list)
-    change_summaries: dict[str, str] = Field(default_factory=dict)
     summary: str | None = None
     execution_result_kind: DeclRoundResultKind | None = None
     execution_reason: str | None = None
@@ -753,13 +726,11 @@ class DeclChangeView(StrictModel):
     kind: DeclChangeKind
     decl_name: str
     base_revision: int | None = None
-    reset_to_state: DeclState | None = None
+    start_stage: DeclStage | None = None
     target_state: DeclState | None = None
     require_target_state_satisfied: bool = True
     objective: str
     summary: str | None = None
-    anticipated_statement_dep_names: list[str] = Field(default_factory=list)
-    anticipated_proof_dep_names: list[str] = Field(default_factory=list)
     status: DeclChangeStatus = DeclChangeStatus.PLANNED
     target_revision: int | None = None
     created_at: str = Field(default_factory=utc_now_iso)

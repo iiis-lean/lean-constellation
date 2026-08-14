@@ -166,7 +166,6 @@ def _create_decl(
     name: str,
     public: bool = True,
     target_state: DeclState = DeclState.PROVED,
-    anticipated_statement_dep_names: list[str] | None = None,
 ) -> Any:
     created = runtime.decl_graph.create_decl(
         repo_root,
@@ -178,7 +177,6 @@ def _create_decl(
         summary=f"{name} summary.",
         public=public,
         target_state=target_state,
-        anticipated_statement_dep_names=anticipated_statement_dep_names,
     )
     assert created.ok and created.value is not None, created.issues
     return created.value
@@ -915,13 +913,19 @@ def test_round_local_audit_uses_default_decl_graph_provider(tmp_path: Path) -> N
     _create_content_node(runtime, tmp_path)
     round_id = _create_round(runtime, tmp_path)
     _create_decl(runtime, tmp_path, round_id=round_id, name="supporting_lemma", public=False)
+    supporting = runtime.decl_graph.get_decl_revision(
+        tmp_path,
+        node_path=NODE_PATH,
+        name="supporting_lemma",
+        revision=1,
+    )
+    assert supporting.ok and supporting.value is not None
     _create_decl(
         runtime,
         tmp_path,
         round_id=round_id,
         name="main_result",
         public=False,
-        anticipated_statement_dep_names=["supporting_lemma"],
     )
     assert runtime.decl_graph.start_round(tmp_path, node_path=NODE_PATH, round_id=round_id).ok
     statement = runtime.decl_graph.write_statement_nl(
@@ -931,9 +935,23 @@ def test_round_local_audit_uses_default_decl_graph_provider(tmp_path: Path) -> N
         decl_name="main_result",
         nl="The main result depends on a same-round declaration.",
         origin=[{"kind": "unit_test"}],
-        deps=["supporting_lemma"],
+        deps=[],
     )
     assert statement.ok, statement.issues
+    assert runtime.decl_graph.add_statement_dep(
+        tmp_path,
+        node_path=NODE_PATH,
+        round_id=round_id,
+        decl_name="main_result",
+        dep=RepoDeclDep(
+            ref=DeclRef(
+                node=NODE_PATH,
+                name="supporting_lemma",
+                revision=supporting.value.revision,
+            )
+        ),
+        refresh_projection=False,
+    ).ok
 
     audit = runtime.validation_snapshot.run_round_local_audit(tmp_path, node_path=NODE_PATH, round_id=round_id, stage="statement")
 
@@ -992,13 +1010,10 @@ def test_delete_sanity_guard_rejects_inbound_current_refs_before_audit(tmp_path:
         reason="Test fixture committed revisions before round closeout.",
         acknowledged_by="test-fixture",
     ).ok
-    delete_round_id = _create_round(runtime, tmp_path, objective="Delete only support.")
-    delete = runtime.decl_graph.mark_decl_delete(
+    delete = runtime.decl_graph.delete_decls(
         tmp_path,
         node_path=NODE_PATH,
-        round_id=delete_round_id,
-        name="supporting_lemma",
-        objective="Delete support only.",
+        decl_names=["supporting_lemma"],
     )
     assert not delete.ok
-    assert delete.issues[0].kind == "decl_delete_current_inbound_refs"
+    assert delete.issues[0].kind == "decl_delete_closure_mismatch"

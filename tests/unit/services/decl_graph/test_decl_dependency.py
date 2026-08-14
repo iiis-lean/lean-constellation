@@ -200,24 +200,40 @@ def test_audit_round_dependencies_delegates_round_draft_gate(tmp_path: Path) -> 
     _seed_chain(tmp_path)
     service = make_runtime().decl_graph
     update_round_id = _create_round(tmp_path, objective="Update dependent declarations together.")
-    assert service.open_decl_update(
+    opened_a = service.open_decl_update(
         tmp_path,
         node_path="Main.Topic.Core",
         round_id=update_round_id,
         name="A",
         objective="Update A.",
-        reset_to_state=DeclState.PROOF_PLANNED,
+        start_stage="proof_formal",
         target_state=DeclState.PROVED,
-    ).ok
-    assert service.open_decl_update(
+    )
+    assert opened_a.ok and opened_a.value is not None
+    opened_b = service.open_decl_update(
         tmp_path,
         node_path="Main.Topic.Core",
         round_id=update_round_id,
         name="B",
         objective="Update B.",
-        reset_to_state=DeclState.PROOF_PLANNED,
+        start_stage="proof_formal",
         target_state=DeclState.PROVED,
-        anticipated_proof_dep_names=["A"],
+    )
+    assert opened_b.ok and opened_b.value is not None
+    assert service.add_proof_dep(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=update_round_id,
+        decl_name="B",
+        dep=RepoDeclDep(
+            ref=DeclRef(
+                node="Main.Topic.Core",
+                name="A",
+                    revision=opened_a.value.target_revision,
+            )
+        ),
+        refresh_projection=False,
+        allow_draft=True,
     ).ok
 
     audit = service.audit_round_dependencies(tmp_path, node_path="Main.Topic.Core", round_id=update_round_id)

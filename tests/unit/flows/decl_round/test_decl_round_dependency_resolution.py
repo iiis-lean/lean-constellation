@@ -88,7 +88,7 @@ def test_same_round_update_historical_anchor_uses_semantic_resolver(tmp_path: Pa
         round_id=round_id,
         name="B",
         objective="Keep B proved.",
-        reset_to_state=DeclState.PROOF_PLANNED,
+        start_stage="proof_formal",
         target_state=DeclState.PROVED,
     )
     assert updated.ok, updated.issues

@@ -1338,7 +1338,6 @@ class DeclReadinessComponent:
             DeclState.DECLARED: 2,
             DeclState.PROOF_PLANNED: 3,
             DeclState.PROVED: 4,
-            DeclState.OBSOLETE: -1,
         }[state]
 
     def _is_stale_reason(self, reason: DeclReadinessReason | None) -> bool:

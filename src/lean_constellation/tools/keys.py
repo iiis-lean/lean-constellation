@@ -25,6 +25,7 @@ class ApplicationToolGroupKey(StrEnum):
     DECL_GRAPH_READ_BY_NODE = "decl_graph_read_by_node"
     DECL_STAGE_ROUND_READ = "decl_stage_round_read"
     DECL_ROUND_CHANGE_WRITE = "decl_round_change_write"
+    DECL_MAINTENANCE_WRITE = "decl_maintenance_write"
     DECL_ROUND_CLOSEOUT_WRITE = "decl_round_closeout_write"
     DECL_FORMAL_CONSISTENCY_READ = "decl_formal_consistency_read"
     DECL_PROOF_DEPENDENCY_READ = "decl_proof_dependency_read"

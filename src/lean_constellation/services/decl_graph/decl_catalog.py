@@ -22,6 +22,7 @@ from lean_constellation.services.decl_graph.models import (
     DeclGraphRound,
     DeclRoundDraftDiscardReceipt,
     DeclRoundStatus,
+    DeclStage,
     RepoDeclDep,
     DeclStatement,
     DeclState,
@@ -65,8 +66,6 @@ class DeclCatalogComponent:
         public: bool = False,
         target_state: DeclState | str = DeclState.DECLARED,
         require_target_state_satisfied: bool = True,
-        anticipated_statement_dep_names: list[str] | None = None,
-        anticipated_proof_dep_names: list[str] | None = None,
     ) -> ServiceResult[DeclChangeView]:
         end_state = self._coerce_end_state(target_state)
         if end_state is None:
@@ -113,8 +112,6 @@ class DeclCatalogComponent:
                 target_state=end_state,
                 require_target_state_satisfied=require_target_state_satisfied,
                 objective=objective,
-                anticipated_statement_dep_names=anticipated_statement_dep_names or [],
-                anticipated_proof_dep_names=anticipated_proof_dep_names or [],
             ),
         )
         ensured = self.runtime.foundation.store.ensure_dir(
@@ -161,11 +158,8 @@ class DeclCatalogComponent:
         name: str,
         objective: str,
         target_state: DeclState | str,
-        base_revision: int | None = None,
-        reset_to_state: DeclState | str | None = None,
+        start_stage: DeclStage | str,
         require_target_state_satisfied: bool = True,
-        anticipated_statement_dep_names: list[str] | None = None,
-        anticipated_proof_dep_names: list[str] | None = None,
     ) -> ServiceResult[DeclChangeView]:
         end_state = self._coerce_end_state(target_state)
         if end_state is None:
@@ -193,16 +187,7 @@ class DeclCatalogComponent:
                     current=str(current.value.revision),
                 )
             )
-        source_revision_id = base_revision if base_revision is not None else decl.value.current_revision
-        if source_revision_id not in decl.value.revision_ids:
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue(
-                    "decl_base_revision_not_found",
-                    "Update base_revision must identify an existing revision of this declaration.",
-                    object_ref=name,
-                    current=str(source_revision_id),
-                )
-            )
+        source_revision_id = decl.value.current_revision
         source = self.get_decl_revision(
             repo_root,
             node_path=node_path,
@@ -214,53 +199,47 @@ class DeclCatalogComponent:
         if source.value.status != DeclRevisionStatus.COMMITTED:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
-                    "decl_base_revision_not_committed",
-                    "Update base_revision must be committed.",
+                    "decl_update_source_not_committed",
+                    "Update must copy the latest committed declaration revision.",
                     object_ref=name,
                     current=f"{source_revision_id}:{source.value.status.value}",
                 )
             )
-        if reset_to_state is None:
-            if self._state_reaches(source.value.state, end_state):
-                return self.runtime.foundation.fail(
-                    self.runtime.foundation.issue(
-                        "decl_update_reset_required",
-                        "The selected base revision already reaches target_state; specify reset_to_state for an explicit redo range.",
-                        object_ref=name,
-                        current=source.value.state.value,
-                        expected=end_state.value,
-                    )
+        try:
+            normalized_start_stage = DeclStage(start_stage)
+        except ValueError:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "unsupported_start_stage",
+                    "start_stage must be one fixed declaration pipeline stage.",
+                    object_ref=name,
+                    current=str(start_stage),
                 )
-            start_state = source.value.state
-        else:
-            try:
-                start_state = DeclState(reset_to_state)
-            except ValueError:
-                return self.runtime.foundation.fail(
-                    self.runtime.foundation.issue(
-                        "unsupported_reset_to_state",
-                        "reset_to_state must be a declaration pipeline state.",
-                        object_ref=name,
-                        current=str(reset_to_state),
-                    )
+            )
+        retained_state_by_stage = {
+            DeclStage.STATEMENT_NL: DeclState.PLANNED,
+            DeclStage.STATEMENT_FORMAL: DeclState.SPECIFIED,
+            DeclStage.PROOF_NL: DeclState.DECLARED,
+            DeclStage.PROOF_FORMAL: DeclState.PROOF_PLANNED,
+        }
+        start_state = retained_state_by_stage[normalized_start_stage]
+        if not self._state_reaches(source.value.state, start_state):
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "decl_update_start_stage_above_source",
+                    "start_stage cannot begin after the latest committed revision state.",
+                    object_ref=name,
+                    current=normalized_start_stage.value,
+                    expected=source.value.state.value,
                 )
-            if start_state in {DeclState.OBSOLETE} or not self._state_reaches(source.value.state, start_state):
-                return self.runtime.foundation.fail(
-                    self.runtime.foundation.issue(
-                        "decl_update_reset_above_base",
-                        "reset_to_state cannot be later than the selected base revision state.",
-                        object_ref=name,
-                        current=start_state.value,
-                        expected=source.value.state.value,
-                    )
-                )
+            )
         if self._state_reaches(start_state, end_state):
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
-                    "decl_update_range_empty_or_reversed",
-                    "reset_to_state must be earlier than target_state so the update runs at least one stage.",
+                    "decl_update_stage_range_empty_or_reversed",
+                    "start_stage must precede target_state so the update runs at least one stage.",
                     object_ref=name,
-                    current=start_state.value,
+                    current=normalized_start_stage.value,
                     expected=end_state.value,
                 )
             )
@@ -271,12 +250,10 @@ class DeclCatalogComponent:
         next_revision.change = DeclRevisionChange(
             kind=DeclChangeKind.UPDATE,
             base_revision=source_revision_id,
-            reset_to_state=start_state,
+            start_stage=normalized_start_stage,
             target_state=end_state,
             require_target_state_satisfied=require_target_state_satisfied,
             objective=objective,
-            anticipated_statement_dep_names=anticipated_statement_dep_names or [],
-            anticipated_proof_dep_names=anticipated_proof_dep_names or [],
         )
         next_revision.updated_at = utc_now_iso()
         self._reset_revision_to_state(next_revision, start_state)
@@ -332,112 +309,17 @@ class DeclCatalogComponent:
             self._change_view_from_revision(node_path=node_path, round_id=round_id, decl_name=name, revision=next_revision)
         )
 
-    def mark_decl_delete(
-        self,
-        repo_root: Path,
-        *,
-        node_path: str,
-        round_id: str,
-        name: str,
-        objective: str,
-    ) -> ServiceResult[DeclChangeView]:
-        preflight = self._round_for_planning(repo_root, node_path=node_path, round_id=round_id)
-        if not preflight.ok:
-            return self.runtime.foundation.fail(preflight.issues)
-        decl = self.get_decl(repo_root, node_path=node_path, name=name)
-        if not decl.ok or decl.value is None:
-            return self.runtime.foundation.fail(decl.issues)
-        latest = self.get_decl_revision(
-            repo_root,
-            node_path=node_path,
-            name=name,
-            revision=decl.value.current_revision,
-        )
-        if not latest.ok or latest.value is None:
-            return self.runtime.foundation.fail(latest.issues)
-        if latest.value.status == "open":
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue(
-                    "decl_revision_already_open",
-                    "Current declaration revision is already open.",
-                    object_ref=name,
-                    current=str(latest.value.revision),
-                )
-            )
-        if self.release_guard is not None:
-            guarded = self.release_guard.check_delete(repo_root, node_path=node_path, decl_name=name)
-            if not guarded.ok:
-                return self.runtime.foundation.fail(guarded.issues)
-        next_revision_id = max(decl.value.revision_ids) + 1
-        next_revision = latest.value.model_copy(deep=True)
-        next_revision.revision = next_revision_id
-        next_revision.status = DeclRevisionStatus.OPEN
-        next_revision.state = DeclState.OBSOLETE
-        next_revision.change = DeclRevisionChange(
-            kind=DeclChangeKind.DELETE,
-            base_revision=latest.value.revision,
-            reset_to_state=latest.value.state,
-            target_state=DeclState.OBSOLETE,
-            objective=objective,
-        )
-        next_revision.updated_at = utc_now_iso()
-        decl.value.current_revision = next_revision_id
-        decl.value.revision_ids.append(next_revision_id)
-        decl.value.updated_at = utc_now_iso()
-        round_record = self.strategy_round.get_round(repo_root, node_path=node_path, round_id=round_id)
-        if not round_record.ok or round_record.value is None:
-            return self.runtime.foundation.fail(round_record.issues)
-        ref = self._revision_ref(name, next_revision)
-        if ref.change_id not in round_record.value.change_ids:
-            round_record.value.revision_refs.append(ref)
-        with self.runtime.foundation.store.mutation("mark_decl_delete") as mutation:
-            mutation.stage_json(
-                self.graph_store.revision_path(repo_root, node_path=node_path, decl_name=name, revision=next_revision_id),
-                next_revision,
-                mode=WriteMode.CREATE_ONLY,
-            )
-            mutation.stage_json(
-                self.graph_store.decl_record_path(repo_root, node_path=node_path, decl_name=name),
-                decl.value,
-                mode=WriteMode.UPDATE_EXISTING,
-            )
-            mutation.stage_json(
-                self.graph_store.round_path(repo_root, node_path=node_path, round_id=round_id),
-                round_record.value,
-                mode=WriteMode.UPDATE_EXISTING,
-            )
-            committed = mutation.commit()
-        if not committed.ok:
-            return self.runtime.foundation.fail(committed.issues)
-        rebuilt = self.graph_store.rebuild_index(repo_root, node_path=node_path)
-        if not rebuilt.ok:
-            return self.runtime.foundation.fail(rebuilt.issues)
-        return self.runtime.foundation.ok(
-            self._change_view_from_revision(node_path=node_path, round_id=round_id, decl_name=name, revision=next_revision)
-        )
-
     def discard_round_draft(
         self,
         repo_root: Path,
         *,
         node_path: str,
         round_id: str,
-        reason: str,
         discarded_by: str,
     ) -> ServiceResult[DeclRoundDraftDiscardReceipt]:
         """Atomically roll back every planned revision in an unsubmitted draft round."""
 
-        normalized_reason = reason.strip()
         normalized_actor = discarded_by.strip()
-        if not normalized_reason:
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue(
-                    "round_discard_reason_required",
-                    "Discarding a draft declaration round requires a concrete reason.",
-                    object_ref=round_id,
-                    field="reason",
-                )
-            )
         if not normalized_actor:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
@@ -457,16 +339,6 @@ class DeclCatalogComponent:
             return self.runtime.foundation.fail(loaded_round.issues)
         round_record = loaded_round.value
         if round_record.status == DeclRoundStatus.DISCARDED:
-            if round_record.discard_reason != normalized_reason:
-                return self.runtime.foundation.fail(
-                    self.runtime.foundation.issue(
-                        "round_discard_conflict",
-                        "The draft round was already discarded for a different reason.",
-                        object_ref=round_id,
-                        current=round_record.discard_reason,
-                        expected=normalized_reason,
-                    )
-                )
             return self.runtime.foundation.ok(
                 self._discard_receipt(round_record, changed=False)
             )
@@ -490,7 +362,6 @@ class DeclCatalogComponent:
             or round_record.plan_closeout_acknowledged_at is not None
             or round_record.plan_closeout_acknowledged_by is not None
             or round_record.committed_at is not None
-            or round_record.change_summaries
             or round_record.summary is not None
         ):
             return self.runtime.foundation.fail(
@@ -579,7 +450,7 @@ class DeclCatalogComponent:
                 return self.runtime.foundation.fail(
                     self.runtime.foundation.issue(
                         "round_discard_restore_missing",
-                        "A discarded update or delete requires a prior committed revision.",
+                        "A discarded update requires a prior committed revision.",
                         object_ref=ref.decl_name,
                     )
                 )
@@ -616,12 +487,6 @@ class DeclCatalogComponent:
         discarded_at = utc_now_iso()
         discarded_round = round_record.model_copy(deep=True)
         discarded_round.status = DeclRoundStatus.DISCARDED
-        discarded_round.discarded_revision_refs = list(round_record.revision_refs)
-        discarded_round.discarded_created_decl_names = sorted(created_decl_names)
-        discarded_round.discarded_restored_decl_revisions = dict(
-            sorted(restored_decl_revisions.items())
-        )
-        discarded_round.discard_reason = normalized_reason
         discarded_round.discarded_by = normalized_actor
         discarded_round.discarded_at = discarded_at
         discarded_round.revision_refs = []
@@ -691,7 +556,13 @@ class DeclCatalogComponent:
         if not committed.ok:
             return self.runtime.foundation.fail(committed.issues)
         return self.runtime.foundation.ok(
-            self._discard_receipt(discarded_round, changed=True)
+            self._discard_receipt(
+                discarded_round,
+                changed=True,
+                discarded_change_ids=[item.change_id for item in round_record.revision_refs],
+                deleted_created_decl_names=created_decl_names,
+                restored_decl_revisions=restored_decl_revisions,
+            )
         )
 
     def commit_decl_revision(
@@ -702,7 +573,6 @@ class DeclCatalogComponent:
         name: str,
         revision: int | None = None,
         state: DeclState | str | None = None,
-        apply_delete_lifecycle: bool = True,
     ) -> ServiceResult[DeclRevision]:
         decl = self.get_decl(repo_root, node_path=node_path, name=name)
         if not decl.ok or decl.value is None:
@@ -743,9 +613,6 @@ class DeclCatalogComponent:
                 return self.runtime.foundation.fail(guarded.issues)
         record.value.status = DeclRevisionStatus.COMMITTED
         record.value.updated_at = utc_now_iso()
-        if record.value.state == DeclState.OBSOLETE and apply_delete_lifecycle:
-            decl.value.lifecycle = DeclLifecycle.DELETED
-            decl.value.updated_at = utc_now_iso()
         with self.runtime.foundation.store.mutation("commit_decl_revision") as mutation:
             mutation.stage_json(
                 self.graph_store.revision_path(
@@ -754,12 +621,6 @@ class DeclCatalogComponent:
                 record.value,
                 mode=WriteMode.UPDATE_EXISTING,
             )
-            if record.value.state == DeclState.OBSOLETE and apply_delete_lifecycle:
-                mutation.stage_json(
-                    self.graph_store.decl_record_path(repo_root, node_path=node_path, decl_name=name),
-                    decl.value,
-                    mode=WriteMode.UPDATE_EXISTING,
-                )
             committed = mutation.commit()
         if not committed.ok:
             return self.runtime.foundation.fail(committed.issues)
@@ -990,22 +851,6 @@ class DeclCatalogComponent:
         if len(set(create_names)) != len(create_names):
             issues.append(self.runtime.foundation.issue("duplicate_create_change", "Round has duplicate create changes."))
         changed_names = {change.decl_name for change in changes_value}
-        delete_names = [change.decl_name for change in changes_value if change.kind == DeclChangeKind.DELETE]
-        if delete_names:
-            closure = self.compute_delete_closure(repo_root, node_path=node_path, decl_names=delete_names)
-            if not closure.ok or closure.value is None:
-                issues.extend(closure.issues)
-            else:
-                missing_from_round = sorted(set(closure.value.closure_decl_names) - set(delete_names))
-                if missing_from_round:
-                    issues.append(
-                        self.runtime.foundation.issue(
-                            "delete_closure_incomplete",
-                            "Round delete changes do not cover the downstream dependency closure.",
-                            object_ref=round_id,
-                            current=", ".join(missing_from_round),
-                        )
-                    )
         change_kind_by_decl = {change.decl_name: change.kind for change in changes_value}
         decl_by_name: dict[str, Decl] = {}
         revision_by_decl: dict[str, DeclRevision] = {}
@@ -1033,12 +878,9 @@ class DeclCatalogComponent:
                 for dep in (revision.value.proof.deps if revision.value.proof is not None else [])
                 if isinstance(dep, RepoDeclDep) and dep.ref.repo is None and dep.ref.node == node_path
             }
-            change = revision.value.change
-            anticipated_statement = set(change.anticipated_statement_dep_names if change is not None else [])
-            anticipated_proof = set(change.anticipated_proof_dep_names if change is not None else [])
             for dependency_stage, required_availability, dependency_names in (
-                ("statement", ProofAvailability.DECLARED, actual_statement | anticipated_statement),
-                ("proof", ProofAvailability.PROVED, actual_proof | anticipated_proof),
+                ("statement", ProofAvailability.DECLARED, actual_statement),
+                ("proof", ProofAvailability.PROVED, actual_proof),
             ):
                 for dep_name in sorted(dependency_names):
                     required_state = required_state_for_availability("theorem", required_availability)
@@ -1106,11 +948,6 @@ class DeclCatalogComponent:
                                     suggested_action=f"Complete {dep_name} through {required_state.value} before this round.",
                                 )
                             )
-                        continue
-                    if (
-                        change_kind_by_decl.get(decl_name) == DeclChangeKind.DELETE
-                        and change_kind_by_decl.get(dep_name) == DeclChangeKind.DELETE
-                    ):
                         continue
                     provider_record = decl_by_name.get(dep_name)
                     if provider_record is None:
@@ -1254,26 +1091,21 @@ class DeclCatalogComponent:
         round_record: DeclGraphRound,
         *,
         changed: bool,
+        discarded_change_ids: list[str] | None = None,
+        deleted_created_decl_names: list[str] | None = None,
+        restored_decl_revisions: dict[str, int] | None = None,
     ) -> DeclRoundDraftDiscardReceipt:
         return DeclRoundDraftDiscardReceipt(
             round_id=round_record.round_id,
             strategy_id=round_record.strategy_id,
             changed=changed,
-            discarded_change_ids=[
-                item.change_id for item in round_record.discarded_revision_refs
-            ],
-            deleted_created_decl_names=list(
-                round_record.discarded_created_decl_names
-            ),
-            restored_decl_revisions=(
-                dict(round_record.discarded_restored_decl_revisions) or None
-            ),
-            reason=round_record.discard_reason or "",
+            discarded_change_ids=list(discarded_change_ids or []),
+            deleted_created_decl_names=sorted(deleted_created_decl_names or []),
+            restored_decl_revisions=dict(restored_decl_revisions or {}) or None,
             discarded_by=round_record.discarded_by or "",
             discarded_at=round_record.discarded_at or "",
             summary=(
-                f"Discarded unsubmitted draft {round_record.round_id}; "
-                f"rolled back {len(round_record.discarded_revision_refs)} planned changes."
+                f"Discarded unsubmitted draft {round_record.round_id}."
             ),
         )
 
@@ -1294,13 +1126,11 @@ class DeclCatalogComponent:
             kind=revision.change.kind,
             decl_name=decl_name,
             base_revision=revision.change.base_revision,
-            reset_to_state=revision.change.reset_to_state,
+            start_stage=revision.change.start_stage,
             target_state=revision.change.target_state,
             require_target_state_satisfied=revision.change.require_target_state_satisfied,
             objective=revision.change.objective or "",
             summary=revision.change.summary,
-            anticipated_statement_dep_names=list(revision.change.anticipated_statement_dep_names),
-            anticipated_proof_dep_names=list(revision.change.anticipated_proof_dep_names),
             target_revision=revision.revision,
             created_at=revision.updated_at,
             updated_at=revision.updated_at,

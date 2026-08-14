@@ -42,7 +42,6 @@ _STATE_RANK = {
     DeclState.DECLARED: 2,
     DeclState.PROOF_PLANNED: 3,
     DeclState.PROVED: 4,
-    DeclState.OBSOLETE: -1,
 }
 
 

@@ -18,7 +18,7 @@ from lean_constellation.app.operator_data.common import (
 )
 from lean_constellation.app.operator_data.execution import OperatorExecutionContext, OperatorExecutionService
 from lean_constellation.domain.common import StrictModel
-from lean_constellation.services.decl_graph import DeclDraftSpec, DeclState, MathlibDeclDep, RepoDeclDep, RoundStageReview
+from lean_constellation.services.decl_graph import DeclDraftSpec, DeclStage, DeclState, MathlibDeclDep, RepoDeclDep, RoundStageReview
 from lean_constellation.services.decl_graph.models import DeclOriginRef
 from lean_constellation.services.foundation import ServiceResult
 from lean_constellation.services.lean_projection import (
@@ -89,13 +89,16 @@ class DeclRevisionInput(RoundIdentityInput):
 class DeclUpdateInput(DeclRevisionInput):
     objective: str
     target_state: DeclState
-    base_revision: int | None = Field(default=None, ge=1)
-    reset_to_state: DeclState | None = None
+    start_stage: DeclStage
     require_target_state_satisfied: bool = True
 
 
-class DeclDeleteInput(DeclRevisionInput):
-    objective: str
+class DeclRestoreInput(DeclIdentityInput):
+    source_revision: int = Field(ge=1)
+
+
+class DeclDeleteInput(NodeInput):
+    decl_names: list[str]
 
 
 class NaturalLanguageInput(DeclRevisionInput):
@@ -341,8 +344,28 @@ class DeclProjectionOperator:
     def open_decl_update(self, repo_key: str, request: DeclUpdateInput) -> ServiceResult:
         return self.executor.execute(repo_key, MUTATE_DECL, lambda ctx: self._open_update(ctx, request))
 
-    def mark_decl_delete(self, repo_key: str, request: DeclDeleteInput) -> ServiceResult:
-        return self.executor.execute(repo_key, MUTATE_DECL, lambda ctx: self._mark_delete(ctx, request))
+    def restore_decl_revision(self, repo_key: str, request: DeclRestoreInput) -> ServiceResult:
+        return self.executor.execute(
+            repo_key,
+            MUTATE_DECL,
+            lambda ctx: ctx.runtime.decl_graph.restore_decl_revision(
+                ctx.repo_root,
+                node_path=request.node_path,
+                decl_name=request.decl_name,
+                source_revision=request.source_revision,
+            ),
+        )
+
+    def delete_decls(self, repo_key: str, request: DeclDeleteInput) -> ServiceResult:
+        return self.executor.execute(
+            repo_key,
+            MUTATE_DECL,
+            lambda ctx: ctx.runtime.decl_graph.delete_decls(
+                ctx.repo_root,
+                node_path=request.node_path,
+                decl_names=request.decl_names,
+            ),
+        )
 
     def write_statement_nl(self, repo_key: str, request: NaturalLanguageInput) -> ServiceResult:
         return self.executor.execute(repo_key, MUTATE_DECL, lambda ctx: self._write_nl(ctx, request, stage="statement"))
@@ -477,21 +500,8 @@ class DeclProjectionOperator:
             name=request.decl_name,
             objective=request.objective,
             target_state=request.target_state,
-            base_revision=request.base_revision,
-            reset_to_state=request.reset_to_state,
+            start_stage=request.start_stage,
             require_target_state_satisfied=request.require_target_state_satisfied,
-        )
-
-    def _mark_delete(self, ctx: OperatorExecutionContext, request: DeclDeleteInput) -> ServiceResult:
-        checked = self._require_revision(ctx, request)
-        if not checked.ok:
-            return checked
-        return ctx.runtime.decl_graph.mark_decl_delete(
-            ctx.repo_root,
-            node_path=request.node_path,
-            round_id=request.round_id,
-            name=request.decl_name,
-            objective=request.objective,
         )
 
     def _write_nl(self, ctx: OperatorExecutionContext, request: NaturalLanguageInput, *, stage: Literal["statement", "proof"]) -> ServiceResult:

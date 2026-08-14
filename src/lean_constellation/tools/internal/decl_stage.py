@@ -5,7 +5,10 @@ from __future__ import annotations
 from lean_constellation.flows.content_node_task.decl_round.steps import DeclStageReviewerStepState
 from lean_constellation.domain.refs import DeclRef
 from lean_constellation.services.decl_graph.models import (
+    DeclChangeKind,
     DeclOriginRef,
+    DeclRevisionStatus,
+    DeclRoundStatus,
     DeclState,
     RepoDeclDep,
 )
@@ -91,7 +94,7 @@ def _assert_any_stage(runtime, ctx, *, expected_stages: set[str], decl_name: str
 def _assert_dependency_add_stage(runtime, ctx, *, expected_stages: set[str], decl_name: str):
     """Allow worker writes and the narrow add-only reviewer repair surface."""
 
-    if ctx.actor.role != "reviewer":
+    if _actor_role(ctx) != "reviewer":
         return _assert_any_stage(
             runtime,
             ctx,
@@ -118,6 +121,98 @@ def _assert_dependency_add_stage(runtime, ctx, *, expected_stages: set[str], dec
             )
         )
     return runtime.foundation.ok(None)
+
+
+def _dependency_mutation_round(
+    runtime,
+    ctx,
+    *,
+    expected_stages: set[str],
+    decl_name: str,
+    reviewer_add_only: bool = False,
+):
+    """Resolve either a Plan-owned DRAFT target or the current stage target."""
+
+    if _actor_role(ctx) == "plan":
+        rounds = runtime.decl_graph.list_rounds(
+            ctx.repo_root,
+            node_path=_node(ctx),
+        )
+        if not rounds.ok or rounds.value is None:
+            return runtime.foundation.fail(rounds.issues)
+        drafts = [item for item in rounds.value if item.status == DeclRoundStatus.DRAFT]
+        if len(drafts) != 1:
+            return runtime.foundation.fail(
+                runtime.foundation.issue(
+                    "decl_planning_round_ambiguous",
+                    "Planning dependency mutation requires exactly one DRAFT round in the current node.",
+                    object_ref=decl_name,
+                    current=", ".join(item.round_id for item in drafts) or "none",
+                    expected="one DRAFT round",
+                )
+            )
+        round_record = drafts[0]
+        refs = [item for item in round_record.revision_refs if item.decl_name == decl_name]
+        if len(refs) != 1:
+            return runtime.foundation.fail(
+                runtime.foundation.issue(
+                    "decl_planning_target_not_in_round",
+                    "Planning dependency mutation must target one declaration revision owned by the current DRAFT round.",
+                    object_ref=decl_name,
+                    current=str(len(refs)),
+                    expected="1",
+                )
+            )
+        decl = runtime.decl_graph.get_decl(
+            ctx.repo_root,
+            node_path=_node(ctx),
+            name=decl_name,
+        )
+        if not decl.ok or decl.value is None:
+            return runtime.foundation.fail(decl.issues)
+        revision = runtime.decl_graph.get_decl_revision(
+            ctx.repo_root,
+            node_path=_node(ctx),
+            name=decl_name,
+            revision=refs[0].revision,
+        )
+        if not revision.ok or revision.value is None:
+            return runtime.foundation.fail(revision.issues)
+        if (
+            decl.value.current_revision != refs[0].revision
+            or revision.value.status != DeclRevisionStatus.OPEN
+            or revision.value.change is None
+            or revision.value.change.kind not in {DeclChangeKind.CREATE, DeclChangeKind.UPDATE}
+        ):
+            return runtime.foundation.fail(
+                runtime.foundation.issue(
+                    "decl_planning_target_not_open_head",
+                    "Planning dependency mutation requires the DRAFT round's current open create/update revision.",
+                    object_ref=decl_name,
+                    current=f"{decl.value.current_revision}:{revision.value.status.value}",
+                    expected=f"{refs[0].revision}:{DeclRevisionStatus.OPEN.value}",
+                )
+            )
+        return runtime.foundation.ok(round_record.round_id)
+
+    allowed = (
+        _assert_dependency_add_stage(
+            runtime,
+            ctx,
+            expected_stages=expected_stages,
+            decl_name=decl_name,
+        )
+        if reviewer_add_only
+        else _assert_any_stage(
+            runtime,
+            ctx,
+            expected_stages=expected_stages,
+            decl_name=decl_name,
+        )
+    )
+    if not allowed.ok:
+        return allowed
+    return runtime.foundation.ok(_round_id(ctx))
 
 
 def _normalize_formal_check_stage(stage: str) -> str | None:
@@ -281,6 +376,7 @@ def _assert_statement_decl_dep_visible(
     dep_node: str | None,
     dep_repo: str | None,
     revision: int | None,
+    round_id: str,
 ):
     current_node = _node(ctx)
     if dep_repo:
@@ -331,9 +427,16 @@ def _assert_statement_decl_dep_visible(
             ref = ref.model_copy(update={"revision": revision})
         return runtime.foundation.ok(ref)
 
-    deps_allowed = _assert_statement_deps_visible(runtime, ctx, decl_name=decl_name, deps=[dep_name])
-    if not deps_allowed.ok:
-        return deps_allowed
+    if _actor_role(ctx) != "plan":
+        deps_allowed = _assert_statement_deps_visible(
+            runtime,
+            ctx,
+            round_id=round_id,
+            decl_name=decl_name,
+            deps=[dep_name],
+        )
+        if not deps_allowed.ok:
+            return deps_allowed
     current = _current_raw_decl_revision(runtime, ctx.repo_root, node_path=current_node, decl_name=dep_name)
     if not current.ok or current.value is None:
         return runtime.foundation.fail(current.issues)
@@ -341,14 +444,14 @@ def _assert_statement_decl_dep_visible(
 
 
 def _add_statement_repo_dependencies(runtime, ctx, args: RepoDeclDependenciesAddArgs):
-    allowed = _assert_any_stage(
+    target = _dependency_mutation_round(
         runtime,
         ctx,
         expected_stages={"statement_nl", "statement_formal"},
         decl_name=args.decl_name,
     )
-    if not allowed.ok:
-        return allowed
+    if not target.ok or target.value is None:
+        return target
     resolved = []
     for item in args.dependencies:
         visible = _assert_statement_decl_dep_visible(
@@ -359,6 +462,7 @@ def _add_statement_repo_dependencies(runtime, ctx, args: RepoDeclDependenciesAdd
             dep_node=item.node,
             dep_repo=item.repository,
             revision=item.revision,
+            round_id=target.value,
         )
         if not visible.ok or visible.value is None:
             return runtime.foundation.fail(visible.issues)
@@ -374,6 +478,7 @@ def _add_statement_repo_dependencies(runtime, ctx, args: RepoDeclDependenciesAdd
             decl_name=args.decl_name,
             stage="statement",
             dependencies=resolved,
+            round_id=target.value,
         ),
     )
 
@@ -390,14 +495,15 @@ def _add_statement_repo_dependency(runtime, ctx, args: RepoDeclDependencyAddArgs
 
 
 def _add_statement_mathlib_dependencies(runtime, ctx, args: MathlibDeclDependenciesAddArgs):
-    allowed = _assert_dependency_add_stage(
+    target = _dependency_mutation_round(
         runtime,
         ctx,
         expected_stages={"statement_nl", "statement_formal"},
         decl_name=args.decl_name,
+        reviewer_add_only=True,
     )
-    if not allowed.ok:
-        return allowed
+    if not target.ok or target.value is None:
+        return target
     def add_dependencies(dependencies):
         def mutate():
             return _add_dependency_batch(
@@ -406,6 +512,7 @@ def _add_statement_mathlib_dependencies(runtime, ctx, args: MathlibDeclDependenc
                 decl_name=args.decl_name,
                 stage="statement",
                 dependencies=dependencies,
+                round_id=target.value,
             )
 
         return _apply_dependency_capture_policy(
@@ -443,30 +550,32 @@ def _add_statement_mathlib_dependency(runtime, ctx, args: MathlibDeclDependencyA
 
 
 def _remove_statement_dep(runtime, ctx, args: StatementDepRemoveArgs):
-    allowed = _assert_any_stage(runtime, ctx, expected_stages={"statement_nl", "statement_formal"}, decl_name=args.decl_name)
-    if not allowed.ok:
-        return allowed
+    target = _dependency_mutation_round(runtime, ctx, expected_stages={"statement_nl", "statement_formal"}, decl_name=args.decl_name)
+    if not target.ok or target.value is None:
+        return target
     written = runtime.decl_graph.remove_statement_dep(
         ctx.repo_root,
         node_path=_node(ctx),
-        round_id=_round_id(ctx),
+        round_id=target.value,
         decl_name=args.decl_name,
         index=args.index,
         refresh_projection=_dependency_projection_enabled(ctx, stage="statement"),
+        allow_draft=_actor_role(ctx) == "plan",
     )
     return written
 
 
 def _clear_statement_deps(runtime, ctx, args: StatementDepsClearArgs):
-    allowed = _assert_any_stage(runtime, ctx, expected_stages={"statement_nl", "statement_formal"}, decl_name=args.decl_name)
-    if not allowed.ok:
-        return allowed
+    target = _dependency_mutation_round(runtime, ctx, expected_stages={"statement_nl", "statement_formal"}, decl_name=args.decl_name)
+    if not target.ok or target.value is None:
+        return target
     written = runtime.decl_graph.clear_statement_deps(
         ctx.repo_root,
         node_path=_node(ctx),
-        round_id=_round_id(ctx),
+        round_id=target.value,
         decl_name=args.decl_name,
         refresh_projection=_dependency_projection_enabled(ctx, stage="statement"),
+        allow_draft=_actor_role(ctx) == "plan",
     )
     return written
 
@@ -700,29 +809,30 @@ def _resolve_proof_decl_deps_batch(runtime, ctx, dependencies):
 
 
 def _add_proof_repo_dependencies(runtime, ctx, args: RepoDeclDependenciesAddArgs):
-    allowed = _assert_any_stage(
+    target = _dependency_mutation_round(
         runtime,
         ctx,
         expected_stages={"proof_nl", "proof_formal"},
         decl_name=args.decl_name,
     )
-    if not allowed.ok:
-        return allowed
+    if not target.ok or target.value is None:
+        return target
     batch = _resolve_proof_decl_deps_batch(runtime, ctx, args.dependencies)
     if not batch.ok or batch.value is None:
         return runtime.foundation.fail(batch.issues)
     resolved, visible_dependencies = batch.value
-    validation = validate_proof_deps(
-        runtime,
-        ctx.repo_root,
-        node_path=_node(ctx),
-        round_id=_round_id(ctx),
-        decl_name=args.decl_name,
-        deps=resolved,
-        visible_dependencies=visible_dependencies,
-    )
-    if not validation.ok:
-        return validation
+    if _actor_role(ctx) != "plan":
+        validation = validate_proof_deps(
+            runtime,
+            ctx.repo_root,
+            node_path=_node(ctx),
+            round_id=target.value,
+            decl_name=args.decl_name,
+            deps=resolved,
+            visible_dependencies=visible_dependencies,
+        )
+        if not validation.ok:
+            return validation
     return _apply_dependency_capture_policy(
         runtime,
         ctx,
@@ -734,6 +844,7 @@ def _add_proof_repo_dependencies(runtime, ctx, args: RepoDeclDependenciesAddArgs
             decl_name=args.decl_name,
             stage="proof",
             dependencies=resolved,
+            round_id=target.value,
         ),
     )
 
@@ -750,26 +861,28 @@ def _add_proof_repo_dependency(runtime, ctx, args: RepoDeclDependencyAddArgs):
 
 
 def _add_proof_mathlib_dependencies(runtime, ctx, args: MathlibDeclDependenciesAddArgs):
-    allowed = _assert_dependency_add_stage(
+    target = _dependency_mutation_round(
         runtime,
         ctx,
         expected_stages={"proof_nl", "proof_formal"},
         decl_name=args.decl_name,
+        reviewer_add_only=True,
     )
-    if not allowed.ok:
-        return allowed
+    if not target.ok or target.value is None:
+        return target
 
     def add_dependencies(dependencies):
-        validation = validate_proof_deps(
-            runtime,
-            ctx.repo_root,
-            node_path=_node(ctx),
-            round_id=_round_id(ctx),
-            decl_name=args.decl_name,
-            deps=dependencies,
-        )
-        if not validation.ok:
-            return validation
+        if _actor_role(ctx) != "plan":
+            validation = validate_proof_deps(
+                runtime,
+                ctx.repo_root,
+                node_path=_node(ctx),
+                round_id=target.value,
+                decl_name=args.decl_name,
+                deps=dependencies,
+            )
+            if not validation.ok:
+                return validation
         def mutate():
             return _add_dependency_batch(
                 runtime,
@@ -777,6 +890,7 @@ def _add_proof_mathlib_dependencies(runtime, ctx, args: MathlibDeclDependenciesA
                 decl_name=args.decl_name,
                 stage="proof",
                 dependencies=dependencies,
+                round_id=target.value,
             )
 
         return _apply_dependency_capture_policy(
@@ -813,25 +927,27 @@ def _add_proof_mathlib_dependency(runtime, ctx, args: MathlibDeclDependencyAddAr
     )
 
 
-def _add_dependency_batch(runtime, ctx, *, decl_name: str, stage: str, dependencies: list[object]):
+def _add_dependency_batch(runtime, ctx, *, decl_name: str, stage: str, dependencies: list[object], round_id: str):
     refresh_projection = _dependency_projection_enabled(ctx, stage=stage)
     mutation = (
         runtime.decl_graph.add_statement_dependencies(
             ctx.repo_root,
             node_path=_node(ctx),
-            round_id=_round_id(ctx),
+            round_id=round_id,
             decl_name=decl_name,
             deps=dependencies,
             refresh_projection=refresh_projection,
+            allow_draft=_actor_role(ctx) == "plan",
         )
         if stage == "statement"
         else runtime.decl_graph.add_proof_dependencies(
             ctx.repo_root,
             node_path=_node(ctx),
-            round_id=_round_id(ctx),
+            round_id=round_id,
             decl_name=decl_name,
             deps=dependencies,
             refresh_projection=refresh_projection,
+            allow_draft=_actor_role(ctx) == "plan",
         )
     )
     return mutation
@@ -847,7 +963,7 @@ def _apply_dependency_capture_policy(
 ):
     stage = ctx.decl_stage.stage if ctx.decl_stage is not None else None
     formal_review_stage = (
-        ctx.actor.role == "reviewer"
+        _actor_role(ctx) == "reviewer"
         and stage == (
             "statement_formal"
             if formal_stage == "statement"
@@ -866,41 +982,44 @@ def _apply_dependency_capture_policy(
 
 
 def _dependency_projection_enabled(ctx, *, stage: str) -> bool:
+    if _actor_role(ctx) == "plan":
+        return False
     current_stage = ctx.decl_stage.stage if ctx.decl_stage is not None else None
     return current_stage != f"{stage}_nl"
 
 
 def _remove_proof_dep(runtime, ctx, args: ProofDepRemoveArgs):
-    allowed = _assert_any_stage(runtime, ctx, expected_stages={"proof_nl", "proof_formal"}, decl_name=args.decl_name)
-    if not allowed.ok:
-        return allowed
+    target = _dependency_mutation_round(runtime, ctx, expected_stages={"proof_nl", "proof_formal"}, decl_name=args.decl_name)
+    if not target.ok or target.value is None:
+        return target
     written = runtime.decl_graph.remove_proof_dep(
         ctx.repo_root,
         node_path=_node(ctx),
-        round_id=_round_id(ctx),
+        round_id=target.value,
         decl_name=args.decl_name,
         index=args.index,
         refresh_projection=_dependency_projection_enabled(ctx, stage="proof"),
+        allow_draft=_actor_role(ctx) == "plan",
     )
     return written
 
 
 def _clear_proof_deps(runtime, ctx, args: ProofDepsClearArgs):
-    allowed = _assert_any_stage(runtime, ctx, expected_stages={"proof_nl", "proof_formal"}, decl_name=args.decl_name)
-    if not allowed.ok:
-        return allowed
+    target = _dependency_mutation_round(runtime, ctx, expected_stages={"proof_nl", "proof_formal"}, decl_name=args.decl_name)
+    if not target.ok or target.value is None:
+        return target
     written = runtime.decl_graph.clear_proof_deps(
         ctx.repo_root,
         node_path=_node(ctx),
-        round_id=_round_id(ctx),
+        round_id=target.value,
         decl_name=args.decl_name,
         refresh_projection=_dependency_projection_enabled(ctx, stage="proof"),
+        allow_draft=_actor_role(ctx) == "plan",
     )
     return written
 
 
-def _assert_statement_deps_visible(runtime, ctx, *, decl_name: str, deps: list[str]):
-    round_id = _round_id(ctx)
+def _assert_statement_deps_visible(runtime, ctx, *, round_id: str, decl_name: str, deps: list[str]):
     round_record = runtime.decl_graph.get_round(ctx.repo_root, node_path=_node(ctx), round_id=round_id)
     if not round_record.ok or round_record.value is None:
         return runtime.foundation.fail(round_record.issues)
@@ -959,7 +1078,6 @@ def _current_raw_decl_revision(runtime, repo_root, *, node_path: str, decl_name:
 
 def _decl_state_rank(state: DeclState) -> int:
     return {
-        DeclState.OBSOLETE: -1,
         DeclState.PLANNED: 0,
         DeclState.SPECIFIED: 1,
         DeclState.DECLARED: 2,
@@ -1494,6 +1612,7 @@ def _run_round_local_audit(runtime, ctx, args: NoArgs):
 
 def build_tool_specs() -> list[ToolSpec]:
     worker_roles = {"worker", "admin"}
+    dependency_writer_roles = {"worker", "plan", "admin"}
     read_roles = {"worker", "reviewer", "plan", "admin"}
     return [
         handler_tool(
@@ -1553,7 +1672,7 @@ def build_tool_specs() -> list[ToolSpec]:
             capability=ToolCapability.WRITE,
             result_view="decl_stage_dependency_delta",
             groups={AppGroup.DECL_STATEMENT_REPO_DEPENDENCY_WRITE},
-            roles=worker_roles,
+            roles=dependency_writer_roles,
             handler=_add_statement_repo_dependency,
         ),
         handler_tool(
@@ -1563,7 +1682,7 @@ def build_tool_specs() -> list[ToolSpec]:
             capability=ToolCapability.WRITE,
             result_view="decl_stage_dependency_delta",
             groups={AppGroup.DECL_STATEMENT_REPO_DEPENDENCY_WRITE},
-            roles=worker_roles,
+            roles=dependency_writer_roles,
             handler=_add_statement_repo_dependencies,
         ),
         handler_tool(
@@ -1573,7 +1692,7 @@ def build_tool_specs() -> list[ToolSpec]:
             capability=ToolCapability.WRITE,
             result_view="decl_stage_dependency_delta",
             groups={AppGroup.DECL_STATEMENT_MATHLIB_DEPENDENCY_WRITE},
-            roles={"worker", "reviewer"},
+            roles={"worker", "reviewer", "plan"},
             handler=_add_statement_mathlib_dependency,
         ),
         handler_tool(
@@ -1583,7 +1702,7 @@ def build_tool_specs() -> list[ToolSpec]:
             capability=ToolCapability.WRITE,
             result_view="decl_stage_dependency_delta",
             groups={AppGroup.DECL_STATEMENT_MATHLIB_DEPENDENCY_WRITE},
-            roles={"worker", "reviewer"},
+            roles={"worker", "reviewer", "plan"},
             handler=_add_statement_mathlib_dependencies,
         ),
         handler_tool(
@@ -1593,7 +1712,7 @@ def build_tool_specs() -> list[ToolSpec]:
             capability=ToolCapability.WRITE,
             result_view="decl_stage_mutation",
             groups={AppGroup.DECL_STATEMENT_REPO_DEPENDENCY_WRITE},
-            roles=worker_roles,
+            roles=dependency_writer_roles,
             handler=_remove_statement_dep,
         ),
         handler_tool(
@@ -1603,7 +1722,7 @@ def build_tool_specs() -> list[ToolSpec]:
             capability=ToolCapability.WRITE,
             result_view="decl_stage_mutation",
             groups={AppGroup.DECL_STATEMENT_REPO_DEPENDENCY_WRITE},
-            roles=worker_roles,
+            roles=dependency_writer_roles,
             handler=_clear_statement_deps,
         ),
         handler_tool(
@@ -1663,7 +1782,7 @@ def build_tool_specs() -> list[ToolSpec]:
             capability=ToolCapability.WRITE,
             result_view="decl_stage_dependency_delta",
             groups={AppGroup.DECL_PROOF_REPO_DEPENDENCY_WRITE},
-            roles=worker_roles,
+            roles=dependency_writer_roles,
             handler=_add_proof_repo_dependency,
         ),
         handler_tool(
@@ -1673,7 +1792,7 @@ def build_tool_specs() -> list[ToolSpec]:
             capability=ToolCapability.WRITE,
             result_view="decl_stage_dependency_delta",
             groups={AppGroup.DECL_PROOF_REPO_DEPENDENCY_WRITE},
-            roles=worker_roles,
+            roles=dependency_writer_roles,
             handler=_add_proof_repo_dependencies,
         ),
         handler_tool(
@@ -1683,7 +1802,7 @@ def build_tool_specs() -> list[ToolSpec]:
             capability=ToolCapability.WRITE,
             result_view="decl_stage_dependency_delta",
             groups={AppGroup.DECL_PROOF_MATHLIB_DEPENDENCY_WRITE},
-            roles={"worker", "reviewer"},
+            roles={"worker", "reviewer", "plan"},
             handler=_add_proof_mathlib_dependency,
         ),
         handler_tool(
@@ -1693,7 +1812,7 @@ def build_tool_specs() -> list[ToolSpec]:
             capability=ToolCapability.WRITE,
             result_view="decl_stage_dependency_delta",
             groups={AppGroup.DECL_PROOF_MATHLIB_DEPENDENCY_WRITE},
-            roles={"worker", "reviewer"},
+            roles={"worker", "reviewer", "plan"},
             handler=_add_proof_mathlib_dependencies,
         ),
         handler_tool(
@@ -1703,7 +1822,7 @@ def build_tool_specs() -> list[ToolSpec]:
             capability=ToolCapability.WRITE,
             result_view="decl_stage_mutation",
             groups={AppGroup.DECL_PROOF_REPO_DEPENDENCY_WRITE},
-            roles=worker_roles,
+            roles=dependency_writer_roles,
             handler=_remove_proof_dep,
         ),
         handler_tool(
@@ -1713,7 +1832,7 @@ def build_tool_specs() -> list[ToolSpec]:
             capability=ToolCapability.WRITE,
             result_view="decl_stage_mutation",
             groups={AppGroup.DECL_PROOF_REPO_DEPENDENCY_WRITE},
-            roles=worker_roles,
+            roles=dependency_writer_roles,
             handler=_clear_proof_deps,
         ),
         handler_tool(

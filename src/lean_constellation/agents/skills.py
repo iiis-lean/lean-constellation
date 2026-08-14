@@ -1503,9 +1503,19 @@ Do not turn strategy planning into broad recon when a preparation child flow sho
     ),
     SkillKey.DECL_ROUND_CHANGE_PLANNING.value: LeanSkillDefinition(
         name="decl-round-change-planning",
-        description="Use when the ContentPlanAgent prepares create, update, or delete changes for the next DeclGraph round.",
+        description="Use when the ContentPlanAgent prepares create/update changes or performs synchronous declaration maintenance.",
         group="content_plan",
-        required_tool_groups=_groups(AppGroup.DECL_ROUND_CHANGE_WRITE, SubmitGroup.CONTENT_PLAN_SUBMIT),
+        required_tool_groups=_groups(
+            AppGroup.DECL_ROUND_CHANGE_WRITE,
+            AppGroup.DECL_STATEMENT_DEPENDENCY_READ,
+            AppGroup.DECL_STATEMENT_REPO_DEPENDENCY_WRITE,
+            AppGroup.DECL_STATEMENT_MATHLIB_DEPENDENCY_WRITE,
+            AppGroup.DECL_PROOF_DEPENDENCY_READ,
+            AppGroup.DECL_PROOF_REPO_DEPENDENCY_WRITE,
+            AppGroup.DECL_PROOF_MATHLIB_DEPENDENCY_WRITE,
+            AppGroup.DECL_MAINTENANCE_WRITE,
+            SubmitGroup.CONTENT_PLAN_SUBMIT,
+        ),
         source_design_doc="dev_docs/design/agents/skill_bundles",
         body="""# Decl Round Change Planning
 
@@ -1526,7 +1536,7 @@ Before planning changes:
 
 ## Semantic Declaration Planning
 
-For every source- or contract-derived create, update, or delete, use SourceIndex for navigation and inspect the relevant exact SourceCorpus range before mutation. Keep the stable catalog summary distinct from the current change objective. The change objective must identify the semantic boundary to preserve, the relevant source/contract reference, and why this action belongs in the current route. External Resources may clarify an explicit gap but do not silently replace source semantics.
+For every source- or contract-derived create, update, restore, or delete, use SourceIndex for navigation and inspect the relevant exact SourceCorpus range before mutation. Keep the stable catalog summary distinct from the current change objective. A create/update objective must identify the semantic boundary to preserve, the relevant source/contract reference, and why this action belongs in the current route. External Resources may clarify an explicit gap but do not silently replace source semantics.
 
 When a SourceIndex ref or source tool supplies an exact inclusive line range, pass that exact range to `read_source_range`. Do not round or pad its end line as a discovery probe. If the indexed range is insufficient, follow `$source-evidence-referencing` to locate and validate a separate range allowed by this role, then read that range exactly.
 
@@ -1557,7 +1567,7 @@ Use a named instance Decl only for a unique, stable, non-overlapping constructio
 When typeclass search could be ambiguous or cyclic, use a named definition and
 install it explicitly with `letI` in each consumer, or encapsulate the complete
 dependent mathematical object behind a canonical definition. If a canonical
-provider and its consumer are both planned, preserve the anticipated edge and
+provider and its consumer are both planned, record the actual typed edge and
 split them into provider-before-consumer rounds. Do not omit the edge or replace
 the shared object with `HEq`, accumulating casts, repeated `Subsingleton.elim`, or
 another locally regenerated representation merely to pass validation.
@@ -1566,14 +1576,14 @@ another locally regenerated representation merely to pass validation.
 
 Use `plan_create_decl` for new declarations. Each create change should have:
 
-- a flat `Decl.name` and clear kind; the name is one Lean module filename segment, so it cannot contain dots or path separators;
+- a flat decl_name and clear kind; the name is one Lean module filename segment, so it cannot contain dots or path separators;
 - a concise catalog summary distinct from the current round objective;
 - visibility appropriate for the node contract;
 - a concise mathematical objective;
 - target_state;
 - require_target_state_satisfied.
 
-Before the mutation, enumerate every current-node declaration already known from source, contract, or graph truth to be required by the new Statement or proof. Record all of them in the anticipated_statement_dep_names or anticipated_proof_dep_names field. Passing an empty list is an explicit assertion that this check found no known dependency; it is not permission to postpone a visible edge until Worker execution. If a listed provider is also created or advanced in the draft, submit neither edge as a hidden same-round package: validate the disclosed graph, discard the rejected draft, and split provider before consumer.
+Immediately after creating the draft target, enumerate every dependency already known from source, contract, Mathlib, visible provider boundaries, or current graph truth. Record it in the target revision with the ordinary statement/proof repo or Mathlib dependency tools. These typed dependencies are the only graph truth and Workers will continue editing the same lists. If a provider is also created or advanced in the draft, keep the actual edge visible: draft validation will reject the unsupported same-round topology, after which discard the draft and split provider before consumer.
 
 Choose visibility from the intended stable API rather than proof implementation convenience. Contract interface outputs, stable reusable constructions, and declarations required by the formal Statement of an intended public root should be public. Proof-only helpers remain private by default. Existing committed declarations that only need added visibility are repaired during public-boundary curation and do not require a new update round.
 
@@ -1583,15 +1593,13 @@ Helper lemmas and constructions that matter to later work should be tracked as t
 
 ## Update Changes
 
-Use `plan_update_decl` when an existing declaration needs a targeted repair or stage advancement. The execution interval is (reset_to_state, target_state] over the fixed pipeline:
+Use `plan_update_decl` when an existing declaration needs a targeted repair or stage advancement. The service always copies the latest committed revision into a new monotonic revision. Choose start_stage as the first strict pipeline stage that must run:
 
 `planned --Statement NL--> specified --Statement Formal--> declared --Proof NL--> proof_planned --Proof Formal--> proved`.
 
-By default, the service copies the current committed head and uses that base revision's state as reset_to_state. If that base already reaches target_state, you must explicitly choose a lower reset_to_state to describe the redo range. Use optional base_revision only to copy a specific older committed revision; this creates a new monotonic revision and does not move history backward.
+statement_nl retains only the planned shell; statement_formal retains accepted Statement NL; proof_nl retains the accepted formal statement; proof_formal retains the accepted proof route. The selected stage must be available from the latest committed state and must precede target_state, so every update runs at least one Worker/Reviewer stage. For a release-protected declaration, start_stage cannot cross beneath the accepted formal statement. Include the intended target_state and require_target_state_satisfied.
 
-reset_to_state is a retained boundary, not a stage to run: reset_to_state=declared and target_state=proved begins with Proof NL. For a release-protected declaration it cannot cross beneath the accepted formal statement. A proof_planned reset retains the proof plan and clears only proof-formal artifacts/checks. Include the intended target_state and require_target_state_satisfied.
-
-Apply the same anticipated-dependency rule to updates: preserve every already-known current-node Statement and proof edge in the corresponding anticipated dependency list, including an edge whose provider is another planned change. Never omit a known edge to bypass round topology validation.
+After opening an update, inspect the copied typed dependency lists and use the same dependency tools to add, remove, or correct the known frontier before validation. Preserve an actual edge whose provider is another planned change; never omit it to bypass round topology validation.
 
 Do not use an update change to silently change a previously accepted mathematical meaning.
 
@@ -1601,13 +1609,15 @@ Use `target_state=declared` when the round should produce or repair the statemen
 
 Keep `require_target_state_satisfied=true` unless the selected mode skill explicitly justifies a state-only intermediate change. A state-only intermediate change must be followed by provider-before-consumer rounds that make its dependency closure proof-policy satisfied. It is not terminal Content completion in graph_proved mode.
 
-## Delete Changes
+## Synchronous Maintenance
 
-Before deleting a declaration, call `preview_decl_delete_closure`. Never plan deletion of a release-protected declaration. Private declarations may be removed only when current references and the preview permit it.
+Restore and delete do not create a draft or use Worker/Reviewer stages. Use `restore_decl_revision` only when accepted historical content must become the current truth again. It creates a new monotonic committed revision from an exact historical committed revision, records lineage, preserves current visibility, rebuilds the managed Lean projection, and rejects open-round, release, or boundary conflicts.
+
+Before deletion, call `preview_decl_delete_closure` to understand the current same-node downstream closure. Then call `delete_decls` with the complete exact set. The mutation recomputes closure and blockers; the preview is guidance, not an authorization receipt. Never delete a release-protected declaration, auto-remove a consumer, unbind an interface, demote visibility, or alter a Scope export to force deletion. If current truth changed or any stable boundary still refers to the set, accept the structured blocker and re-plan explicitly.
 
 ## Validation And Submit
 
-Call `validate_decl_round_draft` before submitting. If validation rejects the unsubmitted draft because its batch shape, dependency order, or planned changes must be replaced, call `discard_decl_round_draft` with the concrete validation reason. Discard rolls back the whole draft atomically; it is not a partial edit tool. Re-read current truth, then create smaller or dependency-ordered replacement rounds. Never discard a running, awaiting-closeout, or committed round.
+Call `validate_decl_round_draft` before submitting. If validation rejects the unsubmitted draft because its batch shape, dependency order, or planned changes must be replaced, call `discard_decl_round_draft`. Discard rolls back the whole draft atomically; it is not a partial edit tool and does not accept a narrative reason. Re-read current truth, then create smaller or dependency-ordered replacement rounds. Never discard a running, awaiting-closeout, or committed round.
 
 Call `submit_current_decl_round` only when the draft is valid and ready for DeclGraphRoundFlow execution. After an accepted submit, stop.
 

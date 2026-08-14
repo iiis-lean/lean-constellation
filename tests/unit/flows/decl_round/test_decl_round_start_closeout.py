@@ -45,7 +45,7 @@ def test_decl_round_runs_full_theorem_stage_sequence(tmp_path: Path) -> None:
     assert start_step.result.outcome == "valid"
     round_record = lean_runtime.decl_graph.get_round(repo_root, node_path=NODE_PATH, round_id=round_id)
     assert round_record.value.status is DeclRoundStatus.RUNNING
-    assert runtime.flow_service.get_flow(flow_id).state.position.phase == "delete_normalize"
+    assert runtime.flow_service.get_flow(flow_id).state.position.phase == "revision_normalize"
 
     advance_and_run(runtime, flow_id)
     assert runtime.flow_service.get_flow(flow_id).state.position.phase == "stage_prepare"
@@ -548,7 +548,7 @@ def _prove_committed_helper_theorem(lean_runtime, repo_root: Path, *, decl_name:
         round_id=round_record.value.round_id,
         name=decl_name,
         objective=f"Prove {decl_name}.",
-        reset_to_state=DeclState.PROOF_PLANNED,
+        start_stage="proof_formal",
         target_state=DeclState.PROVED,
     )
     assert change.ok, change.issues
