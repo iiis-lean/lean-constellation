@@ -87,31 +87,6 @@ def test_strict_decl_graph_review_rejected_then_worker_blocked_evidence(
     }.issubset(evidence_recorder.evidence.submit_tool_names)
 
 
-def test_strict_decl_graph_delete_normalize_path_executes_with_skipped_stages(
-    runtime_matrix_workspace: RuntimeMatrixWorkspace,
-    evidence_recorder: EvidenceRecorder,
-) -> None:
-    ws = runtime_matrix_workspace
-    ws.setup_content_node(repo_root=ws.provider_repo, node_path="Main.Topic.Core")
-    _seed_committed_decl(ws, name="public_keep_result", public=True)
-    _seed_committed_decl(ws, name="delete_only_result", public=False)
-    round_fixture = _create_delete_round(ws, name="delete_only_result")
-
-    unwrap(ws.admin.resume_runtime())
-    flow_id = _start_decl_round(ws, round_fixture)
-    _wait_round_completed(ws, flow_id)
-
-    flow = ws.runtime.ark.flow_service.get_flow(flow_id)
-    assert flow.status is FlowStatus.COMPLETED
-    assert flow.result.outcome == "completed"
-    assert flow.result.skipped_stages == ["statement_nl", "statement_formal", "proof_nl", "proof_formal"]
-    assert flow.result.completed_stages == []
-    evidence_recorder.record_runtime_state(ws.runtime)
-    assert "decl_round_delete_normalize_step" in evidence_recorder.evidence.logic_step_types
-    assert "decl_round_final_audit_step" in evidence_recorder.evidence.logic_step_types
-    assert "decl_stage_worker_agent_step" not in evidence_recorder.evidence.agent_step_types
-
-
 def _seed_committed_decl(ws: RuntimeMatrixWorkspace, *, name: str, public: bool) -> None:
     strategy = ws.runtime.decl_graph.ensure_open_strategy(
         ws.provider_repo,
@@ -223,37 +198,6 @@ def _seed_committed_decl(ws: RuntimeMatrixWorkspace, *, name: str, public: bool)
     )
     assert terminal.ok, terminal.issues
     assert ws.runtime.decl_graph.rebuild_decl_graph_index(ws.provider_repo, node_path=round_fixture.node_path).ok
-
-
-def _create_delete_round(ws: RuntimeMatrixWorkspace, *, name: str) -> DeclRoundFixture:
-    strategy = ws.runtime.decl_graph.ensure_open_strategy(
-        ws.provider_repo,
-        node_path="Main.Topic.Core",
-        objective="Strict Runtime Matrix delete-only decl round.",
-    )
-    assert strategy.ok and strategy.value is not None, strategy.issues
-    round_record = ws.runtime.decl_graph.create_round_draft(
-        ws.provider_repo,
-        node_path="Main.Topic.Core",
-        strategy_id=strategy.value.strategy_id,
-        objective=f"Delete {name}.",
-    )
-    assert round_record.ok and round_record.value is not None, round_record.issues
-    deleted = ws.runtime.decl_graph.mark_decl_delete(
-        ws.provider_repo,
-        node_path="Main.Topic.Core",
-        round_id=round_record.value.round_id,
-        name=name,
-        objective=f"Delete {name} in strict delete/normalize branch.",
-    )
-    assert deleted.ok and deleted.value is not None, deleted.issues
-    return DeclRoundFixture(
-        node_path="Main.Topic.Core",
-        decl_name=name,
-        strategy_id=strategy.value.strategy_id,
-        round_id=round_record.value.round_id,
-        round_index=round_record.value.round_index,
-    )
 
 
 def _passed_statement_check() -> dict[str, object]:

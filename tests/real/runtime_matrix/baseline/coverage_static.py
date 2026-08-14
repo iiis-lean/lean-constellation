@@ -286,7 +286,7 @@ RUNTIME_MATRIX_CASES: tuple[RuntimeMatrixCase, ...] = (
             {
                 "flow:decl_graph_round",
                 "logic_step:decl_round_start_validation_step",
-                "logic_step:decl_round_delete_normalize_step",
+                "logic_step:decl_round_revision_normalize_step",
                 "logic_step:decl_round_prepare_stage_targets_step",
                 "logic_step:decl_round_stage_gate_audit_step",
                 "logic_step:decl_round_final_audit_step",

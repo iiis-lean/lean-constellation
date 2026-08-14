@@ -144,7 +144,7 @@ def test_strict_decl_graph_strategy_round_readiness_tool_cases_execute(
         "plan_create_decl",
         {
             "round_id": round_id,
-            "name": "created_result",
+            "decl_name": "created_result",
             "kind": "theorem",
             "objective": "Create a new strict ToolSweep theorem.",
             "summary": "Strict ToolSweep created theorem.",
@@ -163,27 +163,16 @@ def test_strict_decl_graph_strategy_round_readiness_tool_cases_execute(
         "plan_update_decl",
         {
             "round_id": round_id,
-            "name": "existing_result",
+            "decl_name": "existing_result",
             "objective": "Open a strict ToolSweep update revision.",
             "target_state": "proved",
-            "reset_to_state": "declared",
+            "start_stage": "proof_nl",
         },
         runtime_context=plan_ctx,
         recorder=evidence_recorder,
         assertion_summary="Declaration update change was planned.",
     )
     update_change_id = _field(update_change.value, "change_id")
-
-    delete_change = call_tool_with_evidence(
-        server,
-        "content_plan",
-        "plan_delete_decl",
-        {"round_id": round_id, "name": "delete_result", "objective": "Delete strict ToolSweep fixture declaration."},
-        runtime_context=plan_ctx,
-        recorder=evidence_recorder,
-        assertion_summary="Declaration delete change was planned.",
-    )
-    delete_change_id = _field(delete_change.value, "change_id")
 
     rounds = call_tool_with_evidence(
         server,
@@ -208,7 +197,6 @@ def test_strict_decl_graph_strategy_round_readiness_tool_cases_execute(
     assert {item["change_id"] for item in _field(round_lookup.value, "revision_refs")} == {
         create_change_id,
         update_change_id,
-        delete_change_id,
     }
 
     decls = call_tool_with_evidence(
@@ -254,6 +242,16 @@ def test_strict_decl_graph_strategy_round_readiness_tool_cases_execute(
         assertion_summary="Delete closure was computed.",
     )
     assert "delete_result" in _field(delete_closure.value, "closure_decl_names")
+    deleted = call_tool_with_evidence(
+        server,
+        "content_plan",
+        "delete_decls",
+        {"decl_names": ["delete_result"]},
+        runtime_context=plan_ctx,
+        recorder=evidence_recorder,
+        assertion_summary="Exact declaration closure was deleted synchronously.",
+    )
+    assert _field(deleted.value, "deleted_decl_names") == ["delete_result"]
 
     draft_gate = call_tool_with_evidence(
         server,
@@ -313,7 +311,7 @@ def test_strict_decl_graph_strategy_round_readiness_tool_cases_execute(
     assert _field(content_ready.value, "checked_decl_count") >= 1
     assert "blocking_issue_kinds" in content_ready.value
 
-    for change_id in (create_change_id, update_change_id, delete_change_id):
+    for change_id in (create_change_id, update_change_id):
         summarized = call_tool_with_evidence(
             server,
             "content_plan",
@@ -366,6 +364,17 @@ def test_strict_decl_graph_strategy_round_readiness_tool_cases_execute(
     assert _field(terminal.value, "closeout_complete") is True
     assert _field(terminal.value, "result_kind") == "blocked"
 
+    restored = call_tool_with_evidence(
+        server,
+        "content_plan",
+        "restore_decl_revision",
+        {"decl_name": "existing_result", "source_revision": 1},
+        runtime_context=plan_ctx,
+        recorder=evidence_recorder,
+        assertion_summary="Historical accepted content was restored as a new monotonic revision.",
+    )
+    assert _field(restored.value, "source_revision") == 1
+
     discard_round = call_tool_with_evidence(
         server,
         "content_plan",
@@ -382,7 +391,7 @@ def test_strict_decl_graph_strategy_round_readiness_tool_cases_execute(
         "plan_create_decl",
         {
             "round_id": discard_round_id,
-            "name": "discarded_result",
+            "decl_name": "discarded_result",
             "kind": "theorem",
             "objective": "Create a declaration that must disappear with the rejected draft.",
             "summary": "Strict ToolSweep discarded theorem.",
@@ -398,10 +407,7 @@ def test_strict_decl_graph_strategy_round_readiness_tool_cases_execute(
         server,
         "content_plan",
         "discard_decl_round_draft",
-        {
-            "round_id": discard_round_id,
-            "reason": "Strict ToolSweep simulates deterministic draft validation rejection.",
-        },
+        {"round_id": discard_round_id},
         runtime_context=plan_ctx,
         recorder=evidence_recorder,
         assertion_summary="The unsubmitted draft and its planned declaration revision were atomically discarded.",
