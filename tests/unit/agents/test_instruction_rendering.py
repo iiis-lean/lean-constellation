@@ -479,6 +479,7 @@ def test_source_builder_preserves_supplied_targets_without_inventing_source_trut
     assert "do not summarize, extend the requested scope, invent role-sensitive material" in text
     assert "Everything outside `_work/` will be copied unchanged" in text
     assert "resolved download locations" in text
+    assert "Markdown/LaTeX representation is syntactically intact" in text
 
 
 def test_source_corpus_reviewer_is_independent_read_only_and_full_current() -> None:
@@ -489,6 +490,7 @@ def test_source_corpus_reviewer_is_independent_read_only_and_full_current() -> N
     assert "independently compare it with relevant evidence under `_work/`" in text
     assert "review the entire current durable tree from the beginning" in text
     assert "processing history may not" in text
+    assert "final Markdown/LaTeX representation syntax" in text
     assert "submit_source_corpus_review" in text
 
 

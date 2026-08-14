@@ -898,6 +898,17 @@ class SourceCorpusComponent:
                         object_ref=item.path,
                     )
                 )
+            if item.readable_text and candidate.suffix.lower() in {".md", ".markdown"}:
+                unbalanced_lines = self._unbalanced_markdown_math_lines(candidate)
+                if unbalanced_lines:
+                    issues.append(
+                        self.runtime.foundation.issue(
+                            "source_corpus_markdown_math_delimiter_unbalanced",
+                            "Final-facing Markdown contains unbalanced math delimiters.",
+                            object_ref=item.path,
+                            details={"line_numbers": ",".join(str(line) for line in unbalanced_lines)},
+                        )
+                    )
             if resolved.kind in {"pdf", "html", "tex_source_archive"} or (
                 resolved.kind == "unknown_binary" and "asset" not in roles
             ):
@@ -1392,6 +1403,50 @@ class SourceCorpusComponent:
             or 127 <= ord(char) <= 159
             for char in text
         )
+
+    @staticmethod
+    def _unbalanced_markdown_math_lines(path: Path) -> list[int]:
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeDecodeError):
+            return []
+
+        issues: set[int] = set()
+        fence_marker: str | None = None
+        display_open_line: int | None = None
+        for line_number, line in enumerate(lines, start=1):
+            fence = re.match(r"^\s*(`{3,}|~{3,})", line)
+            if fence:
+                marker = fence.group(1)
+                if fence_marker is None:
+                    fence_marker = marker
+                elif marker[0] == fence_marker[0] and len(marker) >= len(fence_marker):
+                    fence_marker = None
+                continue
+            if fence_marker is not None:
+                continue
+
+            without_code = re.sub(r"(`+).*?\1", "", line)
+            single_dollars = 0
+            for match in re.finditer(r"(?<!\\)\$+", without_code):
+                run_length = len(match.group(0))
+                for _ in range(run_length // 2):
+                    if display_open_line is None:
+                        display_open_line = line_number
+                    else:
+                        display_open_line = None
+                if run_length % 2 and display_open_line is None:
+                    single_dollars += 1
+            if single_dollars % 2:
+                literal_currency = single_dollars == 1 and re.search(
+                    r"(?<!\\)\$\d+(?:[.,]\d+)?\b",
+                    without_code,
+                )
+                if not literal_currency:
+                    issues.add(line_number)
+        if display_open_line is not None:
+            issues.add(display_open_line)
+        return sorted(issues)
 
     @staticmethod
     def _is_forbidden_source_artifact(relative: Path) -> bool:

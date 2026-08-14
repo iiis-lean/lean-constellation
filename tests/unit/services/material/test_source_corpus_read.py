@@ -926,6 +926,40 @@ def test_corrected_final_text_needs_no_process_ledger(tmp_path: Path) -> None:
     assert passed.ok and passed.value is not None and passed.value.passed
 
 
+def test_source_corpus_rejects_unbalanced_markdown_math_delimiters(tmp_path: Path) -> None:
+    source_root = tmp_path / ".lean_constellation" / "source"
+    source_root.mkdir(parents=True)
+    (source_root / "README.md").write_text(_source_entry_text(main_path="article.md"), encoding="utf-8")
+    article = source_root / "article.md"
+    article.write_text(
+        "A unit vector $X$ is a least vector of $G.\n",
+        encoding="utf-8",
+    )
+    service = make_runtime().material
+
+    rejected = service.check_source_corpus_draft(tmp_path, entry_path="README.md")
+
+    assert rejected.ok and rejected.value is not None and not rejected.value.passed
+    issue = next(
+        item
+        for item in rejected.value.issues
+        if item.kind == "source_corpus_markdown_math_delimiter_unbalanced"
+    )
+    assert issue.object_ref == "article.md"
+    assert issue.details == {"line_numbers": "1"}
+
+    article.write_text(
+        "A unit vector $X$ is a least vector of $G$.\n"
+        "Display math follows.\n$$\nx + y = z\n$$\n"
+        "A literal price is $5. Escaped \\$ and `$not_math` remain text.\n"
+        "```text\n$also_not_math\n```\n",
+        encoding="utf-8",
+    )
+    passed = service.check_source_corpus_draft(tmp_path, entry_path="README.md")
+
+    assert passed.ok and passed.value is not None and passed.value.passed
+
+
 def test_source_corpus_rejects_runtime_artifacts_symlinks_and_old_manifest_schema(tmp_path: Path) -> None:
     source_root = tmp_path / ".lean_constellation" / "source"
     source_root.mkdir(parents=True)

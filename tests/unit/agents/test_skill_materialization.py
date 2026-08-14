@@ -272,6 +272,7 @@ def test_shared_material_skills_separate_work_evidence_from_static_truth() -> No
     assert "future Agent should not need the PDF" in pdf
     assert "entire current durable tree" in fidelity
     assert "resolved locator need not equal the request text" in fidelity
+    assert "math delimiters, environments, links" in fidelity
     assert "old passed marks and patch summaries do not carry forward" in fidelity
 
 
