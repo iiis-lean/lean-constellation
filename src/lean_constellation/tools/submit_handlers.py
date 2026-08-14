@@ -362,6 +362,7 @@ def submit_native_repo_choice(runtime: Any, ctx: ToolExecutionContext, args: Sub
 
 
 def submit_source_corpus_builder_ready(runtime: Any, ctx: ToolExecutionContext, args: SubmitSourceCorpusBuilderReadyArgs) -> ServiceResult[PreparedSubmissionView]:
+    expected_relpath = _expected_source_corpus_relpath(runtime, ctx)
     gate = runtime.material.check_source_corpus_draft(
         ctx.repo_root,
         relpath=".lean_constellation/source_draft",

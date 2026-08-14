@@ -11,6 +11,8 @@ from lean_constellation.domain.preparation import (
     AdapterProviderRoute,
     AutoProviderRoute,
     NativeProviderRoute,
+    RepoPreparationInput,
+    SourceCorpusMode,
 )
 from lean_constellation.domain.repo import ProofAvailability, RepoCompletionMode
 from lean_constellation.domain.repo_run import SourceScope
@@ -944,6 +946,49 @@ def test_source_corpus_builder_ready_gateway_missing_does_not_write_manifest(tmp
     assert result.value is not None
     assert result.value.ok is False
     assert result.value.issues[0].kind == "submission_gateway_missing"
+    assert not (tmp_path / ".lean_constellation" / "source_corpus" / "manifest.json").exists()
+
+
+def test_source_corpus_builder_ready_submits_configured_canonical_relpath(tmp_path: Path) -> None:
+    gateway = FakeSubmissionGateway()
+    runtime = _runtime(gateway)
+    assert register_submit_tooling(runtime).ok
+    assert runtime.repo_workspace.preparation.write_preparation_input(
+        tmp_path,
+        input=RepoPreparationInput(
+            goal="Prepare the exact source corpus.",
+            source_corpus_mode=SourceCorpusMode.PREPARE,
+            source_corpus_relpath="custom_sources",
+        ),
+    ).ok
+    source_root = tmp_path / ".lean_constellation" / "source_draft"
+    _write_submit_source_draft(source_root)
+    raw = RawToolCallContext(
+        endpoint_view_key="source_corpus_builder_submit",
+        runtime_context=_runtime_ctx(
+            tmp_path,
+            view="source_corpus_builder_submit",
+            role="worker",
+            agent_type="SourceCorpusBuilderAgent",
+        ),
+    )
+
+    result = runtime.tool_facade.invoke_agent_tool(
+        raw,
+        tool_name="submit_source_corpus_builder_ready",
+        flat_args={
+            "summary": "Prepared.",
+            "entry_path": "README.md",
+            "overview": "Source corpus overview.",
+            "preparation_summary": "Prepared source corpus.",
+        },
+    )
+
+    assert result.ok
+    assert result.value is not None
+    assert result.value.ok is True
+    assert len(gateway.accepted) == 1
+    assert gateway.accepted[0].relpath == "custom_sources"
     assert not (tmp_path / ".lean_constellation" / "source_corpus" / "manifest.json").exists()
 
 
