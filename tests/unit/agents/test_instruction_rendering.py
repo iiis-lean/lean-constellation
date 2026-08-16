@@ -482,6 +482,12 @@ def test_source_builder_preserves_supplied_targets_without_inventing_source_trut
     assert "resolved download locations" in text
     assert "Markdown/LaTeX representation is syntactically intact" in text
     assert "prefer a sectioned LaTeX tree" in text
+    assert "independent `references.bib` and resolvable citation commands" in text
+    assert "BibTeX keys must be stable and unique, but need not be numeric" in text
+    assert "identifies a work the source actually cites" in text
+    assert "must not add an uncited work or expand the requested scope" in text
+    assert "complete compilation closure appropriate to its BibTeX or Biber setup" in text
+    assert "do not put lookup or compilation process history in durable files" in text
     assert "brief material with no natural subdivision" in text
 
 
@@ -496,6 +502,13 @@ def test_source_corpus_reviewer_is_independent_read_only_and_full_current() -> N
     assert "final Markdown/LaTeX representation syntax" in text
     assert "monolithic Markdown" in text
     assert "section boundaries" in text
+    assert "map each body citation to its bibliography entry" in text
+    assert "do not rely on the Builder summary, a lookup claim, or a first-pass compilation log" in text
+    assert "isolated temporary copy outside the Source draft" in text
+    assert "never write Reviewer build products into the durable candidate or `_work/`" in text
+    assert "Reject duplicate or undefined citations, bibliography keys, labels, references" in text
+    assert "Do not reject solely because rendered numbering, ordering, punctuation" in text
+    assert "record that unresolved risk rather than claiming a clean check" in text
     assert "submit_source_corpus_review" in text
 
 
@@ -508,6 +521,10 @@ def test_resource_curator_treats_requested_use_as_advisory_evidence() -> None:
     assert "Everything outside `_work/` is final-facing static material" in text
     assert "do not include acquisition, extraction, Curator, or round history" in text
     assert "prefer a sectioned LaTeX tree" in text
+    assert "independent `references.bib` and resolvable citation commands" in text
+    assert "bibliography-free item, authored manual bibliography" in text
+    assert "same work actually cited" in text
+    assert "including the appropriate compilation closure" in text
     assert "narrow excerpt" in text
     assert "A complete paper may remain a local Resource" in text
     assert "cannot become a local Resource" not in text

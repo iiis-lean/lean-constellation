@@ -542,6 +542,9 @@ def test_source_builder_reviewer_and_resource_curator_keep_acquisition_boundarie
     source_tools = {tool.name for tool in reports["SourceCorpusBuilderAgent"].application_tools}
     reviewer_tools = {tool.name for tool in reports["SourceCorpusReviewerAgent"].application_tools}
     curator_tools = {tool.name for tool in reports["ResourceCuratorAgent"].application_tools}
+    source_skills = {skill.key for skill in reports["SourceCorpusBuilderAgent"].skills}
+    reviewer_skills = {skill.key for skill in reports["SourceCorpusReviewerAgent"].skills}
+    curator_skills = {skill.key for skill in reports["ResourceCuratorAgent"].skills}
 
     source_write_tools = {
         "acquire_source_material",
@@ -574,3 +577,6 @@ def test_source_builder_reviewer_and_resource_curator_keep_acquisition_boundarie
     assert "get_source_index" not in curator_tools
     assert {"get_resource_draft", "check_resource_draft"} <= curator_tools
     assert {"allocate_resource_draft", "abandon_resource_draft"}.isdisjoint(curator_tools)
+    assert "source-corpus-draft-curation" in source_skills & reviewer_skills
+    assert "pdf-faithful-transcription" in source_skills & curator_skills
+    assert "pdf-faithful-transcription" not in reviewer_skills

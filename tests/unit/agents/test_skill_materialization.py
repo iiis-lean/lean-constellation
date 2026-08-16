@@ -271,12 +271,24 @@ def test_shared_material_skills_separate_work_evidence_from_static_truth() -> No
     assert "Do not record request payloads" in preservation
     assert "future Agent should not need the PDF" in pdf
     assert "LaTeX is the default durable representation" in pdf
+    assert "independent BibTeX bibliography and resolvable citation keys" in pdf
+    assert "not a hard requirement for brief material" in pdf
+    assert "Reliable Web evidence may complete DOI" in pdf
+    assert "same work" in pdf
+    assert "not byte-for-byte rendered numbering" in pdf
     assert "natural section or theorem/proof boundaries" in pdf
     assert "entire current durable tree" in fidelity
     assert "resolved locator need not equal the request text" in fidelity
     assert "math delimiters, environments, links" in fidelity
     assert "old passed marks and patch summaries do not carry forward" in fidelity
     assert "cross-file joins" in fidelity
+    assert "map each body citation to its bibliography entry" in fidelity
+    assert "complete compilation closure" in fidelity
+    assert "A first-pass PDF alone is not sufficient evidence" in fidelity
+    assert "toolchain is unavailable" in fidelity
+    assert "residual risk" in fidelity
+    assert "metadata normalization" in preservation
+    assert "must not substitute a similar or unverified version" in preservation
 
 
 def test_source_corpus_preparation_skill_preserves_supplied_formal_material() -> None:
@@ -289,6 +301,24 @@ def test_source_corpus_preparation_skill_preserves_supplied_formal_material() ->
     assert "projected to canonical SourceCorpus" in body
     assert "complete paper or other non-brief multi-section" in body
     assert "single durable content file only for brief material" in body
+    assert "independent BibTeX bibliography and resolvable citation keys" in body
+    assert "`pdf-faithful-transcription`" not in body
+
+
+def test_source_corpus_shared_skill_is_self_contained_for_builder_and_reviewer(tmp_path: Path) -> None:
+    builder = get_agent_type_spec("SourceCorpusBuilderAgent")
+    reviewer = get_agent_type_spec("SourceCorpusReviewerAgent")
+
+    assert "source-corpus-draft-curation" in builder.skill_keys
+    assert "source-corpus-draft-curation" in reviewer.skill_keys
+    assert "pdf-faithful-transcription" in builder.skill_keys
+    assert "pdf-faithful-transcription" not in reviewer.skill_keys
+
+    for agent_spec in (builder, reviewer):
+        materialized = materialize_skill_specs(tmp_path / agent_spec.agent_type, agent_spec.skill_keys)
+        shared_body = (materialized["source-corpus-draft-curation"] / "SKILL.md").read_text(encoding="utf-8")
+        assert "independent BibTeX bibliography and resolvable citation keys" in shared_body
+        assert "`pdf-faithful-transcription`" not in shared_body
 
 
 def test_resource_draft_skill_keeps_requested_use_advisory() -> None:
@@ -301,6 +331,7 @@ def test_resource_draft_skill_keeps_requested_use_advisory() -> None:
     assert "record the corrected ownership in the README and submission" in body
     assert "complete or long multi-section mathematical Resource" in body
     assert "short focused excerpt" in body
+    assert "independent BibTeX preference is not a hard requirement" in body
     assert "Do not submit a local Resource when" not in body
 
 

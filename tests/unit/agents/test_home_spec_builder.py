@@ -153,22 +153,50 @@ def test_codex_and_opencode_repo_discovery_homes_use_the_same_mcp_tool_views() -
 
 
 def test_codex_and_opencode_source_builder_homes_share_material_contract() -> None:
-    codex = build_agent_home_bootstrap_spec(
+    for agent_type in (
+        "SourceCorpusBuilderAgent",
+        "SourceCorpusReviewerAgent",
+        "ResourceCuratorAgent",
+    ):
+        codex = build_agent_home_bootstrap_spec(
+            agent_type,
+            provider_type="codex",
+            mcp_http_base_url="http://127.0.0.1:8765",
+        )
+        opencode = build_agent_home_bootstrap_spec(
+            agent_type,
+            provider_type="opencode",
+            mcp_http_base_url="http://127.0.0.1:8765",
+        )
+
+        assert codex.developer_instructions == opencode.developer_instructions
+        assert codex.skill_specs == opencode.skill_specs
+        assert codex.tool_view_config == opencode.tool_view_config
+        assert codex.mcp_servers == opencode.mcp_servers
+        shared_skill_key = (
+            "source-corpus-draft-curation"
+            if agent_type.startswith("SourceCorpus")
+            else "resource-draft-curation"
+        )
+        assert "independent BibTeX" in codex.skill_specs[shared_skill_key].body
+        assert "Separate Work Evidence From Durable Material" in codex.skill_specs[
+            "faithful-material-preservation"
+        ].body
+
+    builder = build_agent_home_bootstrap_spec(
         "SourceCorpusBuilderAgent",
         provider_type="codex",
         mcp_http_base_url="http://127.0.0.1:8765",
     )
-    opencode = build_agent_home_bootstrap_spec(
-        "SourceCorpusBuilderAgent",
-        provider_type="opencode",
+    reviewer = build_agent_home_bootstrap_spec(
+        "SourceCorpusReviewerAgent",
+        provider_type="codex",
         mcp_http_base_url="http://127.0.0.1:8765",
     )
 
-    assert codex.developer_instructions == opencode.developer_instructions
-    assert codex.skill_specs == opencode.skill_specs
-    assert codex.tool_view_config == opencode.tool_view_config
-    assert codex.mcp_servers == opencode.mcp_servers
-    assert "structured material requests" in codex.developer_instructions
-    assert "Separate Work Evidence From Durable Material" in codex.skill_specs[
-        "faithful-material-preservation"
-    ].body
+    assert "structured material requests" in builder.developer_instructions
+    assert "complete compilation closure" in builder.developer_instructions
+    assert "You are read-only" in reviewer.developer_instructions
+    assert "isolated temporary copy outside the Source draft" in reviewer.developer_instructions
+    assert "never write Reviewer build products into the durable candidate or `_work/`" in reviewer.developer_instructions
+    assert "pdf-faithful-transcription" not in reviewer.skill_specs
