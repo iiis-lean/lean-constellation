@@ -93,6 +93,30 @@ def test_statement_and_proof_stage_mutations_write_candidates_without_advancing_
     assert [item.ref.name for item in statement_revision.value.statement.deps] == ["supporting_lemma"]
     assert [item.ref.node for item in statement_revision.value.statement.deps] == ["Main.Topic.Core"]
 
+    statement_deps = service.write_statement_deps(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=round_id,
+        decl_name="main_result",
+        deps=["supporting_lemma", "statement_helper"],
+    )
+    assert statement_deps.ok and statement_deps.value is not None
+    statement_deps_revision = service.get_decl_revision(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        name="main_result",
+        revision=statement_deps.value.revision,
+    )
+    assert statement_deps_revision.ok and statement_deps_revision.value is not None
+    assert [item.ref.name for item in statement_deps_revision.value.statement.deps] == [
+        "statement_helper",
+        "supporting_lemma",
+    ]
+    assert [item.ref.node for item in statement_deps_revision.value.statement.deps] == [
+        "Main.Topic.Core",
+        "Main.Topic.Core",
+    ]
+
     statement_formal = write_statement_formal_for_test(runtime,
         tmp_path,
         node_path="Main.Topic.Core",
