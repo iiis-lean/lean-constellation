@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from inspect import signature
 from pathlib import Path
 
 from lean_constellation.services.material import source_corpus as source_corpus_module
@@ -38,7 +39,12 @@ def test_local_dir_import_promotes_only_after_gate_and_requires_expected_digest_
         preparation_summary="Prepared first corpus.",
     )
     assert imported.ok and imported.value is not None, imported.issues
+    assert "created_from_mode" not in signature(runtime.material.import_local_source_corpus).parameters
+    assert imported.value.prepared.manifest.created_from_mode == "operator_local_dir"
     assert (repo_root / ".lean_constellation/source/chapter.md").read_text() == "Theorem one.\n"
+    persisted = runtime.material.source_corpus.get_source_corpus_manifest(repo_root)
+    assert persisted.ok and persisted.value is not None
+    assert persisted.value.created_from_mode == "operator_local_dir"
 
     missing_expected = runtime.material.import_local_source_corpus(
         repo_root,
@@ -74,7 +80,11 @@ def test_local_dir_import_promotes_only_after_gate_and_requires_expected_digest_
     )
     assert replaced.ok and replaced.value is not None, replaced.issues
     assert replaced.value.replaced_existing
+    assert replaced.value.prepared.manifest.created_from_mode == "operator_local_dir"
     assert (repo_root / ".lean_constellation/source/chapter.md").read_text() == "Theorem two.\n"
+    persisted = runtime.material.source_corpus.get_source_corpus_manifest(repo_root)
+    assert persisted.ok and persisted.value is not None
+    assert persisted.value.created_from_mode == "operator_local_dir"
 
 
 def test_local_dir_import_gate_or_manifest_failure_preserves_canonical_truth(
@@ -88,7 +98,7 @@ def test_local_dir_import_gate_or_manifest_failure_preserves_canonical_truth(
     replacement = tmp_path / "replacement"
     _write_corpus(good, theorem="Stable theorem.")
     invalid.mkdir()
-    (invalid / "README.md").write_text("not a valid corpus entry\n", encoding="utf-8")
+    (invalid / "README.md").write_bytes(b"\xff\n")
     _write_corpus(replacement, theorem="Replacement theorem.")
     imported = runtime.material.import_local_source_corpus(
         repo_root,

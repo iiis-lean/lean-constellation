@@ -393,6 +393,7 @@ class SourceCorpusComponent:
         preparation_summary: str,
         replace_existing: bool = False,
         expected_manifest_digest: str | None = None,
+        created_from_mode: Literal["operator_local_dir", "prepared"] = "operator_local_dir",
     ) -> ServiceResult[SourceCorpusImportView]:
         """Gate and atomically promote a trusted local directory into SourceCorpus truth."""
 
@@ -553,7 +554,7 @@ class SourceCorpusComponent:
                 relpath=canonical_relpath,
                 overview=overview.strip(),
                 entry_path=entry_path,
-                created_from_mode="operator_local_dir",
+                created_from_mode=created_from_mode,
             )
             if not canonical_manifest.ok or canonical_manifest.value is None:
                 raise OSError("failed to scan promoted SourceCorpus")
@@ -1051,6 +1052,7 @@ class SourceCorpusComponent:
                 overview=overview,
                 preparation_summary=preparation_summary,
                 replace_existing=False,
+                created_from_mode="prepared",
             )
             if not imported.ok or imported.value is None:
                 return self.runtime.foundation.fail(imported.issues)

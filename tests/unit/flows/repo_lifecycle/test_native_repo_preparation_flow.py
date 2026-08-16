@@ -148,7 +148,13 @@ def _prepare_native_repo(
     assert initialized.ok
 
 
-def _prepare_native_repo_for_source_prepare(lean_runtime, repo_root: Path, *, source_corpus_relpath: str) -> None:
+def _prepare_native_repo_for_source_prepare(
+    lean_runtime,
+    repo_root: Path,
+    *,
+    source_corpus_relpath: str,
+    source_material_inputs: list[SourceMaterialInput] | None = None,
+) -> None:
     repo_root.mkdir(parents=True, exist_ok=True)
     lean_runtime.repo_workspace.metadata.ensure_repo_model(repo_root)
     written = lean_runtime.repo_workspace.preparation.write_preparation_input(
@@ -157,13 +163,17 @@ def _prepare_native_repo_for_source_prepare(lean_runtime, repo_root: Path, *, so
             goal="Prepare source corpus in a custom root.",
             source_corpus_mode=SourceCorpusMode.PREPARE,
             source_corpus_relpath=source_corpus_relpath,
-            source_material_inputs=[
-                SourceMaterialInput(
-                    target="fixture://primary-source",
-                    included_scope="Complete unit-test source fixture.",
-                    role="primary_source",
-                )
-            ],
+            source_material_inputs=(
+                source_material_inputs
+                if source_material_inputs is not None
+                else [
+                    SourceMaterialInput(
+                        target="fixture://primary-source",
+                        included_scope="Complete unit-test source fixture.",
+                        role="primary_source",
+                    )
+                ]
+            ),
             interface_inputs=[],
         ),
     )
@@ -410,7 +420,7 @@ def test_fresh_native_parent_runs_real_source_child_into_real_root_validation(tm
         block_id=block.value.block_id,
         path="README.md",
         start_line=1,
-        end_line=5,
+        end_line=3,
         role="primary",
     ).ok
     assert lean_runtime.material.mark_block_refs_done(
@@ -547,6 +557,37 @@ def test_native_preparation_source_prepare_workdir_uses_preparation_relpath(tmp_
     assert runtime.agent_service.start_records[-1].workdir == str(
         repo_root / ".lean_constellation" / "source_draft"
     )
+    prompt = next(
+        record.prompt or ""
+        for record in runtime.agent_service.start_records
+        if "Build the source corpus candidate" in (record.prompt or "")
+    )
+    assert "target as a structured clue" in prompt
+    assert "resolve and verify the material identity" in prompt
+    assert "Faithfully enforce included_scope and role as boundaries" in prompt
+    assert "exact source_material_inputs target/scope/role boundaries" not in prompt
+
+
+def test_native_preparation_source_prepare_requires_structured_material_request(tmp_path: Path) -> None:
+    runtime, lean_runtime, _ = _runtime(tmp_path)
+    repo_root = tmp_path / "workspace" / "Provider"
+    _prepare_native_repo_for_source_prepare(
+        lean_runtime,
+        repo_root,
+        source_corpus_relpath="custom_sources",
+        source_material_inputs=[],
+    )
+    flow_id = _start_native(runtime, repo_root)
+
+    step_id = _advance_and_run(runtime, flow_id)
+    result = runtime.flow_service.get_step(step_id).result
+
+    assert result.outcome == "invalid_input"
+    assert result.error.code == "source_material_inputs_missing"
+    assert result.error.message == (
+        "Source preparation requires at least one structured source_material_inputs request "
+        "with target, included_scope, and role."
+    )
 
 
 def test_native_preparation_source_prepare_accepted_submission_finalizes_manifest(tmp_path: Path) -> None:
@@ -595,6 +636,7 @@ def test_native_preparation_source_prepare_accepted_submission_finalizes_manifes
     assert manifest.ok and manifest.value is not None
     assert manifest.value.relpath == "custom_sources"
     assert manifest.value.entry_path == "README.md"
+    assert manifest.value.created_from_mode == "prepared"
     canonical_root = repo_root / "custom_sources"
     canonical_bytes = {
         path.relative_to(canonical_root).as_posix(): path.read_bytes()

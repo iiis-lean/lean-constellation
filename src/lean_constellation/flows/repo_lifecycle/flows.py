@@ -1476,7 +1476,8 @@ def _source_corpus_builder_prompt(
             "Use _work only for acquired containers, extraction scratch, and previews; write the self-contained final candidate elsewhere in this draft.",
             f"Configured draft path: {logical_path}; the canonical destination is recorded in preparation input.",
             "Read and apply $faithful-material-preservation, $pdf-faithful-transcription, $material-fidelity-check, and $source-corpus-draft-curation.",
-            "Process only the exact source_material_inputs target/scope/role boundaries; do not search for or invent additional source material.",
+            "Treat each source_material_inputs target as a structured clue to resolve and verify the material identity.",
+            "Faithfully enforce included_scope and role as boundaries; do not add related material that the inputs did not request.",
             "Read the repository preparation input through tools and submit builder ready or blocked.",
             f"Latest independent reviewer feedback: {reviewer_feedback}" if reviewer_feedback else "This is the initial Builder pass.",
         ]

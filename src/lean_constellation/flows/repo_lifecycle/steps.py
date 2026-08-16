@@ -758,7 +758,7 @@ class ValidateAndInitializeNativePreparationStep(BaseStep):
                     outcome="invalid_input",
                     code="source_material_inputs_missing",
                     message=(
-                        "Source preparation requires at least one exact source_material_inputs boundary "
+                        "Source preparation requires at least one structured source_material_inputs request "
                         "with target, included_scope, and role."
                     ),
                 )
