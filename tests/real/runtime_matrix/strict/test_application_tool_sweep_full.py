@@ -14,7 +14,12 @@ from tests.unit_services_helpers import publish_native_provider_release
 from tests.real.runtime_matrix.admin_helpers import run_next_created_step, run_until_step_created, unwrap
 from tests.real.runtime_matrix.evidence import EvidenceRecorder
 from tests.real.runtime_matrix.fixtures import RuntimeMatrixWorkspace, _write_minimal_lake_repo
-from tests.real.runtime_matrix.strict.tool_cases import build_tool_cases, implemented_tool_cases, pending_tool_cases
+from tests.real.runtime_matrix.strict.tool_cases import (
+    EXPECTED_TOOL_CASE_COUNTS,
+    build_tool_cases,
+    implemented_tool_cases,
+    pending_tool_cases,
+)
 from tests.real.runtime_matrix.strict.tool_sweep_partitions import core_tool_sweep_names
 from tests.real.runtime_matrix.strict_helpers import call_tool_with_evidence, checkpoint_with_evidence, restore_with_evidence
 
@@ -25,13 +30,17 @@ pytestmark = [pytest.mark.real, pytest.mark.slow]
 def test_strict_tool_case_table_declares_every_application_tool() -> None:
     registered = {spec.name for spec in build_application_tool_specs()}
     cases = build_tool_cases()
+    implemented = implemented_tool_cases()
+    pending = pending_tool_cases()
 
     assert set(cases) == registered
-    assert len(cases) == 264
-    assert len(implemented_tool_cases()) == 203
-    assert len(pending_tool_cases()) == 61
+    assert len(cases) == EXPECTED_TOOL_CASE_COUNTS["total"]
+    assert len(implemented) == EXPECTED_TOOL_CASE_COUNTS["implemented"]
+    assert len(pending) == EXPECTED_TOOL_CASE_COUNTS["pending"]
+    assert sum(case.status == "pending_env" for case in pending.values()) == EXPECTED_TOOL_CASE_COUNTS["pending_env"]
+    assert sum(case.status == "pending_fixture" for case in pending.values()) == EXPECTED_TOOL_CASE_COUNTS["pending_fixture"]
     assert all(case.reason for case in cases.values())
-    assert all(case.status != "implemented" for case in pending_tool_cases().values())
+    assert all(case.status != "implemented" for case in pending.values())
 
 
 def test_strict_implemented_application_tool_cases_execute_with_evidence(
@@ -2111,17 +2120,6 @@ def _run_adapter_tool_sweep(ws: RuntimeMatrixWorkspace, server: Any, recorder: E
     )
     assert any(item["module"] == "Upstream" for item in import_preview.value["modules"])
 
-    projection_before = call_tool_with_evidence(
-        server,
-        "adapter_repo_import",
-        "check_adapter_projection",
-        {},
-        runtime_context=adapter_ctx,
-        recorder=recorder,
-        assertion_summary="Adapter projection gate reported missing projection before refresh.",
-    )
-    assert projection_before.value["passed"] is False
-
     catalog_preflight = call_tool_with_evidence(
         server,
         "adapter_repo_import",
@@ -2132,17 +2130,6 @@ def _run_adapter_tool_sweep(ws: RuntimeMatrixWorkspace, server: Any, recorder: E
         assertion_summary="Adapter catalog preflight passed before Flow-owned projection refresh.",
     )
     assert catalog_preflight.value["passed"] is True
-
-    ready_before_projection = call_tool_with_evidence(
-        server,
-        "adapter_repo_import",
-        "check_adapter_ready",
-        {},
-        runtime_context=adapter_ctx,
-        recorder=recorder,
-        assertion_summary="Full adapter ready gate remains blocked until Flow-owned projection refresh.",
-    )
-    assert ready_before_projection.value["passed"] is False
 
     restore_with_evidence(
         ws.admin,

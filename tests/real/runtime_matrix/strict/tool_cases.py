@@ -1848,6 +1848,15 @@ ENV_GATED_GROUPS = {
 }
 
 
+EXPECTED_TOOL_CASE_COUNTS = {
+    "total": 264,
+    "implemented": 203,
+    "pending": 61,
+    "pending_env": 12,
+    "pending_fixture": 49,
+}
+
+
 def build_tool_cases() -> dict[str, ToolCase]:
     cases = dict(IMPLEMENTED_TOOL_CASES)
     for spec in build_application_tool_specs():

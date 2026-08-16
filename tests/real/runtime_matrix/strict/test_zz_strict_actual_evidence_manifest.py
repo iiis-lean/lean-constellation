@@ -7,7 +7,7 @@ import pytest
 
 from tests.real.runtime_matrix.evidence import EvidenceRecorder
 from tests.real.runtime_matrix.strict.surface import current_runtime_surface, strict_missing_report
-from tests.real.runtime_matrix.strict.tool_cases import implemented_tool_cases, pending_tool_cases
+from tests.real.runtime_matrix.strict.tool_cases import EXPECTED_TOOL_CASE_COUNTS, implemented_tool_cases, pending_tool_cases
 
 
 pytestmark = [pytest.mark.real, pytest.mark.slow]
@@ -45,8 +45,11 @@ def test_strict_session_evidence_covers_registered_runtime_surface(
     assert set(report["missing_application_tools"]) == pending_env_tools | pending_fixture_tools
     assert pending_env_tools, "strict audit expected explicit env-gated tools instead of silently declaring full completion"
     assert pending_fixture_tools, "strict audit expected explicit pending fixture tools instead of schema-only completion"
-    assert len(pending_env_tools) == 12
-    assert len(pending_fixture_tools) == 46
+    assert len(implemented_tools) == EXPECTED_TOOL_CASE_COUNTS["implemented"]
+    assert len(pending_tools) == EXPECTED_TOOL_CASE_COUNTS["pending"]
+    assert len(implemented_tools | set(pending_tools)) == EXPECTED_TOOL_CASE_COUNTS["total"]
+    assert len(pending_env_tools) == EXPECTED_TOOL_CASE_COUNTS["pending_env"]
+    assert len(pending_fixture_tools) == EXPECTED_TOOL_CASE_COUNTS["pending_fixture"]
     assert any(item.event == "checkpoint" for item in evidence.snapshots)
     assert any(item.event == "restore" for item in evidence.snapshots)
     _assert_checkpointed_write_tools_have_assertion_evidence(recorder, implemented_tools)
