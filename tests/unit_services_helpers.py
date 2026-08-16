@@ -163,7 +163,7 @@ def write_statement_formal_for_test(
         check=LeanCheck.model_validate(lean_check),
     )
     if deps is not None:
-        revision.value.statement.deps = component._normalize_deps(deps)
+        revision.value.statement.deps = component._normalize_deps(deps, node_path=node_path)
     revision.value.updated_at = utc_now_iso()
     return component._write_revision(repo_root, node_path=node_path, decl_name=decl_name, revision=revision.value)
 
@@ -201,7 +201,7 @@ def write_proof_formal_for_test(
         check=LeanCheck.model_validate(lean_check),
     )
     if deps is not None:
-        revision.value.proof.deps = component._normalize_deps(deps)
+        revision.value.proof.deps = component._normalize_deps(deps, node_path=node_path)
     revision.value.updated_at = utc_now_iso()
     return component._write_revision(repo_root, node_path=node_path, decl_name=decl_name, revision=revision.value)
 

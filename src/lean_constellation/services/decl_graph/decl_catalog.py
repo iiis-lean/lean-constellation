@@ -1202,7 +1202,7 @@ class DeclCatalogComponent:
             if (
                 not isinstance(dep, RepoDeclDep)
                 or dep.ref.repo is not None
-                or dep.ref.node not in {node_path, "Main"}
+                or dep.ref.node != node_path
                 or dep.ref.name == decl_name
             ):
                 continue

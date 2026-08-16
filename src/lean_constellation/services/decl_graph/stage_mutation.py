@@ -65,7 +65,7 @@ class StageMutationComponent:
             text=nl.strip(),
             origin=self._normalize_origin(origin),
         )
-        revision.value.statement.deps = self._normalize_deps(deps)
+        revision.value.statement.deps = self._normalize_deps(deps, node_path=node_path)
         revision.value.updated_at = utc_now_iso()
         return self._write_revision(repo_root, node_path=node_path, decl_name=decl_name, revision=revision.value)
 
@@ -358,7 +358,7 @@ class StageMutationComponent:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue("statement_nl_missing", "Statement NL must be accepted before statement dependency refinement.", object_ref=decl_name)
             )
-        revision.value.statement.deps = self._normalize_deps(deps)
+        revision.value.statement.deps = self._normalize_deps(deps, node_path=node_path)
         revision.value.updated_at = utc_now_iso()
         return self._write_revision(repo_root, node_path=node_path, decl_name=decl_name, revision=revision.value)
 
@@ -389,7 +389,7 @@ class StageMutationComponent:
             )
         proof = revision.value._ensure_proof()
         proof.nl = DeclNaturalLanguageSection(text=nl.strip(), origin=self._normalize_origin(origin))
-        proof.deps = self._normalize_deps(deps)
+        proof.deps = self._normalize_deps(deps, node_path=node_path)
         revision.value.updated_at = utc_now_iso()
         return self._write_revision(repo_root, node_path=node_path, decl_name=decl_name, revision=revision.value)
 
@@ -804,11 +804,14 @@ class StageMutationComponent:
     def _normalize_origin(self, origin: list[dict[str, Any]] | None) -> list[DeclOriginRef]:
         return [DeclOriginRef.model_validate(item) for item in origin or []]
 
-    def _normalize_deps(self, deps: list[str] | None) -> list[DeclDep]:
+    def _normalize_deps(self, deps: list[str] | None, *, node_path: str) -> list[DeclDep]:
         if deps is None:
             return []
         stripped = [dep.strip() for dep in deps]
-        return [RepoDeclDep(ref=DeclRef(name=dep)) for dep in sorted({dep for dep in stripped if dep})]
+        return [
+            RepoDeclDep(ref=DeclRef(node=node_path, name=dep))
+            for dep in sorted({dep for dep in stripped if dep})
+        ]
 
     @staticmethod
     def _target_state_for_stage(stage: str) -> DeclState | None:

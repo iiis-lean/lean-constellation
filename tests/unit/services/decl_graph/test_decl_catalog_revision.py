@@ -721,6 +721,66 @@ def test_open_decl_update_rebinds_same_node_dependencies_to_provider_head(tmp_pa
     assert [dep.ref.revision for dep in opened.value.statement.deps if isinstance(dep, RepoDeclDep)] == [2]
 
 
+def test_open_decl_update_does_not_rebind_root_main_dependency_as_current_node(tmp_path: Path) -> None:
+    _create_content_node(tmp_path)
+    _, round_id = _create_round(tmp_path)
+    _seed_committed_decl(tmp_path, round_id=round_id, name="supporting_lemma")
+    _seed_committed_decl(tmp_path, round_id=round_id, name="main_result")
+    service = make_runtime().decl_graph
+    consumer = service.get_decl_revision(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        name="main_result",
+        revision=1,
+    )
+    assert consumer.ok and consumer.value is not None
+    consumer.value.statement.deps = [
+        RepoDeclDep(ref=DeclRef(node="Main", name="supporting_lemma", revision=1))
+    ]
+    _write_revision(tmp_path, decl_name="main_result", revision=consumer.value)
+
+    _, provider_round_id = _create_round(tmp_path, objective="Advance the local provider.")
+    provider_update = service.open_decl_update(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=provider_round_id,
+        name="supporting_lemma",
+        objective="Create the local provider's next revision.",
+        start_stage="proof_nl",
+        target_state=DeclState.PROVED,
+    )
+    assert provider_update.ok, provider_update.issues
+    assert service.commit_decl_revision(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        name="supporting_lemma",
+        revision=2,
+        state=DeclState.PROVED,
+    ).ok
+
+    _, consumer_round_id = _create_round(tmp_path, objective="Reopen the consumer.")
+    consumer_update = service.open_decl_update(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=consumer_round_id,
+        name="main_result",
+        objective="Keep the exact root Main dependency.",
+        start_stage="proof_nl",
+        target_state=DeclState.PROVED,
+    )
+
+    assert consumer_update.ok, consumer_update.issues
+    opened = service.get_decl_revision(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        name="main_result",
+        revision=2,
+    )
+    assert opened.ok and opened.value is not None
+    assert [dep.ref.node for dep in opened.value.statement.deps if isinstance(dep, RepoDeclDep)] == ["Main"]
+    assert [dep.ref.revision for dep in opened.value.statement.deps if isinstance(dep, RepoDeclDep)] == [1]
+
+
 def test_open_decl_update_uses_latest_committed_declared_head_and_starts_proof_pipeline(tmp_path: Path) -> None:
     _create_content_node(tmp_path)
     _, round_id = _create_round(tmp_path)

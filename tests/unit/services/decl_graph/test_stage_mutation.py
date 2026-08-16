@@ -91,6 +91,7 @@ def test_statement_and_proof_stage_mutations_write_candidates_without_advancing_
         "end_line": 1,
     }
     assert [item.ref.name for item in statement_revision.value.statement.deps] == ["supporting_lemma"]
+    assert [item.ref.node for item in statement_revision.value.statement.deps] == ["Main.Topic.Core"]
 
     statement_formal = write_statement_formal_for_test(runtime,
         tmp_path,
@@ -129,6 +130,7 @@ def test_statement_and_proof_stage_mutations_write_candidates_without_advancing_
     assert [item.ref.name for item in proof_revision.value.statement.deps] == ["supporting_lemma"]
     assert proof_revision.value.proof is not None
     assert [item.ref.name for item in proof_revision.value.proof.deps] == ["proof_helper", "supporting_lemma"]
+    assert [item.ref.node for item in proof_revision.value.proof.deps] == ["Main.Topic.Core", "Main.Topic.Core"]
 
     proof_formal = write_proof_formal_for_test(runtime,
         tmp_path,
@@ -162,7 +164,7 @@ def test_statement_and_proof_stage_mutations_write_candidates_without_advancing_
         {
             "kind": "repo_decl",
             "reason": None,
-            "ref": {"name": "supporting_lemma", "node": "Main", "repo": None, "revision": 1},
+            "ref": {"name": "supporting_lemma", "node": "Main.Topic.Core", "repo": None, "revision": 1},
         }
     ]
     assert payload["proof"]["nl"]["text"] == "The proof is by triviality."
@@ -171,7 +173,7 @@ def test_statement_and_proof_stage_mutations_write_candidates_without_advancing_
         {
             "kind": "repo_decl",
             "reason": None,
-            "ref": {"name": "proof_helper", "node": "Main", "repo": None, "revision": 1},
+            "ref": {"name": "proof_helper", "node": "Main.Topic.Core", "repo": None, "revision": 1},
         }
     ]
     for legacy_field in [
