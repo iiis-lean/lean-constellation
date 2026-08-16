@@ -9,6 +9,7 @@ from lean_constellation.services.decl_graph.models import (
     DeclNaturalLanguageSection,
     DeclProof,
     DeclRevision,
+    DeclRevisionStatus,
     MathlibDeclDep,
     RepoDeclDep,
 )
@@ -579,6 +580,86 @@ def test_restore_decl_revision_rejects_open_current_head(tmp_path: Path) -> None
 
     assert not restored.ok
     assert restored.issues[0].kind == "decl_restore_open_revision"
+
+
+def test_restore_public_decl_rejects_historical_state_below_declared_without_mutation(
+    tmp_path: Path,
+) -> None:
+    _create_content_node(tmp_path)
+    _, round_id = _create_round(tmp_path)
+    _seed_committed_decl(
+        tmp_path,
+        round_id=round_id,
+        name="main_result",
+        public=True,
+        state=DeclState.PROVED,
+    )
+    _create_round(tmp_path, objective="Close the seed round.")
+    runtime = make_runtime()
+    service = runtime.decl_graph
+    decl = service.get_decl(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        name="main_result",
+    )
+    first = service.get_decl_revision(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        name="main_result",
+        revision=1,
+    )
+    assert decl.ok and decl.value is not None
+    assert first.ok and first.value is not None
+    historical = first.value.model_copy(deep=True)
+    historical.revision = 2
+    historical.state = DeclState.SPECIFIED
+    historical.status = DeclRevisionStatus.COMMITTED
+    historical.change = None
+    current = first.value.model_copy(deep=True)
+    current.revision = 3
+    current.status = DeclRevisionStatus.COMMITTED
+    current.change = None
+    for revision in (historical, current):
+        assert runtime.foundation.store.write_json_atomic(
+            service.graph_store.revision_path(
+                tmp_path,
+                node_path="Main.Topic.Core",
+                decl_name="main_result",
+                revision=revision.revision,
+            ),
+            revision,
+            mode=WriteMode.CREATE_ONLY,
+        ).ok
+    decl.value.current_revision = 3
+    decl.value.revision_ids = [1, 2, 3]
+    decl_path = service.graph_store.decl_record_path(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        decl_name="main_result",
+    )
+    assert runtime.foundation.store.write_json_atomic(
+        decl_path,
+        decl.value,
+        mode=WriteMode.UPDATE_EXISTING,
+    ).ok
+    before_decl = decl_path.read_bytes()
+
+    restored = service.restore_decl_revision(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        decl_name="main_result",
+        source_revision=2,
+    )
+
+    assert not restored.ok
+    assert restored.issues[0].kind == "decl_restore_public_state_too_low"
+    assert decl_path.read_bytes() == before_decl
+    assert not service.graph_store.revision_path(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        decl_name="main_result",
+        revision=4,
+    ).exists()
 
 
 def test_open_decl_update_rebinds_same_node_dependencies_to_provider_head(tmp_path: Path) -> None:

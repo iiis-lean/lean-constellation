@@ -5,6 +5,7 @@ from pathlib import Path
 from tests.unit_services_helpers import initialize_native_test_repo, make_runtime
 
 from lean_constellation.services.decl_graph import DeclState
+from lean_constellation.services.decl_graph.models import DeclRevisionStatus
 from lean_constellation.services.foundation import WriteMode
 from lean_constellation.services.external_clients import ExternalCommandResult, LeanCheckSummaryView, LeanDiagnosticsResult
 from lean_constellation.services.runtime import LeanRuntimeServices
@@ -302,6 +303,78 @@ def test_restore_decl_revision_rolls_back_truth_and_projection_when_sync_fails(
         revision=3,
     ).exists()
     assert projection_path.read_bytes() == before_projection
+
+
+def test_restore_public_low_state_rejection_preserves_projection_and_head(
+    tmp_path: Path,
+) -> None:
+    runtime = _runtime()
+    projection_path = _seed_committed_proved_theorem(runtime, tmp_path, public=True)
+    decl = runtime.decl_graph.get_decl(
+        tmp_path,
+        node_path=NODE_PATH,
+        name=DECL_NAME,
+    )
+    first = runtime.decl_graph.get_decl_revision(
+        tmp_path,
+        node_path=NODE_PATH,
+        name=DECL_NAME,
+        revision=1,
+    )
+    assert decl.ok and decl.value is not None
+    assert first.ok and first.value is not None
+    historical = first.value.model_copy(deep=True)
+    historical.revision = 2
+    historical.state = DeclState.SPECIFIED
+    historical.status = DeclRevisionStatus.COMMITTED
+    historical.change = None
+    current = first.value.model_copy(deep=True)
+    current.revision = 3
+    current.status = DeclRevisionStatus.COMMITTED
+    current.change = None
+    for revision in (historical, current):
+        assert runtime.foundation.store.write_json_atomic(
+            runtime.decl_graph.graph_store.revision_path(
+                tmp_path,
+                node_path=NODE_PATH,
+                decl_name=DECL_NAME,
+                revision=revision.revision,
+            ),
+            revision,
+            mode=WriteMode.CREATE_ONLY,
+        ).ok
+    decl.value.current_revision = 3
+    decl.value.revision_ids = [1, 2, 3]
+    decl_path = runtime.decl_graph.graph_store.decl_record_path(
+        tmp_path,
+        node_path=NODE_PATH,
+        decl_name=DECL_NAME,
+    )
+    assert runtime.foundation.store.write_json_atomic(
+        decl_path,
+        decl.value,
+        mode=WriteMode.UPDATE_EXISTING,
+    ).ok
+    before_decl = decl_path.read_bytes()
+    before_projection = projection_path.read_bytes()
+
+    restored = runtime.decl_graph.restore_decl_revision(
+        tmp_path,
+        node_path=NODE_PATH,
+        decl_name=DECL_NAME,
+        source_revision=2,
+    )
+
+    assert not restored.ok
+    assert restored.issues[0].kind == "decl_restore_public_state_too_low"
+    assert decl_path.read_bytes() == before_decl
+    assert projection_path.read_bytes() == before_projection
+    assert not runtime.decl_graph.graph_store.revision_path(
+        tmp_path,
+        node_path=NODE_PATH,
+        decl_name=DECL_NAME,
+        revision=4,
+    ).exists()
 
 
 def test_delete_decls_rolls_back_lifecycle_and_projection_when_rebuild_fails(

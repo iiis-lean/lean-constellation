@@ -12,6 +12,7 @@ from tests.unit.services.repo_workspace.test_repo_release import (
     _prepare_adapter_release_repo,
     _prepare_release_repo,
     _release,
+    _write_decl,
 )
 
 
@@ -86,6 +87,69 @@ def test_released_declaration_cannot_be_deleted_synchronously(tmp_path: Path) ->
 
     assert not deleted.ok
     assert deleted.issues[0].kind == "release_protected_decl_delete"
+
+
+def test_released_decl_restore_rejects_changed_declared_api_without_mutation(
+    tmp_path: Path,
+) -> None:
+    runtime, versions = _prepare_release_repo(tmp_path)
+    _publish_latest(runtime, tmp_path, versions)
+    _write_decl(tmp_path, node_path="Main.Results", name="PublicResult", revision=2)
+    incompatible = runtime.decl_graph.get_decl_revision(
+        tmp_path,
+        node_path="Main.Results",
+        name="PublicResult",
+        revision=2,
+    )
+    assert incompatible.ok and incompatible.value is not None
+    assert incompatible.value.statement.formal is not None
+    incompatible.value.statement.formal.code = "theorem PublicResult : False := by\n  sorry\n"
+    revision_path = runtime.decl_graph.graph_store.revision_path(
+        tmp_path,
+        node_path="Main.Results",
+        decl_name="PublicResult",
+        revision=2,
+    )
+    assert runtime.foundation.store.write_json_atomic(
+        revision_path,
+        incompatible.value,
+        mode=WriteMode.UPDATE_EXISTING,
+    ).ok
+    decl_path = runtime.decl_graph.graph_store.decl_record_path(
+        tmp_path,
+        node_path="Main.Results",
+        decl_name="PublicResult",
+    )
+    projection_path = Path(
+        runtime.lean_projection.decl_file.derive_decl_file_path(
+            tmp_path,
+            node_path="Main.Results",
+            decl_name="PublicResult",
+            kind="theorem",
+        ).value.path
+    )
+    projection_path.parent.mkdir(parents=True, exist_ok=True)
+    projection_path.write_text("theorem PublicResult : False := by\n  trivial\n", encoding="utf-8")
+    before_decl = decl_path.read_bytes()
+    before_projection = projection_path.read_bytes()
+
+    restored = runtime.decl_graph.restore_decl_revision(
+        tmp_path,
+        node_path="Main.Results",
+        decl_name="PublicResult",
+        source_revision=2,
+    )
+
+    assert not restored.ok
+    assert restored.issues[0].kind == "release_protected_declared_api_changed"
+    assert decl_path.read_bytes() == before_decl
+    assert projection_path.read_bytes() == before_projection
+    assert not runtime.decl_graph.graph_store.revision_path(
+        tmp_path,
+        node_path="Main.Results",
+        decl_name="PublicResult",
+        revision=3,
+    ).exists()
 
 
 def test_released_scope_boundary_mutation_is_rejected(tmp_path: Path) -> None:
