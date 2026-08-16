@@ -6,14 +6,13 @@ from agent_runtime_kit.flow.models import FlowStatus
 from lean_constellation.services.decl_graph import DeclState
 from tests.real.runtime_matrix.admin_helpers import unwrap
 from tests.real.runtime_matrix.evidence import EvidenceRecorder
-from tests.real.runtime_matrix.fixtures import DeclRoundFixture, RuntimeMatrixWorkspace
+from tests.real.runtime_matrix.fixtures import RuntimeMatrixWorkspace
 from tests.real.runtime_matrix.scripted_provider import ScriptedMcpProvider, install_scripted_provider
 from tests.real.runtime_matrix.baseline.test_decl_graph_round_matrix import (
     _review_actions,
     _start_decl_round,
     _wait_round_completed,
 )
-from tests.unit_services_helpers import lean_check_payload, write_proof_formal_for_test, write_statement_formal_for_test
 
 
 pytestmark = [pytest.mark.real, pytest.mark.slow]
@@ -85,124 +84,3 @@ def test_strict_decl_graph_review_rejected_then_worker_blocked_evidence(
         "submit_stage_worker_blocked",
         "submit_stage_review",
     }.issubset(evidence_recorder.evidence.submit_tool_names)
-
-
-def _seed_committed_decl(ws: RuntimeMatrixWorkspace, *, name: str, public: bool) -> None:
-    strategy = ws.runtime.decl_graph.ensure_open_strategy(
-        ws.provider_repo,
-        node_path="Main.Topic.Core",
-        objective="Strict Runtime Matrix seed committed declaration.",
-    )
-    assert strategy.ok and strategy.value is not None, strategy.issues
-    round_record = ws.runtime.decl_graph.create_round_draft(
-        ws.provider_repo,
-        node_path="Main.Topic.Core",
-        strategy_id=strategy.value.strategy_id,
-        objective=f"Seed {name}.",
-    )
-    assert round_record.ok and round_record.value is not None, round_record.issues
-    created = ws.runtime.decl_graph.create_decl(
-        ws.provider_repo,
-        node_path="Main.Topic.Core",
-        round_id=round_record.value.round_id,
-        name=name,
-        kind="theorem",
-        objective=f"Create {name}.",
-        summary=f"{name} summary.",
-        public=public,
-        target_state=DeclState.PROVED,
-    )
-    assert created.ok and created.value is not None, created.issues
-    round_fixture = DeclRoundFixture(
-        node_path="Main.Topic.Core",
-        decl_name=name,
-        strategy_id=strategy.value.strategy_id,
-        round_id=round_record.value.round_id,
-        round_index=round_record.value.round_index,
-    )
-    assert ws.runtime.decl_graph.start_round(
-        ws.provider_repo,
-        node_path=round_fixture.node_path,
-        round_id=round_fixture.round_id,
-    ).ok
-    assert ws.runtime.decl_graph.write_statement_nl(
-        ws.provider_repo,
-        node_path=round_fixture.node_path,
-        round_id=round_fixture.round_id,
-        decl_name=name,
-        nl=f"{name} states True.",
-        origin=[{"kind": "runtime_matrix_strict", "ref": name}],
-        deps=[],
-    ).ok
-    assert write_statement_formal_for_test(ws.runtime,
-        ws.provider_repo,
-        node_path=round_fixture.node_path,
-        round_id=round_fixture.round_id,
-        decl_name=name,
-        lean_code=f"theorem {name} : True := by\n  sorry",
-        lean_check=_passed_statement_check(),
-        deps=[],
-    ).ok
-    assert ws.runtime.decl_graph.write_proof_nl(
-        ws.provider_repo,
-        node_path=round_fixture.node_path,
-        round_id=round_fixture.round_id,
-        decl_name=name,
-        nl="Use triviality.",
-        origin=[{"kind": "runtime_matrix_strict", "ref": f"{name}:proof"}],
-        deps=[],
-    ).ok
-    assert write_proof_formal_for_test(ws.runtime,
-        ws.provider_repo,
-        node_path=round_fixture.node_path,
-        round_id=round_fixture.round_id,
-        decl_name=name,
-        lean_code=f"theorem {name} : True := by\n  trivial",
-        lean_check=_passed_proof_check(),
-        deps=[],
-    ).ok
-    for stage in ("statement_nl", "statement_formal", "proof_nl", "proof_formal"):
-        advanced = ws.runtime.decl_graph.advance_stage_state(
-            ws.provider_repo,
-            node_path=round_fixture.node_path,
-            round_id=round_fixture.round_id,
-            stage=stage,
-            decl_names=[name],
-        )
-        assert advanced.ok, advanced.issues
-    assert ws.runtime.decl_graph.write_decl_change_summary(
-        ws.provider_repo,
-        node_path=round_fixture.node_path,
-        round_id=round_fixture.round_id,
-        change_id=created.value.change_id,
-        summary=f"{name} seeded for strict delete/normalize branch.",
-    ).ok
-    assert ws.runtime.decl_graph.write_round_summary(
-        ws.provider_repo,
-        node_path=round_fixture.node_path,
-        round_id=round_fixture.round_id,
-        summary=f"{name} seed round complete.",
-    ).ok
-    recorded = ws.runtime.decl_graph.record_round_execution_result(
-        ws.provider_repo,
-        node_path=round_fixture.node_path,
-        round_id=round_fixture.round_id,
-        outcome="completed",
-    )
-    assert recorded.ok, recorded.issues
-    terminal = ws.runtime.decl_graph.mark_round_terminal(
-        ws.provider_repo,
-        node_path=round_fixture.node_path,
-        round_id=round_fixture.round_id,
-        result_kind="success",
-    )
-    assert terminal.ok, terminal.issues
-    assert ws.runtime.decl_graph.rebuild_decl_graph_index(ws.provider_repo, node_path=round_fixture.node_path).ok
-
-
-def _passed_statement_check() -> dict[str, object]:
-    return lean_check_payload(contains_sorry=True, allow_sorry=True)
-
-
-def _passed_proof_check() -> dict[str, object]:
-    return lean_check_payload()

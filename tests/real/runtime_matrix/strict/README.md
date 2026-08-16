@@ -20,7 +20,7 @@
 - `scripted_provider.py`：以标准 Provider bundle 覆盖 deterministic Agent run、MCP action、query 与 artifact snapshot/restore 合同。
 - `test_repo_preparation_strict_matrix.py`：native / adapter preparation Flow、Step、submit 分支 evidence。
 - `test_coordinator_content_recon_strict_matrix.py`：Coordinator、content node task 和 recon child Flow 分支 evidence。
-- `test_decl_graph_strict_branches.py`：DeclGraph review rejected -> worker blocked 分支和 delete/normalize 分支 evidence。
+- `test_decl_graph_strict_branches.py`：DeclGraph review rejected -> worker blocked 分支 evidence。
 
 当前完成状态：
 
