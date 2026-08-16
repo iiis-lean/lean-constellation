@@ -84,7 +84,12 @@ def _create_round(runtime: LeanRuntimeServices, repo_root: Path, *, objective: s
     return round_record.value.round_id
 
 
-def _seed_committed_proved_theorem(runtime: LeanRuntimeServices, repo_root: Path) -> Path:
+def _seed_committed_proved_theorem(
+    runtime: LeanRuntimeServices,
+    repo_root: Path,
+    *,
+    public: bool = False,
+) -> Path:
     _ensure_content_node(runtime, repo_root)
     round_id = _create_round(runtime, repo_root, objective="Create a proved theorem.")
     created = runtime.decl_graph.create_decl(
@@ -95,7 +100,7 @@ def _seed_committed_proved_theorem(runtime: LeanRuntimeServices, repo_root: Path
         kind="theorem",
         objective="Create a trivial theorem.",
         summary="A trivial theorem used by repair integration tests.",
-        public=False,
+        public=public,
         target_state=DeclState.PROVED,
     )
     assert created.ok and created.value is not None, created.issues
@@ -335,6 +340,64 @@ def test_delete_decls_rolls_back_lifecycle_and_projection_when_rebuild_fails(
     assert decl.ok and decl.value is not None
     assert decl.value.lifecycle.value == "active"
     assert projection_path.read_bytes() == before_projection
+
+
+def test_public_delete_requires_explicit_demotion_before_projection_mutation(
+    tmp_path: Path,
+) -> None:
+    runtime = _runtime()
+    projection_path = _seed_committed_proved_theorem(runtime, tmp_path, public=True)
+    before_projection = projection_path.read_bytes()
+    decl_path = runtime.decl_graph.graph_store.decl_record_path(
+        tmp_path,
+        node_path=NODE_PATH,
+        decl_name=DECL_NAME,
+    )
+    before_decl = decl_path.read_bytes()
+
+    blocked = runtime.decl_graph.delete_decls(
+        tmp_path,
+        node_path=NODE_PATH,
+        decl_names=[DECL_NAME],
+    )
+
+    assert not blocked.ok
+    assert blocked.issues[0].kind == "decl_delete_public_requires_demotion"
+    assert decl_path.read_bytes() == before_decl
+    assert projection_path.read_bytes() == before_projection
+
+    demoted = runtime.node.public_statement_closure.revise_content_decl_visibility(
+        tmp_path,
+        node_path=NODE_PATH,
+        decl_name=DECL_NAME,
+        expected_current_visibility="public",
+        new_visibility="private",
+        reason="The obsolete declaration is intentionally leaving the public boundary before deletion.",
+    )
+    assert demoted.ok, demoted.issues
+    preview = runtime.decl_graph.compute_delete_closure(
+        tmp_path,
+        node_path=NODE_PATH,
+        decl_names=[DECL_NAME],
+    )
+    assert preview.ok and preview.value is not None
+    assert preview.value.public_decl_names == []
+
+    deleted = runtime.decl_graph.delete_decls(
+        tmp_path,
+        node_path=NODE_PATH,
+        decl_names=[DECL_NAME],
+    )
+
+    assert deleted.ok, deleted.issues
+    decl = runtime.decl_graph.get_decl(
+        tmp_path,
+        node_path=NODE_PATH,
+        name=DECL_NAME,
+    )
+    assert decl.ok and decl.value is not None
+    assert decl.value.lifecycle.value == "deleted"
+    assert not projection_path.exists()
 
 
 def _current_revision(runtime: LeanRuntimeServices, repo_root: Path):

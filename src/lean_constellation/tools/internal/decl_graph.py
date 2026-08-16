@@ -1211,7 +1211,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="delete_decls",
-            description="Delete exactly the current downstream closure after rechecking all stable boundary, consumer, release, and unfinished-round blockers.",
+            description="Delete an exact current downstream closure only after every member is private and all boundary, consumer, release, and unfinished-round blockers pass.",
             args_model=DeclNamesArgs,
             capability=ToolCapability.WRITE,
             result_view="decl_delete_receipt",
@@ -1376,7 +1376,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="preview_decl_delete_closure",
-            description="Compute downstream declarations that must be deleted with the requested roots.",
+            description="Preview the exact same-node downstream closure and identify public members that require a separate visibility revision before deletion.",
             args_model=DeclNamesArgs,
             capability=ToolCapability.READ,
             result_view="decl_delete_closure",
@@ -1406,7 +1406,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="preview_current_node_decl_delete_closure",
-            description="Preview the downstream declaration closure affected by deleting current-node declarations.",
+            description="Preview the exact same-node downstream closure and its public members without authorizing deletion.",
             args_model=DeclNamesArgs,
             capability=ToolCapability.READ,
             result_view="decl_delete_closure",

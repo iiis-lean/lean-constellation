@@ -827,6 +827,9 @@ class DeclCatalogComponent:
                 requested_decl_names=requested,
                 closure_decl_names=sorted(closure),
                 missing_decl_names=missing,
+                public_decl_names=sorted(
+                    name for name in closure if name in active and active[name].public
+                ),
                 summary=f"Delete closure includes {len(closure)} declarations.",
             )
         )
@@ -1225,8 +1228,14 @@ class DeclCatalogComponent:
             if not revision.ok or revision.value is None:
                 continue
             proof_deps = revision.value.proof.deps if revision.value.proof is not None else []
-            for dep_name in sorted({dep.ref.name for dep in [*revision.value.statement.deps, *proof_deps]}):
-                reverse.setdefault(dep_name, set()).add(decl_name)
+            for dep in [*revision.value.statement.deps, *proof_deps]:
+                if (
+                    isinstance(dep, RepoDeclDep)
+                    and dep.ref.repo is None
+                    and dep.ref.node == node_path
+                    and dep.ref.name != decl_name
+                ):
+                    reverse.setdefault(dep.ref.name, set()).add(decl_name)
         return reverse
 
     def _coerce_end_state(self, value: DeclState | str) -> DeclState | None:

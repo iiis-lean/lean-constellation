@@ -946,6 +946,19 @@ class DeclGraphService:
         if not guarded.ok:
             return self.runtime.foundation.fail(guarded.issues)
 
+        public_decl_names = sorted(
+            decl_name for decl_name, decl in decls.items() if decl.public
+        )
+        if public_decl_names:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "decl_delete_public_requires_demotion",
+                    "Public declarations must be explicitly demoted before deletion.",
+                    object_ref=node_path,
+                    current=", ".join(public_decl_names),
+                )
+            )
+
         graph_root = self.graph_store.graph_root(repo_root, node_path=node_path)
         snapshot = DeclGraphMaintenanceSnapshot([graph_root, *projection_paths])
 

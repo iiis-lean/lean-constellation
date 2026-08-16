@@ -9,9 +9,10 @@ from lean_constellation.services.decl_graph.models import (
     DeclNaturalLanguageSection,
     DeclProof,
     DeclRevision,
+    MathlibDeclDep,
     RepoDeclDep,
 )
-from lean_constellation.domain.refs import DeclRef
+from lean_constellation.domain.refs import DeclRef, MathlibRef
 from lean_constellation.domain.lean_check import LeanCheck
 from lean_constellation.services.foundation import WriteMode
 
@@ -89,6 +90,9 @@ def _seed_committed_decl(
     name: str,
     kind: str = "theorem",
     deps: list[str] | None = None,
+    statement_deps: list[RepoDeclDep | MathlibDeclDep] | None = None,
+    proof_deps: list[RepoDeclDep | MathlibDeclDep] | None = None,
+    public: bool = False,
     state: DeclState = DeclState.PROVED,
 ) -> None:
     service = make_runtime().decl_graph
@@ -100,18 +104,18 @@ def _seed_committed_decl(
         kind=kind,
         objective=f"Create {name}.",
         summary=f"{name} summary.",
+        public=public,
         target_state=DeclState.PROVED if state == DeclState.PROVED else DeclState.DECLARED,
     )
     assert created.ok
     revision = service.get_decl_revision(tmp_path, node_path="Main.Topic.Core", name=name, revision=1)
     assert revision.ok and revision.value is not None
     revision.value.state = state
-    revision.value.statement.deps = []
+    revision.value.statement.deps = statement_deps or []
     if revision.value.proof is None:
         revision.value.proof = DeclProof()
-    revision.value.proof.deps = [
-        RepoDeclDep(ref=DeclRef(node="Main.Topic.Core", name=dep, revision=1))
-        for dep in deps or []
+    revision.value.proof.deps = proof_deps or [
+        RepoDeclDep(ref=DeclRef(node="Main.Topic.Core", name=dep, revision=1)) for dep in deps or []
     ]
     _write_revision(tmp_path, decl_name=name, revision=revision.value)
     assert service.commit_decl_revision(tmp_path, node_path="Main.Topic.Core", name=name, state=state).ok
@@ -824,6 +828,134 @@ def test_delete_decls_requires_and_deletes_exact_current_closure(tmp_path: Path)
     index = service.get_decl_graph_index(tmp_path, node_path="Main.Topic.Core")
     assert index.ok and index.value is not None
     assert index.value.decl_names == ["A", "B", "C"]
+
+
+def test_delete_closure_uses_only_exact_same_node_repo_dependencies(tmp_path: Path) -> None:
+    _create_content_node(tmp_path)
+    _, round_id = _create_round(tmp_path)
+    _seed_committed_decl(tmp_path, round_id=round_id, name="A")
+    _seed_committed_decl(
+        tmp_path,
+        round_id=round_id,
+        name="LocalProofConsumer",
+        proof_deps=[RepoDeclDep(ref=DeclRef(node="Main.Topic.Core", name="A", revision=1))],
+    )
+    _seed_committed_decl(
+        tmp_path,
+        round_id=round_id,
+        name="LocalStatementConsumer",
+        statement_deps=[RepoDeclDep(ref=DeclRef(node="Main.Topic.Core", name="A", revision=1))],
+    )
+    _seed_committed_decl(
+        tmp_path,
+        round_id=round_id,
+        name="ExternalConsumer",
+        proof_deps=[
+            RepoDeclDep(ref=DeclRef(repo="ExternalRepo", node="Main.Topic.Core", name="A", revision=1))
+        ],
+    )
+    _seed_committed_decl(
+        tmp_path,
+        round_id=round_id,
+        name="OtherNodeConsumer",
+        proof_deps=[RepoDeclDep(ref=DeclRef(node="Main.Other", name="A", revision=1))],
+    )
+    _seed_committed_decl(
+        tmp_path,
+        round_id=round_id,
+        name="MathlibConsumer",
+        proof_deps=[MathlibDeclDep(ref=MathlibRef(name="A", module="Mathlib.Test"))],
+    )
+    service = make_runtime().decl_graph
+
+    closure = service.compute_delete_closure(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        decl_names=["A", "A"],
+    )
+
+    assert closure.ok and closure.value is not None
+    assert closure.value.requested_decl_names == ["A"]
+    assert closure.value.closure_decl_names == ["A", "LocalProofConsumer", "LocalStatementConsumer"]
+
+
+def test_delete_decls_rejects_public_declaration_before_mutation(tmp_path: Path) -> None:
+    _create_content_node(tmp_path)
+    _, round_id = _create_round(tmp_path)
+    _seed_committed_decl(tmp_path, round_id=round_id, name="PublicA", public=True)
+    _create_round(tmp_path, objective="Close the seed round.")
+    service = make_runtime().decl_graph
+    decl_path = service.graph_store.decl_record_path(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        decl_name="PublicA",
+    )
+    revision_path = service.graph_store.revision_path(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        decl_name="PublicA",
+        revision=1,
+    )
+    before_decl = decl_path.read_bytes()
+    before_revision = revision_path.read_bytes()
+
+    preview = service.compute_delete_closure(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        decl_names=["PublicA"],
+    )
+    deleted = service.delete_decls(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        decl_names=["PublicA"],
+    )
+
+    assert preview.ok and preview.value is not None
+    assert preview.value.public_decl_names == ["PublicA"]
+    assert not deleted.ok
+    assert deleted.issues[0].kind == "decl_delete_public_requires_demotion"
+    assert decl_path.read_bytes() == before_decl
+    assert revision_path.read_bytes() == before_revision
+
+
+def test_delete_decls_rejects_public_member_of_downstream_closure(tmp_path: Path) -> None:
+    _create_content_node(tmp_path)
+    _, round_id = _create_round(tmp_path)
+    _seed_committed_decl(tmp_path, round_id=round_id, name="PrivateRoot")
+    _seed_committed_decl(
+        tmp_path,
+        round_id=round_id,
+        name="PublicConsumer",
+        deps=["PrivateRoot"],
+        public=True,
+    )
+    _create_round(tmp_path, objective="Close the seed round.")
+    service = make_runtime().decl_graph
+
+    preview = service.compute_delete_closure(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        decl_names=["PrivateRoot"],
+    )
+    deleted = service.delete_decls(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        decl_names=["PrivateRoot", "PublicConsumer"],
+    )
+
+    assert preview.ok and preview.value is not None
+    assert preview.value.closure_decl_names == ["PrivateRoot", "PublicConsumer"]
+    assert preview.value.public_decl_names == ["PublicConsumer"]
+    assert not deleted.ok
+    assert deleted.issues[0].kind == "decl_delete_public_requires_demotion"
+    for decl_name in preview.value.closure_decl_names:
+        decl = service.get_decl(
+            tmp_path,
+            node_path="Main.Topic.Core",
+            name=decl_name,
+        )
+        assert decl.ok and decl.value is not None
+        assert decl.value.lifecycle.value == "active"
 
 
 def test_delete_decls_rejects_cross_repo_current_consumer(tmp_path: Path) -> None:

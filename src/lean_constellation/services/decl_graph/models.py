@@ -747,9 +747,10 @@ class DeclDeleteClosureView(StrictModel):
     requested_decl_names: list[str] = Field(default_factory=list)
     closure_decl_names: list[str] = Field(default_factory=list)
     missing_decl_names: list[str] = Field(default_factory=list)
+    public_decl_names: list[str] = Field(default_factory=list)
     summary: str
 
-    @field_validator("requested_decl_names", "closure_decl_names", "missing_decl_names")
+    @field_validator("requested_decl_names", "closure_decl_names", "missing_decl_names", "public_decl_names")
     @classmethod
     def _sorted_unique_names(cls, value: list[str]) -> list[str]:
         stripped = [_required_text(item) for item in value]
