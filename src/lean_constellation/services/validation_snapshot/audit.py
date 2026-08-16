@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from lean_constellation.services.runtime import LeanRuntimeServices
 
 
-AuditScope = Literal["repo", "round", "delete", "gate_gap"]
+AuditScope = Literal["repo", "round", "gate_gap"]
 
 
 class AuditFinding(StrictModel):
@@ -49,9 +49,6 @@ class DeclGraphAuditProvider(Protocol):
     def run_round_local_audit(self, repo_root: Path, *, node_path: str, round_id: str, stage: str) -> ServiceResult[AuditReport]:
         ...
 
-    def run_delete_sanity_audit(self, repo_root: Path, *, node_path: str, round_id: str) -> ServiceResult[AuditReport]:
-        ...
-
 
 class _MissingDeclGraphAuditProvider:
     def __init__(self, runtime: LeanRuntimeServices) -> None:
@@ -76,25 +73,6 @@ class _MissingDeclGraphAuditProvider:
             )
         )
 
-    def run_delete_sanity_audit(self, repo_root: Path, *, node_path: str, round_id: str) -> ServiceResult[AuditReport]:
-        del repo_root
-        return self.runtime.foundation.ok(
-            AuditReport(
-                audit_name="delete_sanity_audit",
-                passed=False,
-                checked_items=[f"{node_path}:{round_id}"],
-                findings=[
-                    AuditFinding(
-                        kind="decl_graph_audit_provider_missing",
-                        object_ref=f"{node_path}:{round_id}",
-                        message="No DeclGraph audit provider is configured for delete sanity audits.",
-                        suggested_action="Inject a DeclGraph audit provider before running delete sanity audit.",
-                    )
-                ],
-                summary="DeclGraph delete sanity audit provider is missing.",
-            )
-        )
-
 
 class AuditComponent:
     """Admin-oriented audit aggregation."""
@@ -114,9 +92,6 @@ class AuditComponent:
 
     def run_round_local_audit(self, repo_root: Path, *, node_path: str, round_id: str, stage: str) -> ServiceResult[AuditReport]:
         return self.decl_graph_provider.run_round_local_audit(Path(repo_root), node_path=node_path, round_id=round_id, stage=stage)
-
-    def run_delete_sanity_audit(self, repo_root: Path, *, node_path: str, round_id: str) -> ServiceResult[AuditReport]:
-        return self.decl_graph_provider.run_delete_sanity_audit(Path(repo_root), node_path=node_path, round_id=round_id)
 
     def record_gate_gap(
         self,

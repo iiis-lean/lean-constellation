@@ -1895,9 +1895,6 @@ class DeclGraphService:
     def run_round_local_audit(self, repo_root: Path, *, node_path: str, round_id: str, stage: str) -> ServiceResult[AuditReport]:
         return self.readiness.run_round_local_audit(repo_root, node_path=node_path, round_id=round_id, stage=stage)
 
-    def run_delete_sanity_audit(self, repo_root: Path, *, node_path: str, round_id: str) -> ServiceResult[AuditReport]:
-        return self.readiness.run_delete_sanity_audit(repo_root, node_path=node_path, round_id=round_id)
-
     def run_strict_proved_audit(
         self,
         repo_root: Path,

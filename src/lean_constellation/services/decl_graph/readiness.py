@@ -576,29 +576,6 @@ class DeclReadinessComponent:
             return self.runtime.foundation.fail(gate.issues)
         return self.runtime.foundation.ok(self._audit_report("round_local_audit", gate.value, [f"{node_path}:{round_id}"]))
 
-    def run_delete_sanity_audit(self, repo_root: Path, *, node_path: str, round_id: str) -> ServiceResult[AuditReport]:
-        round_record = self.runtime.decl_graph.get_round(Path(repo_root), node_path=node_path, round_id=round_id)
-        if not round_record.ok or round_record.value is None:
-            return self.runtime.foundation.fail(round_record.issues)
-        delete_names: list[str] = []
-        changes = self.runtime.decl_graph.list_round_changes(Path(repo_root), node_path=node_path, round_id=round_id)
-        if not changes.ok or changes.value is None:
-            return self.runtime.foundation.fail(changes.issues)
-        for change in changes.value:
-            if change.kind.value == "delete":
-                delete_names.append(change.decl_name)
-        if not delete_names:
-            gate = self.runtime.foundation.gate_passed(
-                "decl_delete_sanity",
-                summary="No delete changes are present in this round.",
-            )
-        else:
-            check = self.dependency.check_delete_preflight(Path(repo_root), node_path=node_path, decl_names=delete_names)
-            if not check.ok or check.value is None:
-                return self.runtime.foundation.fail(check.issues)
-            gate = check.value
-        return self.runtime.foundation.ok(self._audit_report("delete_sanity_audit", gate, [f"{node_path}:{round_id}"]))
-
     def run_strict_proved_audit(
         self,
         repo_root: Path,

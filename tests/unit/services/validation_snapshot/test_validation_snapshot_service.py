@@ -516,10 +516,9 @@ class SnapshotRestoreIndexBuilder:
 
 
 class FakeDeclGraphAuditProvider:
-    def __init__(self, foundation: FoundationService, *, round_passed: bool = True, delete_passed: bool = True) -> None:
+    def __init__(self, foundation: FoundationService, *, round_passed: bool = True) -> None:
         self.foundation = foundation
         self.round_passed = round_passed
-        self.delete_passed = delete_passed
 
     def run_round_local_audit(self, repo_root: Path, *, node_path: str, round_id: str, stage: str):
         del repo_root
@@ -545,33 +544,6 @@ class FakeDeclGraphAuditProvider:
                     )
                 ],
                 summary="Fake round audit failed.",
-            )
-        )
-
-    def run_delete_sanity_audit(self, repo_root: Path, *, node_path: str, round_id: str):
-        del repo_root
-        if self.delete_passed:
-            return self.foundation.ok(
-                AuditReport(
-                    audit_name="delete_sanity_audit",
-                    passed=True,
-                    checked_items=[f"{node_path}:{round_id}"],
-                    summary="Fake delete audit passed.",
-                )
-            )
-        return self.foundation.ok(
-            AuditReport(
-                audit_name="delete_sanity_audit",
-                passed=False,
-                checked_items=[f"{node_path}:{round_id}"],
-                findings=[
-                    AuditFinding(
-                        kind="delete_closure_incomplete",
-                        object_ref=f"{node_path}:{round_id}",
-                        message="Delete round does not cover downstream dependent declarations.",
-                    )
-                ],
-                summary="Fake delete audit failed.",
             )
         )
 
@@ -1951,28 +1923,6 @@ def test_audit_round_provider_pass_and_blocking(tmp_path: Path) -> None:
     assert failed.value is not None
     assert failed.value.passed is False
     assert failed.value.findings[0].kind == "same_round_dependency_found"
-
-
-def test_audit_delete_sanity_provider_pass_and_closure_failure(tmp_path: Path) -> None:
-    foundation = make_runtime().foundation
-    passing = AuditComponent(foundation.runtime,
-        decl_graph_provider=FakeDeclGraphAuditProvider(foundation, delete_passed=True),
-    )
-    blocking = AuditComponent(foundation.runtime,
-        decl_graph_provider=FakeDeclGraphAuditProvider(foundation, delete_passed=False),
-    )
-
-    passed = passing.run_delete_sanity_audit(tmp_path, node_path="Main.Core", round_id="round_delete")
-    failed = blocking.run_delete_sanity_audit(tmp_path, node_path="Main.Core", round_id="round_delete")
-
-    assert passed.ok
-    assert passed.value is not None
-    assert passed.value.passed is True
-    assert passed.value.checked_items == ["Main.Core:round_delete"]
-    assert failed.ok
-    assert failed.value is not None
-    assert failed.value.passed is False
-    assert failed.value.findings[0].kind == "delete_closure_incomplete"
 
 
 def test_audit_record_gate_gap_validates_and_appends_jsonl(tmp_path: Path) -> None:

@@ -1688,7 +1688,7 @@ Use `write_decl_round_summary` to summarize the whole round. The round summary s
 
 ## Terminal Commit
 
-Use `mark_decl_round_terminal` only after the change summaries and round summary are written. A successful execution may be conservatively closed as success, blocked, or failed; blocked may become blocked or failed; failed may only remain failed. The operation commits open revisions and the round atomically, applies successful delete lifecycle, refreshes or safely defers the final projection, and records your closeout acknowledgement. Replaying the exact same closeout returns unchanged rather than an error. After marking terminal, read current truth again and re-read the current mode Skill and `decl-strategy-planning` before any new planning action.
+Use `mark_decl_round_terminal` only after the change summaries and round summary are written. A successful execution may be conservatively closed as success, blocked, or failed; blocked may become blocked or failed; failed may only remain failed. The operation commits open revisions and the round atomically, refreshes or safely defers the final projection, and records your closeout acknowledgement. Replaying the exact same closeout returns unchanged rather than an error. After marking terminal, read current truth again and re-read the current mode Skill and `decl-strategy-planning` before any new planning action.
 
 ## Boundaries
 
