@@ -7,6 +7,7 @@ from lean_constellation.domain.preparation import (
     SourceCorpusMode,
     SourceMaterialInput,
 )
+from lean_constellation.domain.repo_run import RepoRunSpec
 from lean_constellation.tools.args import NoArgs
 from lean_constellation.tools.internal.repo_preparation import (
     PreparationInputAgentView,
@@ -145,3 +146,14 @@ def test_preparation_input_view_schema_describes_source_material_requests() -> N
         "proof_reference",
         "asset",
     ]
+
+
+def test_preparation_and_run_schemas_separate_stable_goal_from_run_objective() -> None:
+    preparation_goal = RepoPreparationInput.model_json_schema()["properties"]["goal"]
+    run_objective = RepoRunSpec.model_json_schema()["properties"]["run_objective"]
+
+    assert "Stable repository-wide" in preparation_goal["description"]
+    assert "initialize Main.goal" in preparation_goal["description"]
+    assert "current run action or stopping boundary" in preparation_goal["description"]
+    assert "Bounded responsibility and stopping boundary" in run_objective["description"]
+    assert "does not redefine the stable repository goal" in run_objective["description"]

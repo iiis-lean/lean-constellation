@@ -562,6 +562,24 @@ def test_content_blocker_and_dependency_planning_skills_preserve_consumer_semant
         assert forbidden not in native_text
 
 
+def test_coordinator_contract_skills_separate_stable_ownership_from_current_work() -> None:
+    specs = build_skill_specs()
+    contract_design = specs["node-contract-design"].body
+    decomposition = specs["coordinator-node-decomposition"].body
+
+    assert "goal is stable mathematical ownership or capability" in contract_design
+    assert "objective is the current contract-version action" in contract_design
+    assert "success criteria are observable closeout conditions" in contract_design
+    assert "exact Content terminal depth in task_completion_mode" in contract_design
+    assert "repository canary or stopping responsibility in the run objective/config" in contract_design
+    assert "boundary or objective rather than overloading the goal" in contract_design
+
+    assert "stable repository purpose from the current run objective" in decomposition
+    assert "Child goals record durable mathematical ownership" in decomposition
+    assert "Content terminal depth stays in task_completion_mode" in decomposition
+    assert "repository canary or stopping responsibility stays in the run objective/config" in decomposition
+
+
 def test_coordinator_completion_policy_spells_out_node_tree_policy() -> None:
     specs = build_skill_specs()
 

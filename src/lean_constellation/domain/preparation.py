@@ -272,7 +272,12 @@ class RepoDependencyRequirement(StrictModel):
 
 
 class RepoPreparationInput(StrictModel):
-    goal: str
+    goal: str = Field(
+        description=(
+            "Stable repository-wide mathematical or formalization purpose used to initialize Main.goal. "
+            "Put the current run action or stopping boundary in run_objective instead."
+        )
+    )
     source_corpus_mode: SourceCorpusMode
     source_corpus_relpath: str | None = ".lean_constellation/source"
     source_description: str | None = None

@@ -3,6 +3,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from lean_constellation.app.admin_api import (
+    RepoRunRequestInput,
+    StandaloneRootInterfaceRunInput,
+    StandaloneSourceIndexRunInput,
+)
 from lean_constellation.app.admin_http import create_workspace_admin_http_routes
 from lean_constellation.app.interface_docs import (
     build_admin_catalog,
@@ -22,7 +27,6 @@ from lean_constellation.tools import (
     build_submit_tool_specs,
     build_submit_tool_views,
 )
-
 
 def test_interface_catalogs_follow_live_registries() -> None:
     operator = build_operator_catalog()
@@ -62,6 +66,9 @@ def test_interface_catalogs_follow_live_registries() -> None:
     assert start["route_owned_fields"] == ["repo_key", "repo_root"]
     assert "repo_root" not in start["input_schema"]["properties"]
     assert "repo_key" not in start["input_schema"]["properties"]
+    run_objective = start["input_schema"]["$defs"]["RepoRunOptions"]["properties"]["run_objective"]
+    assert "Bounded responsibility and stopping boundary" in run_objective["description"]
+    assert "omit to use the stable repository goal" in run_objective["description"]
 
     adapter = next(
         item for item in admin["operations"] if item["operation_id"] == "repo_start_adapter_preparation"
@@ -131,6 +138,17 @@ def test_interface_catalogs_follow_live_registries() -> None:
     assert submit_requirement["layer"] == "submit"
     assert submit_requirement["submit_behavior"] != "none"
     assert submit_requirement["args_schema"]["properties"]
+
+
+def test_required_run_objective_schemas_keep_phase_specific_descriptions() -> None:
+    for model, phase in (
+        (RepoRunRequestInput, "continuation"),
+        (StandaloneSourceIndexRunInput, "SourceIndex"),
+        (StandaloneRootInterfaceRunInput, "root-interface"),
+    ):
+        run_objective = model.model_json_schema()["properties"]["run_objective"]
+        assert "Bounded responsibility and stopping boundary" in run_objective["description"]
+        assert phase in run_objective["description"]
 
 
 def test_export_interface_docs_is_deterministic_and_machine_readable(tmp_path: Path) -> None:

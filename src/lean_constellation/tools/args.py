@@ -410,28 +410,31 @@ class NodePathQueryArgs(NodePathArgs):
 
 class CreateScopeNodeArgs(StrictModel):
     path: str = Field(description="New scope node path.")
-    goal: str = Field(description="Long-term goal of the scope node.")
-    boundary: str = Field(description="Boundary of content owned by this scope node.")
-    objective: str | None = Field(default=None, description="Current version objective for this scope contract.")
-    constraints: str | None = Field(default=None, description="Optional constraints for the scope node.")
-    success_criteria: str | None = Field(default=None, description="Optional success criteria for closing this scope.")
+    goal: str = Field(description="Stable mathematical ownership or capability of this scope across contract versions.")
+    boundary: str = Field(description="Exact mathematical/source region owned by this scope and excluded from siblings.")
+    objective: str | None = Field(default=None, description="Current contract-version action within the stable scope boundary.")
+    constraints: str | None = Field(default=None, description="Optional representation, dependency, or non-goal constraints.")
+    success_criteria: str | None = Field(default=None, description="Optional observable closeout conditions for this scope version.")
 
 
 class CreateContentNodeArgs(StrictModel):
     path: str = Field(description="New content node path.")
-    goal: str = Field(description="Long-term goal of the content node.")
-    boundary: str = Field(description="Boundary of content owned by this content node.")
-    objective: str = Field(description="Current task objective for this content contract.")
-    success_criteria: str = Field(description="Criteria the content node task should satisfy.")
-    constraints: str | None = Field(default=None, description="Optional constraints for this content node.")
+    goal: str = Field(description="Stable mathematical declaration package or capability owned across contract versions.")
+    boundary: str = Field(description="Exact mathematical/source region owned by this content node and excluded from siblings.")
+    objective: str = Field(description="Current contract-version action within the stable boundary.")
+    success_criteria: str = Field(description="Observable conditions required to close the current content contract version.")
+    constraints: str | None = Field(default=None, description="Optional representation, dependency, or non-goal constraints.")
 
 
 class ContractCoreUpdateArgs(NodePathArgs):
-    goal: str | None = Field(default=None, description="Updated node goal, if changing it.")
-    boundary: str | None = Field(default=None, description="Updated node boundary, if changing it.")
-    objective: str | None = Field(default=None, description="Updated current contract objective, if changing it.")
-    success_criteria: str | None = Field(default=None, description="Updated success criteria, if changing it.")
-    constraints: str | None = Field(default=None, description="Updated constraints, if changing them.")
+    goal: str | None = Field(
+        default=None,
+        description="Updated stable node ownership, only when that enduring purpose changes; Main.goal is protected.",
+    )
+    boundary: str | None = Field(default=None, description="Updated exact owned region or sibling exclusions, if changing them.")
+    objective: str | None = Field(default=None, description="Updated current contract-version action, if changing it.")
+    success_criteria: str | None = Field(default=None, description="Updated observable closeout conditions, if changing them.")
+    constraints: str | None = Field(default=None, description="Updated representation, dependency, or non-goal constraints.")
 
 
 class ContractTaskCompletionModeArgs(NodePathArgs):

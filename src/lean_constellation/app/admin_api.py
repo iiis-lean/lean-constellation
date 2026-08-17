@@ -575,7 +575,12 @@ class StartPreparationInput(StrictModel):
 
 
 class RepoRunOptions(StrictModel):
-    run_objective: str | None = None
+    run_objective: str | None = Field(
+        default=None,
+        description=(
+            "Bounded responsibility and stopping boundary for this run; omit to use the stable repository goal."
+        ),
+    )
     completion_mode: RepoCompletionMode | None = None
     source_scope: SourceScope | None = None
     index_policy: Literal["auto", "update", "reuse"] | None = None
@@ -587,7 +592,9 @@ class RepoRunOptions(StrictModel):
 class RepoRunRequestInput(RepoRunOptions):
     repo_root: Path
     repo_key: str | None = None
-    run_objective: str
+    run_objective: str = Field(
+        description="Bounded responsibility and stopping boundary for this continuation run."
+    )
     enqueue: bool = True
 
     @field_validator("repo_root", mode="before")
@@ -628,7 +635,9 @@ class NativeSourceIndexRecoveryStartInput(NativeSourceIndexRecoveryPreviewInput)
 class StandaloneSourceIndexRunInput(StrictModel):
     repo_root: Path
     repo_key: str | None = None
-    run_objective: str
+    run_objective: str = Field(
+        description="Bounded responsibility and stopping boundary for this SourceIndex run."
+    )
     source_scope: SourceScope
     index_policy: Literal["auto", "update", "reuse"] = "auto"
     enqueue: bool = True
@@ -637,7 +646,9 @@ class StandaloneSourceIndexRunInput(StrictModel):
 class StandaloneRootInterfaceRunInput(StrictModel):
     repo_root: Path
     repo_key: str | None = None
-    run_objective: str
+    run_objective: str = Field(
+        description="Bounded responsibility and stopping boundary for this root-interface run."
+    )
     root_interface_policy: Literal["auto", "prepare", "reuse"] = "auto"
     additional_required_interfaces: list[DeclInterface] = Field(default_factory=list)
     enqueue: bool = True

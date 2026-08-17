@@ -45,6 +45,22 @@ def test_generated_homes_distinguish_local_visibility_from_stable_scope_inputs()
     assert "never creates or commits the target" in scope
 
 
+def test_coordinator_home_carries_concise_contract_field_semantics() -> None:
+    coordinator = build_agent_home_bootstrap_spec(
+        "CoordinatorAgent",
+        mcp_http_base_url="http://127.0.0.1:8765",
+    )
+
+    contract_design = coordinator.skill_specs["node-contract-design"].body
+    decomposition = coordinator.skill_specs["coordinator-node-decomposition"].body
+
+    assert "goal is stable mathematical ownership or capability" in contract_design
+    assert "objective is the current contract-version action" in contract_design
+    assert "exact Content terminal depth in task_completion_mode" in contract_design
+    assert "stable repository purpose from the current run objective" in decomposition
+    assert "Content terminal depth stays in task_completion_mode" in decomposition
+
+
 def test_home_bootstrap_spec_embeds_provider_home_spec() -> None:
     spec = build_agent_home_bootstrap_spec(
         "ProofFormalWorkerAgent",

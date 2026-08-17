@@ -34,7 +34,11 @@ class SourceScope(StrictModel):
 
 
 class RepoRunSpec(StrictModel):
-    run_objective: str
+    run_objective: str = Field(
+        description=(
+            "Bounded responsibility and stopping boundary for this run; it does not redefine the stable repository goal."
+        )
+    )
     completion_mode: RepoCompletionMode
     source_scope: SourceScope
     index_policy: Literal["auto", "update", "reuse"]

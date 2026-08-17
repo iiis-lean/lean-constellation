@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from lean_constellation.tools import build_application_tool_specs
 from lean_constellation.tools.args import (
+    ContractCoreUpdateArgs,
+    CreateContentNodeArgs,
+    CreateScopeNodeArgs,
     CurrentMaterialRefRemoveArgs,
     NodeDependencyRemoveArgs,
     NodeMaterialRefRemoveArgs,
@@ -67,6 +70,26 @@ def test_node_contract_remove_schemas_do_not_expose_unused_reason() -> None:
         NodeMaterialRefRemoveArgs,
     ):
         assert "reason" not in args_model.model_json_schema()["properties"]
+
+
+def test_node_contract_text_schemas_distinguish_stable_and_current_fields() -> None:
+    scope = CreateScopeNodeArgs.model_json_schema()["properties"]
+    content = CreateContentNodeArgs.model_json_schema()["properties"]
+    update = ContractCoreUpdateArgs.model_json_schema()["properties"]
+
+    assert "across contract versions" in scope["goal"]["description"]
+    assert "excluded from siblings" in scope["boundary"]["description"]
+    assert "Current contract-version action" in scope["objective"]["description"]
+    assert "observable closeout conditions" in scope["success_criteria"]["description"]
+
+    assert "across contract versions" in content["goal"]["description"]
+    assert "Current contract-version action" in content["objective"]["description"]
+    assert "target depth" not in content["objective"]["description"]
+    assert "current content contract version" in content["success_criteria"]["description"]
+
+    assert "enduring purpose changes" in update["goal"]["description"]
+    assert "Main.goal is protected" in update["goal"]["description"]
+    assert "current contract-version action" in update["objective"]["description"]
 
 
 def test_node_contract_groups_expose_expected_tools() -> None:

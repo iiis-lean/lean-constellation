@@ -415,9 +415,10 @@ Bibliographic metadata normalization may change spelling, field completeness, or
             "Use this skill when planning node tree structure, creating child nodes, preparing content node tasks, or updating contract goals, boundaries, objectives, materials, dependencies, constraints, or interfaces.",
             (
                 "Read the current scope or content contract with `get_node_contract` before changing it.",
-                "Write goals and boundaries in mathematical terms rather than file-layout terms.",
+                "Give each text field one job: goal is stable mathematical ownership or capability; boundary is the exact owned region and sibling exclusions; objective is the current contract-version action; success criteria are observable closeout conditions; constraints record representation, dependency, and non-goals.",
+                "Prefer ownership or capability wording for Scope and Content goals. Put this version's declare, prove, or repair action in the objective; keep exact Content terminal depth in task_completion_mode and repository canary or stopping responsibility in the run objective/config.",
                 "Make sibling boundaries explicit and avoid duplicate ownership.",
-                "Record expected important declarations, major SourceIndex/source stages, and a rough Lean declaration range in the existing goal/boundary/objective text; this is guidance, not a hard count gate.",
+                "Record expected important declarations, major SourceIndex/source stages, and a rough Lean declaration range in the boundary or objective rather than overloading the goal; this is guidance, not a hard count gate.",
                 "Use `create_scope_node`, `create_content_node`, and `update_node_contract_text` for durable contract changes.",
                 "A new Content contract version defaults its task completion mode to the repository mode. Use `set_node_contract_task_completion_mode` only on an open Content contract when a deliberate theorem-statement staging boundary is justified.",
                 "Do not lower a task target to defer definitions, types, instances, or canonical constructions. Before choosing interface_declared or graph_declared under a deeper repo target, verify that every definition used by the staged statements already comes from a repo-ready visible boundary or is fully declared in this task's bottom-up layers.",
@@ -788,11 +789,12 @@ Use this Skill when the current repository needs a new mathematical boundary, an
 ## Establish The Boundary
 
 1. Read `get_current_repo_completion_policy`, `get_preparation_input`, and the current tree with `get_node_tree`.
-2. Read the relevant node contracts and source/index regions rather than decomposing from filenames alone.
-3. Estimate likely Lean scale from important source definitions, lemmas, proof stages, consumers, and expected Lean-specific helpers. Declaration count is context, never a mechanical split threshold.
-4. Use the current mode policy to choose the required graph granularity.
-5. Choose Scope nodes for broad mathematical regions and Content nodes for coherent declaration work.
-6. Make sibling ownership disjoint and preserve protected root interfaces.
+2. Separate the stable repository purpose from the current run objective before creating children. Child goals record durable mathematical ownership, child objectives record current version actions, Content terminal depth stays in task_completion_mode, and repository canary or stopping responsibility stays in the run objective/config.
+3. Read the relevant node contracts and source/index regions rather than decomposing from filenames alone.
+4. Estimate likely Lean scale from important source definitions, lemmas, proof stages, consumers, and expected Lean-specific helpers. Declaration count is context, never a mechanical split threshold.
+5. Use the current mode policy to choose the required graph granularity.
+6. Choose Scope nodes for broad mathematical regions and Content nodes for coherent declaration work.
+7. Make sibling ownership disjoint and preserve protected root interfaces.
 
 Before assigning theorem work, enumerate the definition frontier visible in Source,
 the current graph, and known consumers: domain types and subtypes, indices,
