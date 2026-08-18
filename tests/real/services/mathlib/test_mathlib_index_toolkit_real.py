@@ -121,7 +121,13 @@ def test_mathlib_index_toolkit_use_real_service_lifecycle(tmp_path: Path) -> Non
     assert [candidate.name for candidate in search.value.candidates] == ["Nat.add_assoc", "Nat.add_comm"]
     assert all(candidate.source_kind == "lean_explore.find" for candidate in search.value.candidates)
 
-    cache_path = repo_root / ".lean_constellation" / "indexes" / "mathlib_candidates.json"
+    cache_path = (
+        repo_root
+        / ".lean_constellation"
+        / "work"
+        / "cache"
+        / "mathlib_candidates.json"
+    )
     cached = service.runtime.foundation.read_json(cache_path, MathlibCandidateCache)
     assert cached.ok
     assert cached.value is not None

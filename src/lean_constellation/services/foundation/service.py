@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, TypeVar
 
 from lean_constellation.services.foundation.index import IndexBuilder, IndexComponent
@@ -13,6 +13,10 @@ from lean_constellation.services.foundation.ref_resolver import (
     RefResolveContext,
     RefResolver,
     RefResolverComponent,
+)
+from lean_constellation.services.foundation.repo_path_policy import (
+    RepoPathClassification,
+    classify_repo_path,
 )
 from lean_constellation.services.foundation.result_error import (
     GateReport,
@@ -85,6 +89,36 @@ class FoundationService:
 
     def source_corpus_root(self, ctx: FoundationContext, relpath: str = ".lean_constellation/source") -> Path:
         return self.layout.source_corpus_root(ctx, relpath)
+
+    def lc_work_root(self, ctx: FoundationContext) -> Path:
+        return self.layout.lc_work_root(ctx)
+
+    def source_corpus_draft_root(self, ctx: FoundationContext) -> Path:
+        return self.layout.source_corpus_draft_root(ctx)
+
+    def resource_draft_root(self, ctx: FoundationContext, draft_id: str) -> Path:
+        return self.layout.resource_draft_root(ctx, draft_id)
+
+    def mathlib_candidates_cache_path(self, ctx: FoundationContext) -> Path:
+        return self.layout.mathlib_candidates_cache_path(ctx)
+
+    def source_corpus_preview_dir(self, ctx: FoundationContext, source_sha: str) -> Path:
+        return self.layout.source_corpus_preview_dir(ctx, source_sha)
+
+    def source_corpus_staging_dir(self, ctx: FoundationContext, transaction_id: str) -> Path:
+        return self.layout.source_corpus_staging_dir(ctx, transaction_id)
+
+    def source_index_recovery_root(self, ctx: FoundationContext) -> Path:
+        return self.layout.source_index_recovery_root(ctx)
+
+    def lc_work_audit_root(self, ctx: FoundationContext) -> Path:
+        return self.layout.lc_work_audit_root(ctx)
+
+    def remote_publication_receipts_root(self, ctx: FoundationContext) -> Path:
+        return self.layout.remote_publication_receipts_root(ctx)
+
+    def classify_repo_path(self, path: PurePosixPath) -> RepoPathClassification:
+        return classify_repo_path(path)
 
     def resource_dir(self, ctx: FoundationContext, resource_key: str) -> Path:
         return self.layout.resource_dir(ctx, resource_key)

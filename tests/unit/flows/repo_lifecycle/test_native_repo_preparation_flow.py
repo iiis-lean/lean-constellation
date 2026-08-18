@@ -555,7 +555,7 @@ def test_native_preparation_source_prepare_workdir_uses_preparation_relpath(tmp_
     _advance_and_run(runtime, flow_id)
 
     assert runtime.agent_service.start_records[-1].workdir == str(
-        repo_root / ".lean_constellation" / "source_draft"
+        repo_root / ".lean_constellation" / "work" / "drafts" / "source_corpus"
     )
     prompt = next(
         record.prompt or ""
@@ -598,7 +598,7 @@ def test_native_preparation_source_prepare_accepted_submission_finalizes_manifes
 
     _advance_and_run(runtime, flow_id)
     assert runtime.flow_service.get_flow(flow_id).state.position.phase == "source_corpus"
-    source_root = repo_root / ".lean_constellation" / "source_draft"
+    source_root = repo_root / ".lean_constellation" / "work" / "drafts" / "source_corpus"
     _write_source_draft_candidate(source_root)
     (source_root / "_work" / "original").mkdir(parents=True)
     (source_root / "_work" / "original" / "paper.pdf").write_bytes(b"%PDF-1.4\nfixture")
@@ -654,7 +654,7 @@ def test_source_corpus_reviewer_rejection_retries_prepare_builder(tmp_path: Path
     _prepare_native_repo_for_source_prepare(lean_runtime, repo_root, source_corpus_relpath="custom_sources")
     flow_id = _start_native(runtime, repo_root)
     _advance_and_run(runtime, flow_id)
-    source_root = repo_root / ".lean_constellation" / "source_draft"
+    source_root = repo_root / ".lean_constellation" / "work" / "drafts" / "source_corpus"
     _write_source_draft_candidate(source_root)
     runtime.agent_service.queue_submission(
         SourceCorpusBuilderReadySubmission(
@@ -694,7 +694,7 @@ def test_source_corpus_builder_candidate_survives_restart_before_review(tmp_path
     _prepare_native_repo_for_source_prepare(lean_runtime, repo_root, source_corpus_relpath="custom_sources")
     flow_id = _start_native(runtime, repo_root)
     _advance_and_run(runtime, flow_id)
-    source_root = repo_root / ".lean_constellation" / "source_draft"
+    source_root = repo_root / ".lean_constellation" / "work" / "drafts" / "source_corpus"
     _write_source_draft_candidate(source_root)
     runtime.agent_service.queue_submission(
         SourceCorpusBuilderReadySubmission(

@@ -394,13 +394,9 @@ class SourceIndexCheckpointAdapter:
         return self.runtime.foundation.ok(matched[0])
 
     def _operator_baseline_path(self, repo_root: Path) -> Path:
-        return (
-            self.runtime.foundation.layout.constellation_root(
-                FoundationContext(repo_root=Path(repo_root))
-            )
-            / "source_index"
-            / "operator_baseline.json"
-        )
+        return self.runtime.foundation.source_index_recovery_root(
+            FoundationContext(repo_root=Path(repo_root))
+        ) / "operator_baseline.json"
 
     def _digest(self, index: SourceIndex | None) -> str:
         if index is None:

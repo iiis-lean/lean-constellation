@@ -25,6 +25,12 @@ from lean_constellation.services.foundation.ref_resolver import (
     ResolvedRef,
     ResolvedRefView,
 )
+from lean_constellation.services.foundation.repo_path_policy import (
+    LCWorkKind,
+    RepoPathClass,
+    RepoPathClassification,
+    classify_repo_path,
+)
 from lean_constellation.services.foundation.result_error import (
     GateReport,
     IssueSeverity,
@@ -58,6 +64,7 @@ __all__ = [
     "IssueSeverity",
     "LayoutComponent",
     "LayoutPathView",
+    "LCWorkKind",
     "MutationCommitResult",
     "MutationSession",
     "MutationSummaryView",
@@ -69,6 +76,8 @@ __all__ = [
     "RefResolverComponent",
     "RefValidationResult",
     "RepoLayoutView",
+    "RepoPathClass",
+    "RepoPathClassification",
     "ResolvedRef",
     "ResolvedRefView",
     "ResultErrorComponent",
@@ -78,4 +87,5 @@ __all__ = [
     "StoreWriteResult",
     "ToolResultView",
     "WriteMode",
+    "classify_repo_path",
 ]

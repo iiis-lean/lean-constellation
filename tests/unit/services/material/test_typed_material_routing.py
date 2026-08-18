@@ -18,7 +18,7 @@ def _write_extensionless_tex_archive(path: Path) -> None:
 
 def test_resource_and_source_share_extensionless_arxiv_archive_routing(tmp_path: Path) -> None:
     service = make_runtime().material
-    source_root = tmp_path / ".lean_constellation" / "source_draft"
+    source_root = tmp_path / ".lean_constellation" / "work" / "drafts" / "source_corpus"
     source_artifact = source_root / "_work" / "original" / "2407.12253-source"
     _write_extensionless_tex_archive(source_artifact)
 
@@ -55,7 +55,15 @@ def test_resource_and_source_share_extensionless_arxiv_archive_routing(tmp_path:
 
 def test_explicit_text_normalize_cannot_override_pdf_magic(tmp_path: Path) -> None:
     service = make_runtime().material
-    source_root = tmp_path / ".lean_constellation" / "source_draft" / "_work" / "original"
+    source_root = (
+        tmp_path
+        / ".lean_constellation"
+        / "work"
+        / "drafts"
+        / "source_corpus"
+        / "_work"
+        / "original"
+    )
     source_root.mkdir(parents=True)
     (source_root / "renamed.txt").write_bytes(b"%PDF-1.4\nfixture")
 
@@ -67,4 +75,45 @@ def test_explicit_text_normalize_cannot_override_pdf_magic(tmp_path: Path) -> No
 
     assert not result.ok
     assert result.issues[0].kind == "material_extraction_kind_mismatch"
-    assert not (tmp_path / ".lean_constellation" / "source_draft" / "_work" / "normalized" / "renamed.txt").exists()
+    assert not (
+        tmp_path
+        / ".lean_constellation"
+        / "work"
+        / "drafts"
+        / "source_corpus"
+        / "_work"
+        / "normalized"
+        / "renamed.txt"
+    ).exists()
+
+
+def test_source_tools_use_current_lc_work_draft_only(tmp_path: Path) -> None:
+    service = make_runtime().material
+    legacy_artifact = (
+        tmp_path
+        / ".lean_constellation"
+        / "source_draft"
+        / "_work"
+        / "original"
+        / "legacy.txt"
+    )
+    legacy_artifact.parent.mkdir(parents=True)
+    legacy_artifact.write_text("legacy source material\n", encoding="utf-8")
+
+    result = service.normalize_source_text_material(
+        tmp_path,
+        material_ref="_work/original/legacy.txt",
+    )
+
+    assert not result.ok
+    assert legacy_artifact.is_file()
+    assert not (
+        tmp_path
+        / ".lean_constellation"
+        / "work"
+        / "drafts"
+        / "source_corpus"
+        / "_work"
+        / "normalized"
+        / "legacy.txt"
+    ).exists()

@@ -22,6 +22,9 @@ def test_operator_baseline_persists_complete_missing_and_existing_payloads(tmp_p
     )
     assert persisted.ok and persisted.value is not None, persisted.issues
     assert persisted.value.baseline_index is None
+    assert persisted.value.locator == (
+        ".lean_constellation/work/recovery/source_index/operator_baseline.json"
+    )
     assert (tmp_path / persisted.value.locator).is_file()
 
     restarted = SourceIndexCheckpointAdapter(runtime).load_operator_source_index_baseline(tmp_path)
@@ -65,5 +68,6 @@ def test_operator_baseline_rejects_stale_digest_without_writing(tmp_path: Path) 
     assert not result.ok
     assert result.issues[0].kind == "source_index_baseline_digest_mismatch"
     assert not (
-        tmp_path / ".lean_constellation/source_index/operator_baseline.json"
+        tmp_path
+        / ".lean_constellation/work/recovery/source_index/operator_baseline.json"
     ).exists()

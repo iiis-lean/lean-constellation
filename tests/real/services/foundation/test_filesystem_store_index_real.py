@@ -77,7 +77,10 @@ def test_foundation_filesystem_store_index_real(tmp_path) -> None:
     assert duplicate.ok is False
     assert duplicate.issues[0].kind == "duplicate_file"
 
-    temp_result = service.store.create_temp_dir(service.layout.resources_root(ctx) / "tmp", "resource")
+    temp_result = service.store.create_temp_dir(
+        service.layout.lc_work_root(ctx) / "staging",
+        "resource",
+    )
     assert temp_result.ok is True
     assert temp_result.value is not None
     temp_dir = temp_result.value

@@ -735,10 +735,15 @@ class ResourceLibraryComponent:
         )
 
     def _drafts_root(self, repo_root: Path) -> Path:
-        return self.runtime.foundation.layout.resources_root(FoundationContext(repo_root=Path(repo_root))) / ".drafts"
+        return self.runtime.foundation.layout.resource_drafts_root(
+            FoundationContext(repo_root=Path(repo_root))
+        )
 
     def _draft_root(self, repo_root: Path, draft_id: str) -> Path:
-        return self._drafts_root(repo_root) / self.runtime.foundation.layout.ensure_safe_key(draft_id)
+        return self.runtime.foundation.resource_draft_root(
+            FoundationContext(repo_root=Path(repo_root)),
+            draft_id,
+        )
 
     def _draft_metadata_path(self, repo_root: Path, draft_id: str) -> Path:
         return self._draft_root(repo_root, draft_id) / "draft.json"

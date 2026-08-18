@@ -55,6 +55,7 @@ class RepoLayoutView(StrictModel):
     repo_root: str
     constellation_root: str
     agent_runtime_root: str
+    work_root: str
     source_root: str
     resources_root: str
     snapshots_root: str
@@ -101,10 +102,61 @@ class LayoutComponent:
         return entry
 
     def source_corpus_draft_root(self, ctx: FoundationContext) -> Path:
-        return self.constellation_root(ctx) / "source_draft"
+        return self.lc_work_drafts_root(ctx) / "source_corpus"
 
     def source_corpus_work_root(self, ctx: FoundationContext) -> Path:
         return self.source_corpus_draft_root(ctx) / "_work"
+
+    def lc_work_root(self, ctx: FoundationContext) -> Path:
+        return self.constellation_root(ctx) / "work"
+
+    def lc_work_drafts_root(self, ctx: FoundationContext) -> Path:
+        return self.lc_work_root(ctx) / "drafts"
+
+    def resource_drafts_root(self, ctx: FoundationContext) -> Path:
+        return self.lc_work_drafts_root(ctx) / "resources"
+
+    def resource_draft_root(self, ctx: FoundationContext, draft_id: str) -> Path:
+        return self.resource_drafts_root(ctx) / self.ensure_safe_key(draft_id)
+
+    def lc_work_cache_root(self, ctx: FoundationContext) -> Path:
+        return self.lc_work_root(ctx) / "cache"
+
+    def mathlib_candidates_cache_path(self, ctx: FoundationContext) -> Path:
+        return self.lc_work_cache_root(ctx) / "mathlib_candidates.json"
+
+    def lc_work_previews_root(self, ctx: FoundationContext) -> Path:
+        return self.lc_work_root(ctx) / "previews"
+
+    def source_corpus_preview_root(self, ctx: FoundationContext) -> Path:
+        return self.lc_work_previews_root(ctx) / "source_corpus"
+
+    def source_corpus_preview_dir(self, ctx: FoundationContext, source_sha: str) -> Path:
+        return self.source_corpus_preview_root(ctx) / self.ensure_safe_key(source_sha)
+
+    def lc_work_staging_root(self, ctx: FoundationContext) -> Path:
+        return self.lc_work_root(ctx) / "staging"
+
+    def source_corpus_staging_root(self, ctx: FoundationContext) -> Path:
+        return self.lc_work_staging_root(ctx) / "source_corpus"
+
+    def source_corpus_staging_dir(self, ctx: FoundationContext, transaction_id: str) -> Path:
+        return self.source_corpus_staging_root(ctx) / self.ensure_safe_key(transaction_id)
+
+    def lc_work_recovery_root(self, ctx: FoundationContext) -> Path:
+        return self.lc_work_root(ctx) / "recovery"
+
+    def source_index_recovery_root(self, ctx: FoundationContext) -> Path:
+        return self.lc_work_recovery_root(ctx) / "source_index"
+
+    def lc_work_audit_root(self, ctx: FoundationContext) -> Path:
+        return self.lc_work_root(ctx) / "audit"
+
+    def lc_work_receipts_root(self, ctx: FoundationContext) -> Path:
+        return self.lc_work_root(ctx) / "receipts"
+
+    def remote_publication_receipts_root(self, ctx: FoundationContext) -> Path:
+        return self.lc_work_receipts_root(ctx) / "remote_publication"
 
     def resources_root(self, ctx: FoundationContext) -> Path:
         return self.constellation_root(ctx) / "resources"
@@ -117,9 +169,6 @@ class LayoutComponent:
 
     def resource_raw_dir(self, ctx: FoundationContext, resource_key: str) -> Path:
         return self.resource_dir(ctx, resource_key) / "raw"
-
-    def resource_temp_dir(self, ctx: FoundationContext, request_key: str) -> Path:
-        return self.resources_root(ctx) / "tmp" / self.ensure_safe_key(request_key)
 
     def requirements_root(self, ctx: FoundationContext) -> Path:
         return self.constellation_root(ctx) / "repo_dependency_requirements"
@@ -213,6 +262,7 @@ class LayoutComponent:
             repo_root=str(self._repo_root(ctx)),
             constellation_root=str(self.constellation_root(ctx)),
             agent_runtime_root=str(self.agent_runtime_root(ctx)),
+            work_root=str(self.lc_work_root(ctx)),
             source_root=str(self.source_corpus_root(ctx)),
             resources_root=str(self.resources_root(ctx)),
             snapshots_root=str(self.snapshot_root(ctx)),

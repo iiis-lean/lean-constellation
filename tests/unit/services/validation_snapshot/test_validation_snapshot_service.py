@@ -656,7 +656,7 @@ def _prepare_source_and_index(service: MaterialService, repo_root: Path) -> None
 
 
 def _read_gate_gap_records(repo_root: Path) -> list[dict[str, Any]]:
-    path = repo_root / ".lean_constellation" / "audit" / "gate_gaps.jsonl"
+    path = repo_root / ".lean_constellation" / "work" / "audit" / "gate_gaps.jsonl"
     if not path.exists():
         return []
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
@@ -1960,11 +1960,16 @@ def test_audit_record_gate_gap_validates_and_appends_jsonl(tmp_path: Path) -> No
     assert first.value is not None
     assert first.value.changed_items == ["proof_gate"]
     assert second.ok
-    gap_path = tmp_path / ".lean_constellation" / "audit" / "gate_gaps.jsonl"
+    gap_path = (
+        tmp_path / ".lean_constellation" / "work" / "audit" / "gate_gaps.jsonl"
+    )
     lines = [json.loads(line) for line in gap_path.read_text(encoding="utf-8").splitlines()]
     assert [line["source"] for line in lines] == ["reviewer", "admin"]
     assert lines[0]["suggested_gate"] == "proof_gate"
     assert lines[1]["suggested_gate"] is None
+    assert not (
+        tmp_path / ".lean_constellation" / "audit" / "gate_gaps.jsonl"
+    ).exists()
 
 
 def test_audit_repo_ready_aggregates_gate_issues_into_findings(tmp_path: Path) -> None:

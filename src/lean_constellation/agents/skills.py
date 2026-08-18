@@ -314,7 +314,7 @@ When only a range, section, appendix, or selected file belongs to the request, s
 
 ## Separate Work Evidence From Durable Material
 
-Keep downloads, originals, OCR, screenshots, automatic extraction, page previews, and correction evidence in the draft's `_work/` area. Durable files describe only the final material: its stable identity, included scope, organization, representation, and genuine source-visible limitations. Do not record request payloads, resolved download locations, acquisition routes, extraction tools, correction steps, Reviewer activity, or round history in durable content.
+Keep downloads, originals, OCR, screenshots, automatic extraction, manually created page previews, and correction evidence in the draft's `_work/` area. A typed service may place generated previews in its isolated operational cache and return only the authorized locator. Durable files describe only the final material: its stable identity, included scope, organization, representation, and genuine source-visible limitations. Do not record request payloads, resolved download locations, acquisition routes, extraction tools, correction steps, Reviewer activity, or round history in durable content.
 
 If the source itself contains an ambiguity, printing error, missing attachment, or unreadable region that affects interpretation, record that source fact in a stable note. Do not describe how a Builder or Reviewer repaired or checked it.
 
@@ -598,7 +598,7 @@ Bibliographic metadata normalization may change spelling, field completeness, or
             "source-corpus-draft-curation",
             "Use this skill to build or review the current Source draft without designing the later formalization.",
             (
-                "Treat `_work/` as the only location for downloads, original binary artifacts, OCR, screenshots, extraction scratch, previews, and processing evidence. Every file outside `_work/` is final-facing durable material and only those bytes are projected to canonical SourceCorpus.",
+                "Treat `_work/` as the only draft location for downloads, original binary artifacts, OCR, screenshots, extraction scratch, manually created previews, and processing evidence. The typed `render_source_pdf_page` tool uses the isolated Source preview cache and returns its locator. Every file outside `_work/` is final-facing durable material and only those bytes are projected to canonical SourceCorpus.",
                 "Treat each typed source input as a structured material request, not an exact network allowlist. Resolve its target, verify the actual material identity, and faithfully cover its role and included scope without adding related material on your own.",
                 "Preserve an author's coherent TeX or Markdown tree, authored single-file format, macros, bibliography, assets, sections, theorem statements, and proof structure. Do not restructure an available source package merely for uniformity.",
                 "For PDF-only input, create a complete corrected textual transcription rather than a summary. For a complete paper or other non-brief multi-section mathematical work, prefer a sectioned LaTeX tree with an independent BibTeX bibliography and resolvable citation keys, split at natural source sections or theorem/proof clusters. Preserve authored formats; use a single durable content file only for brief material with no natural subdivision, and do not force independent BibTeX on bibliography-free material.",

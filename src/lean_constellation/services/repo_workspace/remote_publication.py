@@ -17,7 +17,7 @@ from lean_constellation.services.external_clients.process import (
     ExternalCommandResult,
     SubprocessCommandRunner,
 )
-from lean_constellation.services.foundation import ServiceResult
+from lean_constellation.services.foundation import FoundationContext, ServiceResult
 
 if TYPE_CHECKING:
     from lean_constellation.services.runtime import LeanRuntimeServices
@@ -212,13 +212,9 @@ class RepoRemotePublicationComponent:
                 else f"Configured remote for {preview.release_id} without pushing."
             ),
         )
-        path = (
-            repo_root
-            / ".lean_constellation"
-            / "publication"
-            / "remote_receipts"
-            / f"{preview.release_id}.json"
-        )
+        path = self.runtime.foundation.remote_publication_receipts_root(
+            FoundationContext(repo_root=repo_root)
+        ) / f"{preview.release_id}.json"
         written = self.runtime.foundation.store.write_json_atomic(path, receipt)
         if not written.ok:
             return self.runtime.foundation.fail(written.issues)

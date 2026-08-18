@@ -168,4 +168,6 @@ class AuditComponent:
         )
 
     def _gate_gap_path(self, repo_root: Path) -> Path:
-        return self.runtime.foundation.layout.constellation_root(FoundationContext(repo_root=repo_root)) / "audit" / "gate_gaps.jsonl"
+        return self.runtime.foundation.lc_work_audit_root(
+            FoundationContext(repo_root=repo_root)
+        ) / "gate_gaps.jsonl"

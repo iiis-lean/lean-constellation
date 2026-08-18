@@ -26,7 +26,9 @@ def test_source_pdf_page_preview_validates_corpus_and_reuses_cache(
     monkeypatch,
 ) -> None:
     runtime = make_runtime()
-    source_root = tmp_path / ".lean_constellation" / "source_draft" / "_work"
+    source_root = (
+        tmp_path / ".lean_constellation" / "work" / "drafts" / "source_corpus" / "_work"
+    )
     source_root.mkdir(parents=True)
     (source_root / "paper.pdf").write_bytes(b"%PDF-1.4\nfixture")
     (source_root / "notes.txt").write_text("not a pdf\n", encoding="utf-8")
@@ -67,7 +69,9 @@ def test_source_pdf_page_preview_validates_corpus_and_reuses_cache(
     assert not non_pdf.ok and non_pdf.issues[0].kind == "source_pdf_type_mismatch"
     assert not escaped.ok and escaped.issues[0].kind == "source_pdf_preview_path_escape"
     assert not out_of_range.ok and out_of_range.issues[0].kind == "source_pdf_page_out_of_range"
-    assert first.value.image_path.startswith(str(source_root / "previews"))
+    assert first.value.image_path.startswith(
+        str(tmp_path / ".lean_constellation" / "work" / "previews" / "source_corpus")
+    )
     assert not (tmp_path / ".agent_runtime" / "material_previews").exists()
 
 
@@ -277,7 +281,7 @@ def test_source_acquisition_uses_draft_work_and_preserves_canonical_destination(
 
     imported = runtime.material.import_source_material(tmp_path, source_path=str(local), as_name="raw.md")
     normalized = runtime.material.normalize_source_text_material(tmp_path, material_ref="_work/original/raw.md")
-    draft_root = tmp_path / ".lean_constellation" / "source_draft"
+    draft_root = tmp_path / ".lean_constellation" / "work" / "drafts" / "source_corpus"
     draft_root.mkdir(parents=True, exist_ok=True)
     (draft_root / "article").mkdir()
     (draft_root / "article" / "raw.md").write_text("faithful source text\n", encoding="utf-8")
@@ -287,7 +291,7 @@ def test_source_acquisition_uses_draft_work_and_preserves_canonical_destination(
     )
     gate = runtime.material.check_source_corpus_draft(
         tmp_path,
-        relpath=".lean_constellation/source_draft",
+        relpath=".lean_constellation/work/drafts/source_corpus",
         entry_path="README.md",
     )
 
@@ -306,6 +310,46 @@ def _write_source(repo_root: Path) -> None:
     notes = source_root / "notes"
     notes.mkdir()
     (notes / "section.md").write_text("alpha\nbeta theorem\ngamma\n", encoding="utf-8")
+
+
+def test_source_corpus_scan_and_check_reject_legacy_relpath_before_symlink_resolution(
+    tmp_path: Path,
+) -> None:
+    service = make_runtime().material
+    draft_root = (
+        tmp_path / ".lean_constellation" / "work" / "drafts" / "source_corpus"
+    )
+    draft_root.mkdir(parents=True)
+    (draft_root / "README.md").write_text(_source_entry_text(), encoding="utf-8")
+    (draft_root / "notes.md").write_text("current draft\n", encoding="utf-8")
+    legacy_root = tmp_path / ".lean_constellation" / "source_draft"
+    legacy_root.symlink_to(draft_root, target_is_directory=True)
+    _write_source(tmp_path)
+
+    legacy_scan = service.scan_source_corpus(
+        tmp_path,
+        relpath=".lean_constellation/source_draft",
+    )
+    legacy_check = service.check_source_corpus_draft(
+        tmp_path,
+        relpath=".lean_constellation/source_draft",
+        entry_path="README.md",
+    )
+    draft_scan = service.scan_source_corpus(
+        tmp_path,
+        relpath=".lean_constellation/work/drafts/source_corpus",
+    )
+    stable_scan = service.scan_source_corpus(tmp_path)
+
+    assert not legacy_scan.ok
+    assert legacy_scan.issues[0].kind == "legacy_operational_path_forbidden"
+    assert legacy_scan.issues[0].object_ref == ".lean_constellation/source_draft"
+    assert legacy_check.ok and legacy_check.value is not None
+    assert not legacy_check.value.passed
+    assert legacy_check.value.issues[0].kind == "legacy_operational_path_forbidden"
+    assert draft_scan.ok and draft_scan.value is not None
+    assert stable_scan.ok and stable_scan.value is not None
+    assert legacy_root.is_symlink()
 
 
 def test_source_corpus_prepare_manifest_and_read_search(tmp_path: Path) -> None:
@@ -541,7 +585,15 @@ def test_acquire_source_material_fake_provider_branches_and_kind_gate(tmp_path: 
 
 def test_extract_source_artifact_fake_provider_branches_and_invalid_ref(tmp_path: Path) -> None:
     service, fake = _fake_material_service()
-    source_root = tmp_path / ".lean_constellation" / "source_draft" / "_work" / "original"
+    source_root = (
+        tmp_path
+        / ".lean_constellation"
+        / "work"
+        / "drafts"
+        / "source_corpus"
+        / "_work"
+        / "original"
+    )
     source_root.mkdir(parents=True)
     for name in ("paper.pdf", "page.html", "paper.tex", "notes.txt"):
         (source_root / name).write_text("payload\n", encoding="utf-8")
@@ -600,7 +652,15 @@ def test_import_source_accepts_resolved_local_path(tmp_path: Path) -> None:
 
 def test_normalize_source_text_material_success_missing_and_invalid_ref(tmp_path: Path) -> None:
     service, _fake = _fake_material_service()
-    source_root = tmp_path / ".lean_constellation" / "source_draft" / "_work" / "original"
+    source_root = (
+        tmp_path
+        / ".lean_constellation"
+        / "work"
+        / "drafts"
+        / "source_corpus"
+        / "_work"
+        / "original"
+    )
     source_root.mkdir(parents=True)
     (source_root / "note.txt").write_text("alpha\n", encoding="utf-8")
 
@@ -929,7 +989,7 @@ def test_source_corpus_accepts_supplied_targets_solutions_and_descriptive_titles
 def test_source_draft_rejects_unauthorized_special_roles_and_control_text(tmp_path: Path) -> None:
     service = make_runtime().material
     _write_source_prepare_input(service.runtime, tmp_path, ["https://example.test/paper.pdf"])
-    root = tmp_path / ".lean_constellation" / "source_draft"
+    root = tmp_path / ".lean_constellation" / "work" / "drafts" / "source_corpus"
     (root / "article").mkdir(parents=True)
     (root / "article" / "main.md").write_text("bad\x00text\n", encoding="utf-8")
     (root / "formal_target.lean").write_text("theorem target : True := by trivial\n", encoding="utf-8")
@@ -945,7 +1005,7 @@ def test_source_draft_rejects_unauthorized_special_roles_and_control_text(tmp_pa
 
     gate = service.check_source_corpus_draft(
         tmp_path,
-        relpath=".lean_constellation/source_draft",
+        relpath=".lean_constellation/work/drafts/source_corpus",
         entry_path="README.md",
     )
 

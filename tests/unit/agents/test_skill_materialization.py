@@ -302,6 +302,7 @@ def test_source_corpus_preparation_skill_preserves_supplied_formal_material() ->
     assert "complete paper or other non-brief multi-section" in body
     assert "single durable content file only for brief material" in body
     assert "independent BibTeX bibliography and resolvable citation keys" in body
+    assert "isolated Source preview cache" in body
     assert "`pdf-faithful-transcription`" not in body
 
 

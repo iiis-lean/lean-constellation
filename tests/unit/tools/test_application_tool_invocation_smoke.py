@@ -26,6 +26,7 @@ from lean_constellation.services.foundation import FoundationContext, ServiceRes
 from lean_constellation.services.material import ResourceMetadataInput
 from lean_constellation.services.node import ContentTaskResultView, DeclPublicView, NodeContractSnapshot
 from lean_constellation.services.tool_facade import RawToolCallContext, RuntimeToolContext
+from lean_constellation.tools.args import SourceCorpusCheckArgs
 from tests.unit_services_helpers import (
     initialize_native_test_repo,
     lean_check_payload,
@@ -713,14 +714,17 @@ def _source_readme_text() -> str:
 
 def test_source_corpus_tool_invokes_material_service(tmp_path: Path) -> None:
     runtime = create_test_runtime_services(register_application_tools=True)
-    source_root = tmp_path / ".lean_constellation" / "source_draft"
+    assert SourceCorpusCheckArgs().relpath == (
+        ".lean_constellation/work/drafts/source_corpus"
+    )
+    source_root = tmp_path / ".lean_constellation" / "work" / "drafts" / "source_corpus"
     source_root.mkdir(parents=True)
     (source_root / "README.md").write_text(_source_readme_text(), encoding="utf-8")
 
     result = runtime.tool_facade.invoke_agent_tool(
         _raw(tmp_path, view="source_corpus_builder", agent_type="SourceCorpusBuilderAgent"),
         tool_name="scan_source_corpus",
-        flat_args={"relpath": ".lean_constellation/source_draft"},
+        flat_args={"relpath": ".lean_constellation/work/drafts/source_corpus"},
     )
 
     assert result.ok
@@ -765,6 +769,48 @@ def test_source_index_reviewer_can_read_source_corpus(tmp_path: Path) -> None:
     assert gate.value.ok is True
     assert gate.value.value is not None
     assert gate.value.value["passed"] is True
+
+
+def test_source_index_reviewer_tools_reject_legacy_source_corpus_relpath(
+    tmp_path: Path,
+) -> None:
+    runtime = create_test_runtime_services(register_application_tools=True)
+    draft_root = (
+        tmp_path / ".lean_constellation" / "work" / "drafts" / "source_corpus"
+    )
+    draft_root.mkdir(parents=True)
+    (draft_root / "README.md").write_text(_source_readme_text(), encoding="utf-8")
+    legacy_root = tmp_path / ".lean_constellation" / "source_draft"
+    legacy_root.symlink_to(draft_root, target_is_directory=True)
+    raw = _raw(
+        tmp_path,
+        view="source_index_reviewer",
+        agent_type="SourceIndexReviewerAgent",
+        role="reviewer",
+    )
+
+    scan_issues = _unwrap_tool_failure(
+        runtime.tool_facade.invoke_agent_tool(
+            raw,
+            tool_name="scan_source_corpus",
+            flat_args={"relpath": ".lean_constellation/source_draft"},
+        )
+    )
+    gate = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(
+            raw,
+            tool_name="check_source_corpus_draft",
+            flat_args={
+                "relpath": ".lean_constellation/source_draft",
+                "entry_path": "README.md",
+            },
+        )
+    )
+
+    assert scan_issues[0].kind == "legacy_operational_path_forbidden"
+    assert gate["passed"] is False
+    assert gate["issues"][0]["kind"] == "legacy_operational_path_forbidden"
+    assert legacy_root.is_symlink()
 
 
 def test_source_range_validation_and_preview_tools_invoke_material_service(tmp_path: Path) -> None:

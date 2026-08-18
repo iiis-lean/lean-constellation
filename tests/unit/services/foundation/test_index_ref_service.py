@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from tests.unit_services_helpers import make_runtime
-
+from pathlib import PurePosixPath
 from typing import Any
 
 from lean_constellation.domain.common import utc_now_iso
@@ -11,13 +10,16 @@ from lean_constellation.services.foundation import (
     IndexBuildContext,
     IndexBundle,
     IndexMetadata,
+    LCWorkKind,
     RefKind,
     RefResolveContext,
     RefValidationResult,
+    RepoPathClass,
     ResolvedRef,
     ResultErrorComponent,
     WriteMode,
 )
+from tests.unit_services_helpers import make_runtime
 
 
 class CountingBuilder:
@@ -143,6 +145,24 @@ def test_foundation_service_wires_components() -> None:
     assert service.store.result is service.result_error
     assert service.index.store is service.store
     assert service.refs is service.ref_resolver
+
+
+def test_foundation_service_exposes_operational_layout_and_path_policy(tmp_path) -> None:
+    service = make_runtime().foundation
+    ctx = FoundationContext(repo_root=tmp_path)
+
+    assert service.lc_work_root(ctx) == tmp_path / ".lean_constellation" / "work"
+    assert service.source_corpus_draft_root(ctx) == (
+        tmp_path / ".lean_constellation" / "work" / "drafts" / "source_corpus"
+    )
+    assert service.resource_draft_root(ctx, "draft_1") == (
+        tmp_path / ".lean_constellation" / "work" / "drafts" / "resources" / "draft_1"
+    )
+    classified = service.classify_repo_path(
+        PurePosixPath(".lean_constellation/work/cache/mathlib_candidates.json")
+    )
+    assert classified.path_class is RepoPathClass.REBUILDABLE_WORK
+    assert classified.work_kind is LCWorkKind.MATHLIB_CANDIDATE_CACHE
 
 
 def test_index_ensure_cache_hit_and_stale_rebuild(tmp_path) -> None:

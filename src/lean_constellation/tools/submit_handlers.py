@@ -365,7 +365,7 @@ def submit_source_corpus_builder_ready(runtime: Any, ctx: ToolExecutionContext, 
     expected_relpath = _expected_source_corpus_relpath(runtime, ctx)
     gate = runtime.material.check_source_corpus_draft(
         ctx.repo_root,
-        relpath=".lean_constellation/source_draft",
+        relpath=".lean_constellation/work/drafts/source_corpus",
         entry_path=args.entry_path,
     )
     if not gate.ok or gate.value is None:
@@ -445,7 +445,7 @@ def submit_source_corpus_review(runtime: Any, ctx: ToolExecutionContext, args: S
                 entry_path = manifest.value.entry_path
         gate = runtime.material.check_source_corpus_draft(
             ctx.repo_root,
-            relpath=".lean_constellation/source_draft",
+            relpath=".lean_constellation/work/drafts/source_corpus",
             entry_path=entry_path,
         )
         if not gate.ok or gate.value is None:

@@ -1356,7 +1356,13 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
 
     # The candidate cache is setup-only data for ingest_mathlib_candidate and
     # uses a different schema than repo-level IndexBundle files under indexes/.
-    candidate_cache_path = ws.provider_repo / ".lean_constellation" / "indexes" / "mathlib_candidates.json"
+    candidate_cache_path = (
+        ws.provider_repo
+        / ".lean_constellation"
+        / "work"
+        / "cache"
+        / "mathlib_candidates.json"
+    )
     candidate_cache_path.unlink(missing_ok=True)
     restore_with_evidence(
         ws.admin,
@@ -1488,7 +1494,13 @@ def _install_fake_mathlib_toolkit(ws: RuntimeMatrixWorkspace) -> None:
 
 
 def _run_local_acquisition_tool_sweep(ws: RuntimeMatrixWorkspace, server: Any, recorder: EvidenceRecorder) -> None:
-    source_root = ws.provider_repo / ".lean_constellation" / "source_draft"
+    source_root = (
+        ws.provider_repo
+        / ".lean_constellation"
+        / "work"
+        / "drafts"
+        / "source_corpus"
+    )
     local_source = str(ws.resources.local_file)
     resource_flow_id = _start_resource_curation_for_tool_sweep(ws, target_kind="local_file", target=local_source)
     run_next_created_step(ws.admin, resource_flow_id)

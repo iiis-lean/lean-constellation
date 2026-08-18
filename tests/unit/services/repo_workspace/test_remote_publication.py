@@ -73,6 +73,22 @@ def test_remote_publication_configures_and_verifies_exact_release(
         text=True,
     ).stdout.strip()
     assert actual == expected
+    receipt_path = (
+        repo
+        / ".lean_constellation"
+        / "work"
+        / "receipts"
+        / "remote_publication"
+        / "provider_r1.json"
+    )
+    assert receipt_path.is_file()
+    assert not (
+        repo
+        / ".lean_constellation"
+        / "publication"
+        / "remote_receipts"
+        / "provider_r1.json"
+    ).exists()
 
 
 def test_remote_publication_preview_is_cas_bound(tmp_path: Path) -> None:

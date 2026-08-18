@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from agent_runtime_kit.flow.models import FlowStatus
 
 from lean_constellation.flows.common.submissions import new_submission_id
@@ -127,6 +129,70 @@ def test_resource_curation_preflight_duplicate_hint_continues_to_agent(tmp_path:
     assert flow.result.outcome == "duplicate"
     assert flow.result.existing_resource_key == resource_key
     assert flow.state.active_resource_draft_key is None
+
+
+def test_resource_curation_curator_step_uses_current_draft_workdir(tmp_path: Path) -> None:
+    runtime, _ = _runtime(tmp_path)
+    repo_root = tmp_path / "workspace" / "Repo"
+    repo_root.mkdir(parents=True)
+    flow_id = _start_resource_flow(
+        runtime,
+        repo_root,
+        target_kind="web",
+        target="https://example.com/current-workdir",
+    )
+
+    _advance_and_run(runtime, flow_id)
+    flow = runtime.flow_service.get_flow(flow_id)
+    assert flow.state.position.phase == "curator_agent"
+    assert flow.state.draft_root is not None
+    step_id = runtime.flow_service.advance_flow(flow_id)
+    assert step_id is not None
+    step = runtime.step_service.store.get_step(step_id)
+
+    assert step.state.workdir_override == flow.state.draft_root
+    assert step.state.workdir_override.startswith(
+        str(repo_root / ".lean_constellation" / "work" / "drafts" / "resources")
+    )
+
+
+def test_resource_curation_curator_step_fails_closed_without_current_draft_root(
+    tmp_path: Path,
+) -> None:
+    runtime, _ = _runtime(tmp_path)
+    repo_root = tmp_path / "workspace" / "Repo"
+    repo_root.mkdir(parents=True)
+    flow_id = _start_resource_flow(
+        runtime,
+        repo_root,
+        target_kind="web",
+        target="https://example.com/missing-current-workdir",
+    )
+
+    _advance_and_run(runtime, flow_id)
+    runtime.flow_service.store.update_flow_record(
+        flow_id,
+        lambda flow: setattr(flow.state, "draft_root", None),
+    )
+    steps_before = [step.step_id for step in runtime.flow_service.list_steps(flow_id=flow_id)]
+    work_root = repo_root / ".lean_constellation" / "work" / "drafts" / "resources"
+    work_tree_before = sorted(
+        path.relative_to(work_root).as_posix() for path in work_root.rglob("*")
+    )
+
+    with pytest.raises(
+        TypeError,
+        match="resource curator phase requires the current allocated draft root",
+    ):
+        runtime.flow_service.advance_flow(flow_id)
+
+    assert [
+        step.step_id for step in runtime.flow_service.list_steps(flow_id=flow_id)
+    ] == steps_before
+    assert sorted(
+        path.relative_to(work_root).as_posix() for path in work_root.rglob("*")
+    ) == work_tree_before
+    assert not (repo_root / ".lean_constellation" / "resources" / ".drafts").exists()
 
 
 def test_resource_curation_local_resource_created_result(tmp_path: Path) -> None:

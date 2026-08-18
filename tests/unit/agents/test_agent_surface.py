@@ -563,6 +563,10 @@ def test_source_builder_reviewer_and_resource_curator_keep_acquisition_boundarie
     assert source_write_tools.isdisjoint(reviewer_tools)
     assert "render_source_pdf_page" in source_tools
     assert "render_source_pdf_page" in reviewer_tools
+    preview_tool = {
+        tool.name: tool for tool in build_application_tool_specs()
+    }["render_source_pdf_page"]
+    assert "isolated Source preview cache" in preview_tool.description
     assert resource_write_tools.isdisjoint(source_tools)
     assert resource_write_tools <= curator_tools
     assert source_write_tools.isdisjoint(curator_tools)

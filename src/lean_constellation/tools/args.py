@@ -122,7 +122,7 @@ class RequirementNameArgs(StrictModel):
 
 
 class SourceCorpusCheckArgs(StrictModel):
-    relpath: str = Field(default=".lean_constellation/source_draft", description="Source draft path relative to the repo root; Source Builder and Reviewer are bound to the active draft.")
+    relpath: str = Field(default=".lean_constellation/work/drafts/source_corpus", description="Source draft path relative to the repo root; Source Builder and Reviewer are bound to the active draft.")
     entry_path: str | None = Field(default=None, description="Optional entry file path relative to the source corpus root.")
 
 

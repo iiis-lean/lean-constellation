@@ -37,8 +37,39 @@ def test_allocate_resource_draft_creates_metadata_and_work_dirs(tmp_path: Path) 
     assert draft.value.draft.status == ResourceDraftStatus.ALLOCATED
     assert draft.value.draft.target.canonical_locator == "https://example.com/math/page"
     assert Path(draft.value.draft_root).is_dir()
+    assert Path(draft.value.draft_root).parent == (
+        tmp_path / ".lean_constellation" / "work" / "drafts" / "resources"
+    )
     assert Path(draft.value.work_dir).is_dir()
     assert Path(draft.value.metadata_path).is_file()
+
+
+def test_resource_draft_legacy_path_is_not_loaded(tmp_path: Path) -> None:
+    service = make_runtime().material
+    draft = service.allocate_resource_draft(
+        tmp_path,
+        target="https://example.com/legacy-draft",
+    )
+    assert draft.ok and draft.value is not None
+
+    current_root = Path(draft.value.draft_root)
+    legacy_root = (
+        tmp_path
+        / ".lean_constellation"
+        / "resources"
+        / ".drafts"
+        / draft.value.draft.draft_id
+    )
+    legacy_root.parent.mkdir(parents=True)
+    current_root.rename(legacy_root)
+
+    loaded = service.get_resource_draft(
+        tmp_path,
+        draft_id=draft.value.draft.draft_id,
+    )
+
+    assert not loaded.ok
+    assert legacy_root.is_dir()
 
 
 def test_resource_import_accepts_resolved_material_for_structured_request(tmp_path: Path) -> None:

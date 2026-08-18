@@ -207,7 +207,10 @@ def test_source_index_granular_operator_update_survives_facade_restart(tmp_path:
     )
     assert committed.ok and committed.value is not None, committed.issues
     assert committed.value.newly_committed_file_paths == ["chapter.md"]
-    assert not (repo_root / ".lean_constellation/source_index/operator_baseline.json").exists()
+    assert not (
+        repo_root
+        / ".lean_constellation/work/recovery/source_index/operator_baseline.json"
+    ).exists()
 
 
 def test_source_index_mutation_rejects_stale_digest_without_truth_change(tmp_path: Path) -> None:

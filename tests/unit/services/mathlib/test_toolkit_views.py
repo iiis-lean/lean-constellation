@@ -42,7 +42,11 @@ def test_search_mathlib_declarations_returns_semantic_view_and_cached_candidate(
     assert "search_query" not in search.value.candidates[0].model_dump()
     assert "raw_excerpt" not in search.value.candidates[0].model_dump()
     cached = service.runtime.foundation.read_json(
-        tmp_path / ".lean_constellation" / "indexes" / "mathlib_candidates.json",
+        tmp_path
+        / ".lean_constellation"
+        / "work"
+        / "cache"
+        / "mathlib_candidates.json",
         MathlibCandidateCache,
     )
     assert cached.ok and cached.value is not None

@@ -4,7 +4,11 @@ from tests.unit_services_helpers import make_runtime
 
 from lean_constellation.services.external_clients import LeanMcpToolkitClient
 from lean_constellation.services.external_clients.lean_toolchain import ToolchainDeclarationView
-from lean_constellation.services.mathlib import MathlibCandidateCache, MathlibService
+from lean_constellation.services.mathlib import (
+    MathlibCandidateCache,
+    MathlibCandidateView,
+    MathlibService,
+)
 
 
 def _service(dispatcher) -> MathlibService:
@@ -43,8 +47,13 @@ def test_search_external_mathlib_caches_candidates_without_index_write(tmp_path:
     assert search.value.candidates[0].name == "Finset.sum_congr"
     assert search.value.candidates[0].source_kind == "lean_explore.find"
 
-    cached_path = tmp_path / ".lean_constellation" / "indexes" / "mathlib_candidates.json"
+    cached_path = (
+        tmp_path / ".lean_constellation" / "work" / "cache" / "mathlib_candidates.json"
+    )
     assert cached_path.exists()
+    assert not (
+        tmp_path / ".lean_constellation" / "indexes" / "mathlib_candidates.json"
+    ).exists()
     assert not service.get_mathlib_decl_entry(tmp_path, name="Finset.sum_congr").ok
 
 
@@ -63,10 +72,40 @@ def test_search_external_mathlib_reuses_stable_candidate_id_for_same_query_and_i
     assert second.ok and second.value is not None
     assert first.value.candidates[0].candidate_id == second.value.candidates[0].candidate_id
     assert second.value.candidates[0].source_kind == "lean_explore.find"
-    cache_path = tmp_path / ".lean_constellation" / "indexes" / "mathlib_candidates.json"
+    cache_path = (
+        tmp_path / ".lean_constellation" / "work" / "cache" / "mathlib_candidates.json"
+    )
     cached = service.runtime.foundation.read_json(cache_path, MathlibCandidateCache)
     assert cached.ok and cached.value is not None
     assert list(cached.value.candidates) == [first.value.candidates[0].candidate_id]
+
+
+def test_mathlib_candidate_legacy_cache_is_not_loaded(tmp_path: Path) -> None:
+    def unexpected_dispatch(tool_name: str, payload: dict):
+        raise AssertionError(f"unexpected toolkit call: {tool_name} {payload}")
+
+    service = _service(unexpected_dispatch)
+    legacy_path = (
+        tmp_path / ".lean_constellation" / "indexes" / "mathlib_candidates.json"
+    )
+    legacy = MathlibCandidateCache(
+        candidates={
+            "mc_legacy": MathlibCandidateView(
+                candidate_id="mc_legacy",
+                name="Nat.add_assoc",
+            )
+        }
+    )
+    assert service.runtime.foundation.write_json_atomic(legacy_path, legacy).ok
+
+    inspected = service.inspect_mathlib_search_candidate(
+        tmp_path,
+        candidate_id="mc_legacy",
+    )
+
+    assert not inspected.ok
+    assert inspected.issues[0].kind == "mathlib_candidate_unknown"
+    assert legacy_path.is_file()
 
 
 def test_inspect_mathlib_declaration_and_module(tmp_path: Path) -> None:

@@ -197,7 +197,9 @@ def test_source_index_open_hides_internal_baseline_locator_in_direct_and_http_ou
     assert response.status_code == 200
     direct_json = direct.model_dump(mode="json")
     http_json = response.json()
-    internal_locator = ".lean_constellation/source_index/operator_baseline.json"
+    internal_locator = (
+        ".lean_constellation/work/recovery/source_index/operator_baseline.json"
+    )
     assert "baseline_locator" not in direct_json["value"]
     assert "baseline_locator" not in http_json["value"]
     assert internal_locator not in str(direct_json)

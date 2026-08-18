@@ -10,7 +10,7 @@ import shutil
 import struct
 import subprocess
 import uuid
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Literal
 
 from pydantic import Field
@@ -21,7 +21,13 @@ from lean_constellation.services.external_clients import (
     AcquiredArtifactResult,
     ExtractedMaterialResult,
 )
-from lean_constellation.services.foundation import FoundationContext, GateReport, ServiceIssue, ServiceResult
+from lean_constellation.services.foundation import (
+    FoundationContext,
+    GateReport,
+    RepoPathClass,
+    ServiceIssue,
+    ServiceResult,
+)
 from lean_constellation.services.material.tex_tree import find_literal_tex_include_problems
 
 if TYPE_CHECKING:
@@ -163,7 +169,13 @@ class SourceCorpusComponent:
         entry_path: str | None = None,
         created_from_mode: str = "scan",
     ) -> ServiceResult[SourceCorpusManifestView]:
+        relpath_issue = self._source_relpath_issue(relpath)
+        if relpath_issue is not None:
+            return self.runtime.foundation.fail(relpath_issue)
         relpath = self._effective_relpath(repo_root, relpath)
+        relpath_issue = self._source_relpath_issue(relpath)
+        if relpath_issue is not None:
+            return self.runtime.foundation.fail(relpath_issue)
         ctx = FoundationContext(repo_root=Path(repo_root))
         root = self.runtime.foundation.layout.source_corpus_root(ctx, relpath)
         if not root.exists() or not root.is_dir():
@@ -319,7 +331,10 @@ class SourceCorpusComponent:
                 )
             )
         source_sha = self._hash_file(source)
-        cache_root = self._work_root(repo_root).resolve(strict=False) / "previews" / source_sha
+        cache_root = self.runtime.foundation.source_corpus_preview_dir(
+            FoundationContext(repo_root=repo_root),
+            source_sha,
+        ).resolve(strict=False)
         output = cache_root / f"page_{page_number:04d}_{dpi}dpi.png"
         reused = output.is_file()
         if not reused:
@@ -511,17 +526,23 @@ class SourceCorpusComponent:
                 )
             )
 
-        staging_parent = (
-            self.runtime.foundation.layout.constellation_root(FoundationContext(repo_root=repo_root))
-            / ".source_corpus_staging"
+        foundation_ctx = FoundationContext(repo_root=repo_root)
+        staging_parent = self.runtime.foundation.layout.source_corpus_staging_root(
+            foundation_ctx
         )
         allocated = self.runtime.foundation.store.allocate_uuid(
-            lambda candidate: (staging_parent / candidate).exists(),
+            lambda candidate: self.runtime.foundation.source_corpus_staging_dir(
+                foundation_ctx,
+                candidate,
+            ).exists(),
             prefix="source_import",
         )
         if not allocated.ok or allocated.value is None:
             return self.runtime.foundation.fail(allocated.issues)
-        transaction_root = staging_parent / allocated.value
+        transaction_root = self.runtime.foundation.source_corpus_staging_dir(
+            foundation_ctx,
+            allocated.value,
+        )
         staged_root = transaction_root / "corpus"
         backup_root = transaction_root / "previous"
         manifest_recovery_path = transaction_root / "previous_manifest.json"
@@ -805,12 +826,33 @@ class SourceCorpusComponent:
         relpath: str = ".lean_constellation/source",
         entry_path: str | None = None,
     ) -> ServiceResult[GateReport]:
-        is_active_draft = relpath == ".lean_constellation/source_draft"
+        relpath_issue = self._source_relpath_issue(relpath)
+        if relpath_issue is not None:
+            return self.runtime.foundation.ok(
+                self.runtime.foundation.gate_failed(
+                    "source_corpus_draft",
+                    [relpath_issue],
+                    summary="Source corpus path is not current.",
+                )
+            )
+        normalized_relpath = PurePosixPath(relpath).as_posix()
+        active_draft_root = self._draft_root(repo_root)
+        active_draft_relpath = active_draft_root.relative_to(Path(repo_root)).as_posix()
+        is_active_draft = normalized_relpath == active_draft_relpath
         if is_active_draft:
             scan = self.scan_source_corpus_draft(repo_root, entry_path=entry_path)
-            root = self._draft_root(repo_root)
+            root = active_draft_root
         else:
             relpath = self._effective_relpath(repo_root, relpath)
+            relpath_issue = self._source_relpath_issue(relpath)
+            if relpath_issue is not None:
+                return self.runtime.foundation.ok(
+                    self.runtime.foundation.gate_failed(
+                        "source_corpus_draft",
+                        [relpath_issue],
+                        summary="Source corpus path is not current.",
+                    )
+                )
             scan = self.scan_source_corpus(repo_root, relpath=relpath, entry_path=entry_path)
             root = self.runtime.foundation.layout.source_corpus_root(FoundationContext(repo_root=Path(repo_root)), relpath)
         if not scan.ok or scan.value is None:
@@ -1026,7 +1068,7 @@ class SourceCorpusComponent:
     ) -> ServiceResult[SourceCorpusPreparedView]:
         gate = self.check_source_corpus_draft(
             repo_root,
-            relpath=".lean_constellation/source_draft",
+            relpath=self._draft_root(repo_root).relative_to(Path(repo_root)).as_posix(),
             entry_path=entry_path,
         )
         if not gate.ok or gate.value is None:
@@ -1330,6 +1372,29 @@ class SourceCorpusComponent:
         if relpath == ".lean_constellation/source":
             return self._source_relpath(repo_root)
         return relpath
+
+    def _source_relpath_issue(self, relpath: str) -> ServiceIssue | None:
+        try:
+            classification = self.runtime.foundation.classify_repo_path(
+                PurePosixPath(relpath)
+            )
+        except (TypeError, ValueError) as exc:
+            return self.runtime.foundation.issue(
+                "source_corpus_relpath_invalid",
+                str(exc),
+                object_ref=relpath,
+                field="relpath",
+            )
+        if classification.path_class is not RepoPathClass.LEGACY_OPERATIONAL:
+            return None
+        return self.runtime.foundation.issue(
+            "legacy_operational_path_forbidden",
+            "Legacy Source corpus work paths are not readable by current services.",
+            object_ref=classification.path,
+            field="relpath",
+            expected=".lean_constellation/source or .lean_constellation/work/drafts/source_corpus",
+            suggested_action="Migrate the legacy path with the task-local dry-run, backup, apply, and current validation workflow.",
+        )
 
     def _manifest_path(self, repo_root: Path) -> Path:
         return self.runtime.foundation.layout.constellation_root(FoundationContext(repo_root=Path(repo_root))) / "source_corpus" / "manifest.json"

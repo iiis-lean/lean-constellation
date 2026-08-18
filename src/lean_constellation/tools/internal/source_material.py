@@ -1024,7 +1024,7 @@ def _check_source_corpus_draft(runtime, ctx: ToolExecutionContext, args: SourceC
     if ctx.actor.agent_type in {"SourceCorpusBuilderAgent", "SourceCorpusReviewerAgent"}:
         return runtime.material.check_source_corpus_draft(
             ctx.repo_root,
-            relpath=".lean_constellation/source_draft",
+            relpath=".lean_constellation/work/drafts/source_corpus",
             entry_path=args.entry_path,
         )
     return runtime.material.check_source_corpus_draft(
@@ -1058,7 +1058,7 @@ def build_source_corpus_tool_specs() -> list[ToolSpec]:
         ),
         direct_tool(
             name="render_source_pdf_page",
-            description="Render one PDF from the active Source draft _work area into _work/previews and return its exact image locator and digest.",
+            description="Render one PDF from the active Source draft _work area into the isolated Source preview cache and return its exact image locator and digest.",
             args_model=SourcePdfPageRenderArgs,
             capability=ToolCapability.READ,
             backing_service="material",

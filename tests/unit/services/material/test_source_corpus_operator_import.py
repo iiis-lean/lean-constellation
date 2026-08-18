@@ -147,7 +147,9 @@ def test_local_dir_import_gate_or_manifest_failure_preserves_canonical_truth(
     assert not write_failed.ok
     assert canonical.read_text() == "Stable theorem.\n"
     assert manifest.read_bytes() == before_manifest
-    assert not (repo_root / ".lean_constellation/.source_corpus_staging").exists()
+    assert not (
+        repo_root / ".lean_constellation/work/staging/source_corpus"
+    ).exists()
 
 
 def test_local_dir_import_preserves_backup_when_backup_restore_fails(
@@ -203,7 +205,9 @@ def test_local_dir_import_preserves_backup_when_backup_restore_fails(
         for issue in failed.issues
     )
     transactions = list(
-        (repo_root / ".lean_constellation/.source_corpus_staging").glob("source_import_*")
+        (repo_root / ".lean_constellation/work/staging/source_corpus").glob(
+            "source_import_*"
+        )
     )
     assert len(transactions) == 1
     assert (transactions[0] / "previous/chapter.md").read_text() == "Stable theorem.\n"
@@ -266,7 +270,9 @@ def test_local_dir_import_preserves_manifest_recovery_when_manifest_restore_fail
     )
     assert canonical.read_text() == "Stable theorem.\n"
     transactions = list(
-        (repo_root / ".lean_constellation/.source_corpus_staging").glob("source_import_*")
+        (repo_root / ".lean_constellation/work/staging/source_corpus").glob(
+            "source_import_*"
+        )
     )
     assert len(transactions) == 1
     assert (transactions[0] / "previous_manifest.json").read_bytes() == before_manifest

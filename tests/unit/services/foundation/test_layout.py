@@ -13,13 +13,43 @@ def test_layout_uses_constellation_material_roots(tmp_path) -> None:
     assert layout.repo_metadata_path(ctx) == tmp_path / ".lean_constellation" / "repo.json"
     assert layout.preparation_input_path(ctx) == tmp_path / ".lean_constellation" / "preparation_input.json"
     assert layout.source_corpus_root(ctx) == tmp_path / ".lean_constellation" / "source"
+    assert layout.lc_work_root(ctx) == tmp_path / ".lean_constellation" / "work"
+    assert layout.lc_work_drafts_root(ctx) == tmp_path / ".lean_constellation" / "work" / "drafts"
+    assert layout.source_corpus_draft_root(ctx) == (
+        tmp_path / ".lean_constellation" / "work" / "drafts" / "source_corpus"
+    )
+    assert layout.resource_drafts_root(ctx) == (
+        tmp_path / ".lean_constellation" / "work" / "drafts" / "resources"
+    )
+    assert layout.resource_draft_root(ctx, "draft_1") == (
+        tmp_path / ".lean_constellation" / "work" / "drafts" / "resources" / "draft_1"
+    )
+    assert layout.mathlib_candidates_cache_path(ctx) == (
+        tmp_path / ".lean_constellation" / "work" / "cache" / "mathlib_candidates.json"
+    )
+    assert layout.source_corpus_preview_dir(ctx, "source_1") == (
+        tmp_path / ".lean_constellation" / "work" / "previews" / "source_corpus" / "source_1"
+    )
+    assert layout.source_corpus_staging_dir(ctx, "transaction_1") == (
+        tmp_path / ".lean_constellation" / "work" / "staging" / "source_corpus" / "transaction_1"
+    )
+    assert layout.source_index_recovery_root(ctx) == (
+        tmp_path / ".lean_constellation" / "work" / "recovery" / "source_index"
+    )
+    assert layout.lc_work_audit_root(ctx) == tmp_path / ".lean_constellation" / "work" / "audit"
+    assert layout.remote_publication_receipts_root(ctx) == (
+        tmp_path / ".lean_constellation" / "work" / "receipts" / "remote_publication"
+    )
     assert layout.resources_root(ctx) == tmp_path / ".lean_constellation" / "resources"
+    assert not hasattr(layout, "resource_temp_dir")
     assert layout.resource_dir(ctx, "arxiv_1234") == tmp_path / ".lean_constellation" / "resources" / "items" / "arxiv_1234"
     assert layout.snapshot_root(ctx) == tmp_path / ".lean_constellation" / "snapshots"
     assert layout.releases_root(ctx) == tmp_path / ".lean_constellation" / "releases"
     assert layout.release_path(ctx, "release_1") == tmp_path / ".lean_constellation" / "releases" / "release_1.json"
     assert layout.repo_locks_root(ctx) == tmp_path / ".lean_constellation" / ".locks"
     assert layout.repo_lifecycle_lock_path(ctx) == tmp_path / ".lean_constellation" / ".locks" / "repo_lifecycle.lock"
+    view = layout.repo_layout_view(ctx)
+    assert view.work_root == str(tmp_path / ".lean_constellation" / "work")
 
 
 def test_layout_rejects_repo_escape_and_unsafe_keys(tmp_path) -> None:
@@ -34,6 +64,12 @@ def test_layout_rejects_repo_escape_and_unsafe_keys(tmp_path) -> None:
         layout.resource_dir(ctx, "bad/key")
     with pytest.raises(ValueError):
         layout.release_path(ctx, "../outside")
+    with pytest.raises(ValueError):
+        layout.resource_draft_root(ctx, "bad/key")
+    with pytest.raises(ValueError):
+        layout.source_corpus_preview_dir(ctx, "../outside")
+    with pytest.raises(ValueError):
+        layout.source_corpus_staging_dir(ctx, "../outside")
 
 
 def test_node_and_projection_paths_are_stable(tmp_path) -> None:

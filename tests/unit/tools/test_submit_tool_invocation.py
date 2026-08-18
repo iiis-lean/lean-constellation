@@ -924,7 +924,7 @@ def test_gate_failure_does_not_record_submission(tmp_path: Path) -> None:
 def test_source_corpus_builder_ready_gateway_missing_does_not_write_manifest(tmp_path: Path) -> None:
     runtime = create_test_runtime_services()
     assert register_submit_tooling(runtime).ok
-    source_root = tmp_path / ".lean_constellation" / "source_draft"
+    source_root = tmp_path / ".lean_constellation" / "work" / "drafts" / "source_corpus"
     _write_submit_source_draft(source_root)
     raw = RawToolCallContext(
         endpoint_view_key="source_corpus_builder_submit",
@@ -961,7 +961,7 @@ def test_source_corpus_builder_ready_submits_configured_canonical_relpath(tmp_pa
             source_corpus_relpath="custom_sources",
         ),
     ).ok
-    source_root = tmp_path / ".lean_constellation" / "source_draft"
+    source_root = tmp_path / ".lean_constellation" / "work" / "drafts" / "source_corpus"
     _write_submit_source_draft(source_root)
     raw = RawToolCallContext(
         endpoint_view_key="source_corpus_builder_submit",
@@ -996,7 +996,7 @@ def test_source_corpus_builder_ready_accepts_concise_static_readme(tmp_path: Pat
     gateway = FakeSubmissionGateway()
     runtime = _runtime(gateway)
     assert register_submit_tooling(runtime).ok
-    source_root = tmp_path / ".lean_constellation" / "source_draft"
+    source_root = tmp_path / ".lean_constellation" / "work" / "drafts" / "source_corpus"
     _write_submit_source_draft(source_root, weak_readme=True)
     raw = RawToolCallContext(
         endpoint_view_key="source_corpus_builder_submit",
@@ -1025,7 +1025,7 @@ def test_source_corpus_reviewer_submit_requires_evidence_and_keeps_corpus_read_o
     gateway = FakeSubmissionGateway()
     runtime = _runtime(gateway)
     assert register_submit_tooling(runtime).ok
-    source_root = tmp_path / ".lean_constellation" / "source_draft"
+    source_root = tmp_path / ".lean_constellation" / "work" / "drafts" / "source_corpus"
     _write_submit_source_draft(source_root)
     raw = RawToolCallContext(
         endpoint_view_key="source_corpus_reviewer_submit",

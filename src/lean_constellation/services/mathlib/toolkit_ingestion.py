@@ -1025,7 +1025,9 @@ class ToolkitIngestionComponent:
         )
 
     def _candidate_cache_path(self, repo_root: Path) -> Path:
-        return self.runtime.foundation.index_cache_path(FoundationContext(repo_root=Path(repo_root)), "mathlib_candidates")
+        return self.runtime.foundation.mathlib_candidates_cache_path(
+            FoundationContext(repo_root=Path(repo_root))
+        )
 
     def _load_candidate_cache(self, repo_root: Path) -> ServiceResult[MathlibCandidateCache]:
         path = self._candidate_cache_path(repo_root)

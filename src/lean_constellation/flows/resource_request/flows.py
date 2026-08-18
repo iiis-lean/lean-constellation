@@ -195,7 +195,7 @@ class ResourceCurationFlow(LeanBusinessFlow):
                             "LEAN_CONSTELLATION_SUBMIT_TOOL_VIEW": "resource_curator_submit",
                             **({"LEAN_CONSTELLATION_RESOURCE_DRAFT_ID": state.active_resource_draft_key} if state.active_resource_draft_key else {}),
                         },
-                        workdir_override=state.draft_root or _resource_draft_workdir(input_model),
+                        workdir_override=_require_resource_draft_workdir(state),
                         max_auto_continue_turns=1,
                     ),
                 )
@@ -372,10 +372,10 @@ def _resource_repo_root(input_model: ResourceCurationInput) -> Path:
     return Path(input_model.repo_root)
 
 
-def _resource_draft_workdir(input_model: ResourceCurationInput) -> str | None:
-    if not input_model.repo_root:
-        return None
-    return str(Path(input_model.repo_root) / ".lean_constellation" / "resources" / ".drafts")
+def _require_resource_draft_workdir(state: ResourceCurationState) -> str:
+    if not state.draft_root:
+        raise TypeError("resource curator phase requires the current allocated draft root")
+    return state.draft_root
 
 
 def _resource_curator_prompt(input_model: ResourceCurationInput, state: ResourceCurationState) -> str:
