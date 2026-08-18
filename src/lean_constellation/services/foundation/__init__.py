@@ -30,6 +30,7 @@ from lean_constellation.services.foundation.repo_path_policy import (
     RepoPathClass,
     RepoPathClassification,
     classify_repo_path,
+    managed_publication_ignore_roots,
 )
 from lean_constellation.services.foundation.result_error import (
     GateReport,
@@ -88,4 +89,5 @@ __all__ = [
     "ToolResultView",
     "WriteMode",
     "classify_repo_path",
+    "managed_publication_ignore_roots",
 ]

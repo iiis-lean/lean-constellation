@@ -31,8 +31,11 @@ from lean_constellation.domain.repo import (
 from lean_constellation.domain.refs import DeclRef
 from lean_constellation.services.foundation import (
     FoundationContext,
+    RepoPathClass,
     ServiceResult,
     WriteMode,
+    classify_repo_path,
+    managed_publication_ignore_roots,
 )
 from lean_constellation.services.repo_workspace.publication_graph import (
     PublicationGraphvizUnavailable,
@@ -45,20 +48,16 @@ if TYPE_CHECKING:
 
 _MANAGED_IGNORE_BEGIN = "# BEGIN Lean Constellation managed ignores"
 _MANAGED_IGNORE_END = "# END Lean Constellation managed ignores"
-_MANAGED_IGNORE_BODY = """# BEGIN Lean Constellation managed ignores
-/.lake/
-/.agent_runtime/
-/.runtime/
-/.lean_constellation/snapshots/
-/.lean_constellation/checkpoints/
-/.lean_constellation/locks/
-/.lean_constellation/.locks/
-/.lean_constellation/staging/
-/.lean_constellation/publication/remote_receipts/
-/.env
-/.env.*
-!/.env.example
-# END Lean Constellation managed ignores"""
+_MANAGED_IGNORE_BODY = "\n".join(
+    [
+        _MANAGED_IGNORE_BEGIN,
+        *(f"/{path.as_posix()}/" for path in managed_publication_ignore_roots()),
+        "/.env",
+        "/.env.*",
+        "!/.env.example",
+        _MANAGED_IGNORE_END,
+    ]
+)
 _README_BEGIN = "<!-- BEGIN Lean Constellation: project-summary -->"
 _README_END = "<!-- END Lean Constellation: project-summary -->"
 _PUBLICATION_MARK_PATH = "docs/lean-constellation/assets/lean-constellation-mark.svg"
@@ -69,14 +68,6 @@ _LEAN_CONSTELLATION_REPOSITORY_URL = (
 _LEAN_MCP_TOOLKIT_REPOSITORY_URL = (
     "https://github.com/iiis-lean/lean-mcp-toolkit"
 )
-_EXCLUDED_TOP_LEVEL = {".git", ".lake", ".agent_runtime", ".runtime"}
-_EXCLUDED_CONSTELLATION_DIRS = {
-    ".locks",
-    "checkpoints",
-    "locks",
-    "snapshots",
-    "staging",
-}
 _CITATION_TEMPLATE = """cff-version: 1.2.0
 message: "If you use this formalization, please cite it using this metadata."
 title: "REPLACE WITH THE FORMALIZATION TITLE"
@@ -362,6 +353,11 @@ class RepoPublicationComponent:
         generated_at: str | None = None,
     ) -> ServiceResult[RepoPublicationManifest]:
         repo_root = Path(repo_root).resolve()
+        legacy_paths = self._legacy_operational_paths(repo_root)
+        if legacy_paths:
+            return self.runtime.foundation.fail(
+                self._legacy_operational_issue(legacy_paths)
+            )
         policy = self.resolve_policy(repo_root)
         if not policy.ok or policy.value is None:
             return self.runtime.foundation.fail(policy.issues)
@@ -380,6 +376,11 @@ class RepoPublicationComponent:
                 if path.is_symlink():
                     continue
                 relpath = path.relative_to(repo_root).as_posix()
+                classification = classify_repo_path(PurePosixPath(relpath))
+                if classification.requires_migration:
+                    return self.runtime.foundation.fail(
+                        self._legacy_operational_issue((relpath,))
+                    )
                 excluded_reason = self._excluded_directory_reason(relpath)
                 if excluded_reason is not None:
                     excluded_directories.append(
@@ -397,6 +398,11 @@ class RepoPublicationComponent:
                 if not path.is_file() or path.is_symlink():
                     continue
                 relpath = path.relative_to(repo_root).as_posix()
+                classification = classify_repo_path(PurePosixPath(relpath))
+                if classification.requires_migration:
+                    return self.runtime.foundation.fail(
+                        self._legacy_operational_issue((relpath,))
+                    )
                 excluded_reason = self._exclusion_reason(relpath)
                 if (
                     relpath == "lake-manifest.json"
@@ -741,6 +747,11 @@ class RepoPublicationComponent:
         generated_at: str | None = None,
     ) -> ServiceResult[RepoPublicationPreparationView]:
         repo_root = Path(repo_root).resolve()
+        legacy_paths = self._legacy_operational_paths(repo_root)
+        if legacy_paths:
+            return self.runtime.foundation.fail(
+                self._legacy_operational_issue(legacy_paths)
+            )
         presentation_path = (
             self.runtime.foundation.layout.publication_presentation_path(
                 FoundationContext(repo_root=repo_root)
@@ -833,14 +844,6 @@ class RepoPublicationComponent:
         boundaries_md_path = docs_root / "PUBLIC_BOUNDARIES.md"
         declarations_root = docs_root / "declarations"
         declarations_root.mkdir(parents=True, exist_ok=True)
-        legacy_declarations_root = docs_root / "public-api"
-        if legacy_declarations_root.is_dir():
-            for legacy_page in legacy_declarations_root.glob("*.md"):
-                legacy_page.unlink()
-            try:
-                legacy_declarations_root.rmdir()
-            except OSError:
-                pass
         assets_root = docs_root / "assets"
         api_svg_path = assets_root / "public-api.svg"
         boundaries_svg_path = assets_root / "public-boundaries.svg"
@@ -2116,42 +2119,72 @@ class RepoPublicationComponent:
 
     @staticmethod
     def _excluded_directory_reason(relpath: str) -> str | None:
-        path = PurePosixPath(relpath)
-        if path.parts[0] in _EXCLUDED_TOP_LEVEL:
+        classification = classify_repo_path(PurePosixPath(relpath))
+        if classification.path_class in {
+            RepoPathClass.GIT_INTERNAL,
+            RepoPathClass.ARK_RUNTIME,
+            RepoPathClass.PROCESS_RUNTIME,
+            RepoPathClass.BUILD_ARTIFACT,
+        }:
             return "runtime_or_git_state"
-        if (
-            len(path.parts) >= 2
-            and path.parts[0] == ".lean_constellation"
-            and path.parts[1] in _EXCLUDED_CONSTELLATION_DIRS
-        ):
+        if classification.path_class is RepoPathClass.SPECIALIZED_RECOVERY:
             return "local_checkpoint_or_lock"
-        if path.parts[:3] == (
-            ".lean_constellation",
-            "publication",
-            "remote_receipts",
-        ):
-            return "local_remote_publication_receipt"
+        if classification.path_class in {
+            RepoPathClass.OPERATIONAL_WORK,
+            RepoPathClass.RECOVERABLE_WORK,
+            RepoPathClass.REBUILDABLE_WORK,
+            RepoPathClass.TRANSACTION_WORK,
+            RepoPathClass.LOCAL_EVIDENCE,
+        }:
+            return "operational_work"
+        if classification.path_class is RepoPathClass.LOCAL_SECRET:
+            return "local_environment_or_authentication"
         return None
 
     @classmethod
     def _exclusion_reason(cls, relpath: str) -> str | None:
         path = PurePosixPath(relpath)
-        directory_reason = cls._excluded_directory_reason(relpath)
-        if directory_reason is not None:
-            return directory_reason
         if path.parts[:3] == (
             ".lean_constellation",
             "publication",
             "manifest.json",
         ):
             return "publication_manifest_self"
-        if path.name == ".env" or (
-            path.name.startswith(".env.") and path.name != ".env.example"
+        return cls._excluded_directory_reason(relpath)
+
+    @staticmethod
+    def _legacy_operational_paths(repo_root: Path) -> tuple[str, ...]:
+        legacy_paths: set[str] = set()
+        for current_root, dirnames, filenames in os.walk(
+            repo_root,
+            topdown=True,
+            followlinks=False,
         ):
-            return "local_environment"
-        if path.name in {"auth.json"}:
-            return "local_authentication"
-        return None
+            root = Path(current_root)
+            retained_directories: list[str] = []
+            for dirname in sorted(dirnames):
+                path = root / dirname
+                relpath = path.relative_to(repo_root).as_posix()
+                classification = classify_repo_path(PurePosixPath(relpath))
+                if classification.requires_migration:
+                    legacy_paths.add(relpath)
+                    continue
+                if classification.publication_eligible and not path.is_symlink():
+                    retained_directories.append(dirname)
+            dirnames[:] = retained_directories
+            for filename in sorted(filenames):
+                relpath = (root / filename).relative_to(repo_root).as_posix()
+                if classify_repo_path(PurePosixPath(relpath)).requires_migration:
+                    legacy_paths.add(relpath)
+        return tuple(sorted(legacy_paths, key=lambda value: PurePosixPath(value).parts))
+
+    def _legacy_operational_issue(self, paths: tuple[str, ...]):
+        return self.runtime.foundation.issue(
+            "legacy_operational_path_present",
+            "Legacy operational paths require a task-local migration before publication.",
+            object_ref=paths[0],
+            details={"paths": ", ".join(paths)},
+        )
 
     @staticmethod
     def _file_digest(path: Path) -> str:

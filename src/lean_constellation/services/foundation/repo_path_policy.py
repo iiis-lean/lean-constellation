@@ -92,6 +92,15 @@ _BUILD_ROOTS = {
     "htmlcov",
 }
 
+_MANAGED_PUBLICATION_IGNORE_ROOTS = (
+    PurePosixPath(".lake"),
+    PurePosixPath(".agent_runtime"),
+    PurePosixPath(".runtime"),
+    PurePosixPath(".lean_constellation/work"),
+    PurePosixPath(".lean_constellation/snapshots"),
+    PurePosixPath(".lean_constellation/.locks"),
+)
+
 
 def classify_repo_path(path: PurePosixPath) -> RepoPathClassification:
     """Classify one safe repository-relative POSIX path without filesystem I/O."""
@@ -129,6 +138,18 @@ def classify_repo_path(path: PurePosixPath) -> RepoPathClassification:
         return _classify_lc_work(normalized, parts[len(work_prefix) :])
 
     return RepoPathClassification(normalized, RepoPathClass.PORTABLE_TRUTH)
+
+
+def managed_publication_ignore_roots() -> tuple[PurePosixPath, ...]:
+    """Return current nonportable roots managed in repository ``.gitignore``."""
+
+    for root in _MANAGED_PUBLICATION_IGNORE_ROOTS:
+        classification = classify_repo_path(root)
+        if classification.publication_eligible or classification.requires_migration:
+            raise RuntimeError(
+                f"managed publication ignore root has invalid classification: {root}"
+            )
+    return _MANAGED_PUBLICATION_IGNORE_ROOTS
 
 
 def _classify_lc_work(path: str, relative_parts: tuple[str, ...]) -> RepoPathClassification:
@@ -199,4 +220,5 @@ __all__ = [
     "RepoPathClass",
     "RepoPathClassification",
     "classify_repo_path",
+    "managed_publication_ignore_roots",
 ]

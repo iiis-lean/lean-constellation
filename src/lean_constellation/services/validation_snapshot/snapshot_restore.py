@@ -6,7 +6,7 @@ import hashlib
 import os
 import shutil
 from enum import StrEnum
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
 from pydantic import Field
@@ -15,8 +15,12 @@ from lean_constellation.domain.common import StrictModel, utc_now_iso
 from lean_constellation.services.foundation import (
     FoundationContext,
     GateReport,
+    LCWorkKind,
     MutationSummaryView,
+    RepoPathClass,
+    ServiceIssue,
     ServiceResult,
+    classify_repo_path,
 )
 from lean_constellation.services.validation_snapshot.readiness_gate import ReadinessGateComponent
 
@@ -101,9 +105,6 @@ class SnapshotRestoreView(StrictModel):
 
 class SnapshotRestoreComponent:
     """Create, list, and restore repo stable-point checkpoint snapshots."""
-
-    _EXCLUDED_TOP_LEVEL = {".git", ".lake", ".agent_runtime", ".runtime", "__pycache__", ".pytest_cache"}
-    _EXCLUDED_CONSTELLATION_CHILDREN = {"snapshots", ".locks"}
 
     def __init__(
         self,
@@ -204,6 +205,29 @@ class SnapshotRestoreComponent:
             ),
         }
 
+    @classmethod
+    def checkpoint_work_profiles(
+        cls,
+    ) -> dict[RepoCheckpointKind, frozenset[LCWorkKind]]:
+        profiles = {kind: frozenset() for kind in RepoCheckpointKind}
+        profiles[RepoCheckpointKind.BEFORE_NATIVE_SOURCE_PROCESSING] = frozenset(
+            {LCWorkKind.SOURCE_CORPUS_DRAFT}
+        )
+        profiles[RepoCheckpointKind.BEFORE_NATIVE_RUN_MUTATION] = frozenset(
+            {LCWorkKind.SOURCE_INDEX_RECOVERY}
+        )
+        resource_work = frozenset({LCWorkKind.RESOURCE_DRAFT})
+        profiles[RepoCheckpointKind.BEFORE_RESOURCE_REQUEST_DISPATCH] = resource_work
+        profiles[RepoCheckpointKind.AFTER_RESOURCE_REQUEST_TERMINAL] = resource_work
+        profiles[RepoCheckpointKind.MANUAL_TEST_STABLE_POINT] = frozenset(
+            {
+                LCWorkKind.SOURCE_CORPUS_DRAFT,
+                LCWorkKind.RESOURCE_DRAFT,
+                LCWorkKind.SOURCE_INDEX_RECOVERY,
+            }
+        )
+        return profiles
+
     def check_checkpoint_business_gate(
         self, repo_root: Path, kind: RepoCheckpointKind
     ) -> ServiceResult[GateReport]:
@@ -274,8 +298,10 @@ class SnapshotRestoreComponent:
         try:
             snapshot_root.mkdir(parents=True, exist_ok=False)
             entries: list[SnapshotFileEntry] = []
-            entries.extend(self._copy_constellation_truth(repo_root, lc_archive))
-            entries.extend(self._copy_project_files(repo_root, project_archive))
+            entries.extend(
+                self._copy_constellation_truth(repo_root, lc_archive, kind)
+            )
+            entries.extend(self._copy_project_files(repo_root, project_archive, kind))
         except OSError as exc:
             shutil.rmtree(snapshot_root, ignore_errors=True)
             return self.runtime.foundation.fail(
@@ -288,7 +314,7 @@ class SnapshotRestoreComponent:
 
         files_manifest = SnapshotFilesManifest(
             entries=entries,
-            excluded_top_level=sorted(self._EXCLUDED_TOP_LEVEL),
+            excluded_top_level=self._excluded_top_level_for_snapshot(repo_root, kind),
             summary=f"Captured {len(entries)} files for repo checkpoint snapshot.",
         )
         manifest = RepoCheckpointSnapshotManifest(
@@ -351,6 +377,13 @@ class SnapshotRestoreComponent:
         archive = self._preflight_restore_archive_files(repo_root, snapshot_id, files.value)
         if not archive.ok:
             return self.runtime.foundation.fail(archive.issues)
+        profile = self._validate_files_manifest_profile(
+            repo_root,
+            expected_kind,
+            files.value,
+        )
+        if not profile.ok:
+            return self.runtime.foundation.fail(profile.issues)
         return self.runtime.foundation.ok(
             RepoCheckpointSnapshotView(
                 snapshot_id=manifest.value.snapshot_id,
@@ -383,16 +416,33 @@ class SnapshotRestoreComponent:
         archive_preflight = self._preflight_restore_archive_files(repo_root, snapshot_id, files.value)
         if not archive_preflight.ok:
             return self.runtime.foundation.fail(archive_preflight.issues)
+        profile = self._validate_files_manifest_profile(
+            repo_root,
+            manifest.value.checkpoint_kind,
+            files.value,
+        )
+        if not profile.ok:
+            return self.runtime.foundation.fail(profile.issues)
+        invalidation = self._paths_to_invalidate(repo_root)
+        if not invalidation.ok or invalidation.value is None:
+            return self.runtime.foundation.fail(invalidation.issues)
         if dry_run:
-            would_prune = self._extra_files_for_restore(repo_root, files.value) if prune_extra_files else []
-            would_invalidate = self._lake_build_paths_to_invalidate(repo_root)
+            would_prune = (
+                self._extra_files_for_restore(
+                    repo_root,
+                    manifest.value.checkpoint_kind,
+                    files.value,
+                )
+                if prune_extra_files
+                else []
+            )
             return self.runtime.foundation.ok(
                 SnapshotRestoreView(
                     snapshot_id=snapshot_id,
                     dry_run=True,
                     would_restore_files=would_restore,
                     would_prune_files=would_prune,
-                    would_invalidate_paths=would_invalidate,
+                    would_invalidate_paths=invalidation.value,
                     ark_runtime_snapshot_id=manifest.value.ark_runtime_snapshot_id,
                     summary=f"Dry-run restore would restore {len(would_restore)} files.",
                 )
@@ -403,7 +453,11 @@ class SnapshotRestoreComponent:
         invalidated: list[str] = []
         try:
             if prune_extra_files:
-                pruned = self._prune_extra_files_for_restore(repo_root, files.value)
+                pruned = self._prune_extra_files_for_restore(
+                    repo_root,
+                    manifest.value.checkpoint_kind,
+                    files.value,
+                )
             for entry in files.value.entries:
                 source_archive = self._resolve_managed_relative_path(
                     self._snapshot_dir(repo_root, snapshot_id) / "files",
@@ -413,7 +467,10 @@ class SnapshotRestoreComponent:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(source_archive, target)
                 restored.append(entry.source_relpath)
-            invalidated = self._invalidate_lake_build_artifacts(repo_root)
+            invalidated = self._invalidate_rebuildable_artifacts(
+                repo_root,
+                invalidation.value,
+            )
         except OSError as exc:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
@@ -455,15 +512,22 @@ class SnapshotRestoreComponent:
                 "Checkpoint manifest identity or repository root does not match the requested snapshot.",
                 object_ref=snapshot_id,
             ))
-        files = self.runtime.foundation.store.read_json(
-            self._snapshot_dir(repo_root, snapshot_id) / manifest.value.files_manifest_relpath,
-            SnapshotFilesManifest,
-        )
+        files = self._load_files_manifest(repo_root, snapshot_id)
         if not files.ok or files.value is None:
             return self.runtime.foundation.fail(files.issues)
         archive = self._preflight_restore_archive_files(repo_root, snapshot_id, files.value)
         if not archive.ok:
             return self.runtime.foundation.fail(archive.issues)
+        profile = self._validate_files_manifest_profile(
+            repo_root,
+            manifest.value.checkpoint_kind,
+            files.value,
+        )
+        if not profile.ok:
+            return self.runtime.foundation.fail(profile.issues)
+        invalidation = self._paths_to_invalidate(repo_root)
+        if not invalidation.ok:
+            return self.runtime.foundation.fail(invalidation.issues)
         return self.runtime.foundation.ok(RepoCheckpointSnapshotView(
             snapshot_id=snapshot_id, checkpoint_kind=manifest.value.checkpoint_kind,
             label=manifest.value.label, root=str(self._snapshot_dir(repo_root, snapshot_id)),
@@ -525,12 +589,20 @@ class SnapshotRestoreComponent:
         for child in sorted(root.iterdir()):
             if not child.is_dir():
                 continue
-            loaded = self.runtime.foundation.store.read_json(child / "snapshot.json", RepoCheckpointSnapshotManifest)
+            try:
+                snapshot_id = self.runtime.foundation.layout.ensure_safe_key(child.name)
+            except ValueError:
+                continue
+            loaded = self._load_manifest(Path(repo_root), snapshot_id)
             if not loaded.ok or loaded.value is None:
+                if self._has_noncurrent_manifest_schema_issue(loaded.issues):
+                    return self.runtime.foundation.fail(loaded.issues)
                 continue
             if kind is not None and loaded.value.checkpoint_kind != kind:
                 continue
-            files = self.runtime.foundation.store.read_json(child / loaded.value.files_manifest_relpath, SnapshotFilesManifest)
+            files = self._load_files_manifest(Path(repo_root), snapshot_id)
+            if not files.ok and self._has_noncurrent_manifest_schema_issue(files.issues):
+                return self.runtime.foundation.fail(files.issues)
             file_count = len(files.value.entries) if files.ok and files.value is not None else 0
             views.append(
                 (
@@ -549,6 +621,13 @@ class SnapshotRestoreComponent:
         views.sort(key=lambda item: item[0], reverse=True)
         return self.runtime.foundation.ok([view for _, view in views])
 
+    @staticmethod
+    def _has_noncurrent_manifest_schema_issue(issues: list[ServiceIssue]) -> bool:
+        return any(
+            issue.kind == "repo_checkpoint_snapshot_schema_version_invalid"
+            for issue in issues
+        )
+
     def _check_preparation_input_exists(self, repo_root: Path, gate_name: str) -> GateReport:
         path = self.runtime.foundation.layout.preparation_input_path(FoundationContext(repo_root=repo_root))
         if not path.exists():
@@ -565,24 +644,183 @@ class SnapshotRestoreComponent:
     def _snapshot_dir(self, repo_root: Path, snapshot_id: str) -> Path:
         return self._snapshot_root(repo_root) / self.runtime.foundation.layout.ensure_safe_key(snapshot_id)
 
-    def _copy_constellation_truth(self, repo_root: Path, archive_root: Path) -> list[SnapshotFileEntry]:
+    def _copy_constellation_truth(
+        self,
+        repo_root: Path,
+        archive_root: Path,
+        checkpoint_kind: RepoCheckpointKind,
+    ) -> list[SnapshotFileEntry]:
         source = self.runtime.foundation.layout.constellation_root(FoundationContext(repo_root=repo_root))
         if not source.exists():
             return []
+        return self._copy_path(
+            source,
+            archive_root,
+            source_prefix=repo_root,
+            archive_prefix=archive_root.parent,
+            checkpoint_kind=checkpoint_kind,
+        )
+
+    def _copy_project_files(
+        self,
+        repo_root: Path,
+        archive_root: Path,
+        checkpoint_kind: RepoCheckpointKind,
+    ) -> list[SnapshotFileEntry]:
         entries: list[SnapshotFileEntry] = []
-        for child in source.iterdir():
-            if child.name in self._EXCLUDED_CONSTELLATION_CHILDREN:
+        for child in sorted(repo_root.iterdir()):
+            if child.name == ".lean_constellation":
                 continue
-            entries.extend(self._copy_path(child, archive_root / child.name, source_prefix=repo_root, archive_prefix=archive_root.parent))
+            entries.extend(
+                self._copy_path(
+                    child,
+                    archive_root / child.name,
+                    source_prefix=repo_root,
+                    archive_prefix=archive_root.parent,
+                    checkpoint_kind=checkpoint_kind,
+                )
+            )
         return entries
 
-    def _copy_project_files(self, repo_root: Path, archive_root: Path) -> list[SnapshotFileEntry]:
-        entries: list[SnapshotFileEntry] = []
-        for child in repo_root.iterdir():
-            if child.name in self._EXCLUDED_TOP_LEVEL or child.name == ".lean_constellation":
+    def _excluded_top_level_for_snapshot(
+        self,
+        repo_root: Path,
+        checkpoint_kind: RepoCheckpointKind,
+    ) -> list[str]:
+        profile = self.checkpoint_work_profiles()[checkpoint_kind]
+        excluded: list[str] = []
+        for child in sorted(repo_root.iterdir()):
+            if child.name == ".lean_constellation":
                 continue
-            entries.extend(self._copy_path(child, archive_root / child.name, source_prefix=repo_root, archive_prefix=archive_root.parent))
-        return entries
+            if child.is_symlink():
+                excluded.append(child.name)
+                continue
+            relpath = PurePosixPath(child.relative_to(repo_root).as_posix())
+            classification = classify_repo_path(relpath)
+            if child.is_dir():
+                included = self._directory_may_contain_profile_files(
+                    classification.path_class,
+                    classification.work_kind,
+                    checkpoint_kind,
+                    profile,
+                )
+            else:
+                included = self._classification_is_captured(
+                    classification.path_class,
+                    classification.work_kind,
+                    checkpoint_kind,
+                )
+            if not included:
+                excluded.append(child.name)
+        return excluded
+
+    def _validate_files_manifest_profile(
+        self,
+        repo_root: Path,
+        checkpoint_kind: RepoCheckpointKind,
+        files_manifest: SnapshotFilesManifest,
+    ) -> ServiceResult[MutationSummaryView]:
+        invalid: list[str] = []
+        for entry in files_manifest.entries:
+            try:
+                classification = classify_repo_path(
+                    PurePosixPath(entry.source_relpath)
+                )
+            except (TypeError, ValueError):
+                invalid.append(entry.source_relpath)
+                continue
+            if not self._classification_is_captured(
+                classification.path_class,
+                classification.work_kind,
+                checkpoint_kind,
+            ):
+                invalid.append(entry.source_relpath)
+        if invalid:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "repo_checkpoint_snapshot_profile_mismatch",
+                    "Checkpoint files do not match the checkpoint kind work profile.",
+                    object_ref=checkpoint_kind.value,
+                    details={"paths": ", ".join(sorted(invalid))},
+                )
+            )
+        return self.runtime.foundation.ok(
+            self.runtime.foundation.mutation_view(
+                object_ref=str(repo_root),
+                changed=False,
+                summary="Checkpoint files match the checkpoint work profile.",
+            )
+        )
+
+    @classmethod
+    def _classification_is_captured(
+        cls,
+        path_class: RepoPathClass,
+        work_kind: LCWorkKind | None,
+        checkpoint_kind: RepoCheckpointKind,
+    ) -> bool:
+        if path_class is RepoPathClass.PORTABLE_TRUTH:
+            return True
+        return (
+            path_class is RepoPathClass.RECOVERABLE_WORK
+            and work_kind in cls.checkpoint_work_profiles()[checkpoint_kind]
+        )
+
+    @classmethod
+    def _classification_is_restore_managed(
+        cls,
+        path_class: RepoPathClass,
+        work_kind: LCWorkKind | None,
+        checkpoint_kind: RepoCheckpointKind,
+        captured_work_kinds: frozenset[LCWorkKind],
+    ) -> bool:
+        if path_class is RepoPathClass.PORTABLE_TRUTH:
+            return True
+        return (
+            path_class is RepoPathClass.RECOVERABLE_WORK
+            and work_kind in captured_work_kinds
+            and work_kind in cls.checkpoint_work_profiles()[checkpoint_kind]
+        )
+
+    @classmethod
+    def _directory_may_contain_profile_files(
+        cls,
+        path_class: RepoPathClass,
+        work_kind: LCWorkKind | None,
+        checkpoint_kind: RepoCheckpointKind,
+        managed_work_kinds: frozenset[LCWorkKind],
+    ) -> bool:
+        if path_class is RepoPathClass.PORTABLE_TRUTH:
+            return True
+        if path_class is RepoPathClass.OPERATIONAL_WORK:
+            return bool(managed_work_kinds)
+        if path_class is not RepoPathClass.RECOVERABLE_WORK:
+            return False
+        if work_kind is None:
+            return bool(managed_work_kinds)
+        return (
+            work_kind in managed_work_kinds
+            and work_kind in cls.checkpoint_work_profiles()[checkpoint_kind]
+        )
+
+    @staticmethod
+    def _captured_recoverable_work_kinds(
+        files_manifest: SnapshotFilesManifest,
+    ) -> frozenset[LCWorkKind]:
+        captured: set[LCWorkKind] = set()
+        for entry in files_manifest.entries:
+            try:
+                classification = classify_repo_path(
+                    PurePosixPath(entry.source_relpath)
+                )
+            except (TypeError, ValueError):
+                continue
+            if (
+                classification.path_class is RepoPathClass.RECOVERABLE_WORK
+                and classification.work_kind is not None
+            ):
+                captured.add(classification.work_kind)
+        return frozenset(captured)
 
     def _entries_for_staged_archive(self, repo_root: Path, files_root: Path) -> list[SnapshotFileEntry]:
         entries: list[SnapshotFileEntry] = []
@@ -648,83 +886,157 @@ class SnapshotRestoreComponent:
             finally:
                 os.close(fd)
 
-    def _prune_extra_files_for_restore(self, repo_root: Path, files_manifest: SnapshotFilesManifest) -> list[str]:
+    def _prune_extra_files_for_restore(
+        self,
+        repo_root: Path,
+        checkpoint_kind: RepoCheckpointKind,
+        files_manifest: SnapshotFilesManifest,
+    ) -> list[str]:
         pruned: list[str] = []
-        for relpath in self._extra_files_for_restore(repo_root, files_manifest):
+        parents: set[Path] = set()
+        for relpath in self._extra_files_for_restore(
+            repo_root,
+            checkpoint_kind,
+            files_manifest,
+        ):
             target = repo_root / relpath
             if not target.is_file():
                 continue
+            parents.add(target.parent)
             target.unlink()
             pruned.append(relpath)
-        self._remove_empty_snapshot_managed_dirs(repo_root)
+        for parent in sorted(parents, key=lambda path: len(path.parts), reverse=True):
+            self._remove_empty_parent_dirs(parent, stop_at=repo_root)
         return pruned
 
-    def _extra_files_for_restore(self, repo_root: Path, files_manifest: SnapshotFilesManifest) -> list[str]:
+    def _extra_files_for_restore(
+        self,
+        repo_root: Path,
+        checkpoint_kind: RepoCheckpointKind,
+        files_manifest: SnapshotFilesManifest,
+    ) -> list[str]:
         expected = {entry.source_relpath for entry in files_manifest.entries}
+        captured_work_kinds = self._captured_recoverable_work_kinds(files_manifest)
         return sorted(
             relpath
-            for relpath in self._current_snapshot_managed_files(repo_root)
+            for relpath in self._current_snapshot_managed_files(
+                repo_root,
+                checkpoint_kind,
+                captured_work_kinds,
+            )
             if relpath not in expected
         )
 
-    def _current_snapshot_managed_files(self, repo_root: Path) -> list[str]:
+    def _current_snapshot_managed_files(
+        self,
+        repo_root: Path,
+        checkpoint_kind: RepoCheckpointKind,
+        captured_work_kinds: frozenset[LCWorkKind],
+    ) -> list[str]:
         managed: list[str] = []
-        constellation_root = self.runtime.foundation.layout.constellation_root(FoundationContext(repo_root=repo_root))
-        if constellation_root.exists():
-            for child in constellation_root.iterdir():
-                if child.name in self._EXCLUDED_CONSTELLATION_CHILDREN:
-                    continue
-                managed.extend(self._list_files(child, repo_root))
-        for child in repo_root.iterdir():
-            if child.name in self._EXCLUDED_TOP_LEVEL or child.name == ".lean_constellation":
-                continue
-            managed.extend(self._list_files(child, repo_root))
+        for child in sorted(repo_root.iterdir()):
+            managed.extend(
+                self._list_profile_managed_files(
+                    child,
+                    repo_root=repo_root,
+                    checkpoint_kind=checkpoint_kind,
+                    captured_work_kinds=captured_work_kinds,
+                )
+            )
         return managed
 
-    def _list_files(self, path: Path, repo_root: Path) -> list[str]:
+    def _list_profile_managed_files(
+        self,
+        path: Path,
+        *,
+        repo_root: Path,
+        checkpoint_kind: RepoCheckpointKind,
+        captured_work_kinds: frozenset[LCWorkKind],
+    ) -> list[str]:
+        if path.is_symlink():
+            return []
+        relpath = PurePosixPath(path.relative_to(repo_root).as_posix())
+        classification = classify_repo_path(relpath)
         if path.is_file():
-            return [path.relative_to(repo_root).as_posix()]
-        if not path.is_dir():
+            if self._classification_is_restore_managed(
+                classification.path_class,
+                classification.work_kind,
+                checkpoint_kind,
+                captured_work_kinds,
+            ):
+                return [relpath.as_posix()]
+            return []
+        if not path.is_dir() or not self._directory_may_contain_profile_files(
+            classification.path_class,
+            classification.work_kind,
+            checkpoint_kind,
+            captured_work_kinds,
+        ):
             return []
         files: list[str] = []
-        for child in path.iterdir():
-            if child.name in self._EXCLUDED_TOP_LEVEL:
-                continue
-            files.extend(self._list_files(child, repo_root))
+        for child in sorted(path.iterdir()):
+            files.extend(
+                self._list_profile_managed_files(
+                    child,
+                    repo_root=repo_root,
+                    checkpoint_kind=checkpoint_kind,
+                    captured_work_kinds=captured_work_kinds,
+                )
+            )
         return files
 
-    def _remove_empty_snapshot_managed_dirs(self, repo_root: Path) -> None:
-        roots: list[Path] = []
-        constellation_root = self.runtime.foundation.layout.constellation_root(FoundationContext(repo_root=repo_root))
-        if constellation_root.exists():
-            roots.extend(child for child in constellation_root.iterdir() if child.name not in self._EXCLUDED_CONSTELLATION_CHILDREN)
-        roots.extend(
-            child
-            for child in repo_root.iterdir()
-            if child.name not in self._EXCLUDED_TOP_LEVEL and child.name != ".lean_constellation"
-        )
-        for root in roots:
-            self._remove_empty_dirs(root, stop_at=repo_root)
+    def _remove_empty_parent_dirs(self, path: Path, *, stop_at: Path) -> None:
+        current = path
+        while current != stop_at:
+            try:
+                current.relative_to(stop_at)
+            except ValueError:
+                return
+            try:
+                current.rmdir()
+            except OSError:
+                return
+            current = current.parent
 
-    def _remove_empty_dirs(self, path: Path, *, stop_at: Path) -> None:
-        if not path.is_dir() or path == stop_at:
-            return
-        for child in list(path.iterdir()):
-            self._remove_empty_dirs(child, stop_at=stop_at)
-        try:
-            path.rmdir()
-        except OSError:
-            return
-
-    def _copy_path(self, source: Path, target: Path, *, source_prefix: Path, archive_prefix: Path) -> list[SnapshotFileEntry]:
+    def _copy_path(
+        self,
+        source: Path,
+        target: Path,
+        *,
+        source_prefix: Path,
+        archive_prefix: Path,
+        checkpoint_kind: RepoCheckpointKind,
+    ) -> list[SnapshotFileEntry]:
         entries: list[SnapshotFileEntry] = []
-        if source.is_dir():
-            for child in source.iterdir():
-                if child.name in self._EXCLUDED_TOP_LEVEL:
-                    continue
-                entries.extend(self._copy_path(child, target / child.name, source_prefix=source_prefix, archive_prefix=archive_prefix))
+        if source.is_symlink():
             return entries
-        if not source.is_file():
+        relpath = PurePosixPath(source.relative_to(source_prefix).as_posix())
+        classification = classify_repo_path(relpath)
+        profile = self.checkpoint_work_profiles()[checkpoint_kind]
+        if source.is_dir():
+            if not self._directory_may_contain_profile_files(
+                classification.path_class,
+                classification.work_kind,
+                checkpoint_kind,
+                profile,
+            ):
+                return entries
+            for child in sorted(source.iterdir()):
+                entries.extend(
+                    self._copy_path(
+                        child,
+                        target / child.name,
+                        source_prefix=source_prefix,
+                        archive_prefix=archive_prefix,
+                        checkpoint_kind=checkpoint_kind,
+                    )
+                )
+            return entries
+        if not source.is_file() or not self._classification_is_captured(
+            classification.path_class,
+            classification.work_kind,
+            checkpoint_kind,
+        ):
             return entries
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
@@ -746,25 +1058,107 @@ class SnapshotRestoreComponent:
                 digest.update(chunk)
         return digest.hexdigest()
 
+    def _paths_to_invalidate(self, repo_root: Path) -> ServiceResult[list[str]]:
+        repo_root = Path(repo_root)
+        paths: list[str] = []
+        lake_parent = repo_root / ".lake"
+        try:
+            self.runtime.foundation.layout.assert_within(repo_root, lake_parent)
+        except ValueError as exc:
+            return self.runtime.foundation.fail(
+                self._invalidation_path_issue(lake_parent, exc)
+            )
+        paths.extend(self._lake_build_paths_to_invalidate(repo_root))
+        work_root = self.runtime.foundation.layout.lc_work_root(
+            FoundationContext(repo_root=repo_root)
+        )
+        if work_root.is_symlink():
+            return self.runtime.foundation.fail(
+                self._invalidation_path_issue(
+                    work_root,
+                    ValueError("the managed work root must not be a symbolic link"),
+                )
+            )
+        try:
+            self.runtime.foundation.layout.assert_within(repo_root, work_root)
+            if work_root.is_dir():
+                for child in sorted(work_root.iterdir()):
+                    relpath = PurePosixPath(child.relative_to(repo_root).as_posix())
+                    if classify_repo_path(relpath).path_class is RepoPathClass.REBUILDABLE_WORK:
+                        paths.append(relpath.as_posix())
+        except (OSError, ValueError) as exc:
+            return self.runtime.foundation.fail(
+                self._invalidation_path_issue(work_root, exc)
+            )
+        return self.runtime.foundation.ok(paths)
+
     def _lake_build_paths_to_invalidate(self, repo_root: Path) -> list[str]:
         build_root = repo_root / ".lake" / "build"
         return [".lake/build"] if build_root.exists() or build_root.is_symlink() else []
 
-    def _invalidate_lake_build_artifacts(self, repo_root: Path) -> list[str]:
-        build_root = repo_root / ".lake" / "build"
-        if build_root.is_symlink() or build_root.is_file():
-            build_root.unlink()
-            return [".lake/build"]
-        if build_root.is_dir():
-            shutil.rmtree(build_root)
-            return [".lake/build"]
-        return []
+    def _invalidate_rebuildable_artifacts(
+        self,
+        repo_root: Path,
+        relpaths: list[str],
+    ) -> list[str]:
+        invalidated: list[str] = []
+        for relpath in relpaths:
+            target = repo_root / relpath
+            if target.is_symlink() or target.is_file():
+                target.unlink()
+            elif target.is_dir():
+                shutil.rmtree(target)
+            else:
+                continue
+            invalidated.append(relpath)
+        return invalidated
+
+    def _invalidation_path_issue(self, path: Path, exc: Exception) -> ServiceIssue:
+        return self.runtime.foundation.issue(
+            "repo_checkpoint_invalidation_path_unsafe",
+            "A rebuildable checkpoint invalidation path is not a safe repository-local path.",
+            object_ref=str(path),
+            details={"error": str(exc)},
+        )
 
     def _load_manifest(self, repo_root: Path, snapshot_id: str) -> ServiceResult[RepoCheckpointSnapshotManifest]:
-        return self.runtime.foundation.store.read_json(self._snapshot_dir(repo_root, snapshot_id) / "snapshot.json", RepoCheckpointSnapshotManifest)
+        path = self._snapshot_dir(repo_root, snapshot_id) / "snapshot.json"
+        loaded = self.runtime.foundation.store.read_json(path, RepoCheckpointSnapshotManifest)
+        issue = self._noncurrent_manifest_schema_issue(path, loaded.issues)
+        if issue is not None:
+            return self.runtime.foundation.fail(issue)
+        return loaded
 
     def _load_files_manifest(self, repo_root: Path, snapshot_id: str) -> ServiceResult[SnapshotFilesManifest]:
-        return self.runtime.foundation.store.read_json(self._snapshot_dir(repo_root, snapshot_id) / "files_manifest.json", SnapshotFilesManifest)
+        path = self._snapshot_dir(repo_root, snapshot_id) / "files_manifest.json"
+        loaded = self.runtime.foundation.store.read_json(path, SnapshotFilesManifest)
+        issue = self._noncurrent_manifest_schema_issue(path, loaded.issues)
+        if issue is not None:
+            return self.runtime.foundation.fail(issue)
+        return loaded
+
+    def _noncurrent_manifest_schema_issue(
+        self,
+        path: Path,
+        issues: list[ServiceIssue],
+    ) -> ServiceIssue | None:
+        noncurrent = [
+            issue
+            for issue in issues
+            if issue.kind in {"schema_version_missing", "schema_version_mismatch"}
+        ]
+        if not noncurrent:
+            return None
+        return self.runtime.foundation.issue(
+            "repo_checkpoint_snapshot_schema_version_invalid",
+            "Repo checkpoint manifests must declare the current schema version.",
+            object_ref=str(path),
+            field="schema_version",
+            current=noncurrent[0].current,
+            expected=noncurrent[0].expected,
+            suggested_action="Migrate this checkpoint in a task-local run root before loading it.",
+            details={"store_issue_kind": noncurrent[0].kind},
+        )
 
     def _preflight_restore_archive_files(
         self,

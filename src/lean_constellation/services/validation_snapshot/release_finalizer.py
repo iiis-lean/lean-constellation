@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Literal
 
 from pydantic import Field
@@ -33,7 +34,13 @@ from lean_constellation.domain.repo_release import (
 from lean_constellation.domain.publication import PushPolicy
 from lean_constellation.services.decl_graph.models import DeclRoundStatus, DeclStrategyStatus
 from lean_constellation.services.external_clients import ToolchainCommandView
-from lean_constellation.services.foundation import GateReport, MutationSummaryView, ServiceResult, WriteMode
+from lean_constellation.services.foundation import (
+    GateReport,
+    MutationSummaryView,
+    ServiceResult,
+    WriteMode,
+    classify_repo_path,
+)
 from lean_constellation.services.foundation import FoundationContext
 from lean_constellation.services.node import ContractVersionStatus, NodeKind, NodeLifecycle
 from lean_constellation.services.validation_snapshot.snapshot_restore import (
@@ -117,15 +124,6 @@ class RepoReleaseStorageAuditView(StrictModel):
 class RepoReleaseFinalizerComponent:
     """Prepare and publish repository releases without exposing partial latest truth."""
 
-    _EXCLUDED_TOP_LEVEL = {
-        ".agent_runtime",
-        ".git",
-        ".lake",
-        ".pytest_cache",
-        ".runtime",
-        "__pycache__",
-    }
-    _EXCLUDED_CONSTELLATION_CHILDREN = {".locks", "locks", "snapshots", "staging"}
     _SEMANTIC_EXCLUDED_ROOT_FILES = {
         ".gitignore",
         "API.md",
@@ -159,6 +157,9 @@ class RepoReleaseFinalizerComponent:
         base_release_id: str | None,
         summary: str,
     ) -> ServiceResult[CandidateReleaseGateView]:
+        current_paths = self._candidate_file_inventory(Path(repo_root))
+        if not current_paths.ok:
+            return self.runtime.foundation.fail(current_paths.issues)
         repo_root = Path(repo_root)
         repo_format = self.runtime.repo_workspace.metadata.get_repo_format(repo_root)
         if not repo_format.ok or repo_format.value is None:
@@ -749,7 +750,12 @@ class RepoReleaseFinalizerComponent:
         )
         if not release_id_result.ok or release_id_result.value is None:
             return self.runtime.foundation.fail(release_id_result.issues)
-        semantic_digest = self.compute_semantic_manifest_digest(Path(repo_root))
+        semantic_digest_result = self.compute_semantic_manifest_digest_checked(
+            Path(repo_root)
+        )
+        if not semantic_digest_result.ok or semantic_digest_result.value is None:
+            return self.runtime.foundation.fail(semantic_digest_result.issues)
+        semantic_digest = semantic_digest_result.value
         release = RepoRelease(
             release_id=release_id_result.value,
             parent_release_id=base_release_id,
@@ -792,7 +798,11 @@ class RepoReleaseFinalizerComponent:
             status=RepoPublicationStatus.STABLE,
             latest_release_id=release.release_id,
         )
-        digest = self.compute_candidate_digest(Path(repo_root))
+        digest_result = self.compute_candidate_digest_checked(Path(repo_root))
+        if not digest_result.ok or digest_result.value is None:
+            self._refresh_publication_documents_for_current_release(Path(repo_root))
+            return self.runtime.foundation.fail(digest_result.issues)
+        digest = digest_result.value
         prepared = PreparedRepoReleaseView(
             release=release,
             publication=publication,
@@ -829,6 +839,9 @@ class RepoReleaseFinalizerComponent:
         prepared: PreparedRepoReleaseView,
     ) -> ServiceResult[RepoReleaseFinalizeView]:
         repo_root = Path(repo_root)
+        current_paths = self._candidate_file_inventory(repo_root)
+        if not current_paths.ok:
+            return self.runtime.foundation.fail(current_paths.issues)
         current_publication = self.runtime.repo_workspace.metadata.get_repo_publication(repo_root)
         if not current_publication.ok or current_publication.value is None:
             return self.runtime.foundation.fail(current_publication.issues)
@@ -884,13 +897,24 @@ class RepoReleaseFinalizerComponent:
                         return self.runtime.foundation.fail(
                             requirement_closeout.value.issues
                         )
-                digest = self.compute_candidate_digest(repo_root)
+                digest_result = self.compute_candidate_digest_checked(repo_root)
+                if not digest_result.ok or digest_result.value is None:
+                    return self.runtime.foundation.fail(digest_result.issues)
+                digest = digest_result.value
                 if digest != prepared.candidate_digest:
                     return self.runtime.foundation.fail(self.runtime.foundation.issue(
                         "release_candidate_drift", "Candidate truth changed after preparation.",
                         current=digest, expected=prepared.candidate_digest,
                     ))
-                semantic_digest = self.compute_semantic_manifest_digest(repo_root)
+                semantic_digest_result = self.compute_semantic_manifest_digest_checked(
+                    repo_root
+                )
+                if (
+                    not semantic_digest_result.ok
+                    or semantic_digest_result.value is None
+                ):
+                    return self.runtime.foundation.fail(semantic_digest_result.issues)
+                semantic_digest = semantic_digest_result.value
                 if semantic_digest != prepared.release.semantic_manifest_digest:
                     return self.runtime.foundation.fail(self.runtime.foundation.issue(
                         "release_semantic_manifest_drift",
@@ -977,9 +1001,18 @@ class RepoReleaseFinalizerComponent:
                         "Failed to stage the stable publication pointer.",
                         details={"issues": "; ".join(issue.kind for issue in committed.issues)},
                     ))
+                candidate_inventory = self._candidate_file_inventory(repo_root)
+                if not candidate_inventory.ok or candidate_inventory.value is None:
+                    self._rollback_release_worktree(
+                        repo_root,
+                        release_id=prepared.release.release_id,
+                        publication=original_publication,
+                        repo_model=original_repo_model,
+                    )
+                    return self.runtime.foundation.fail(candidate_inventory.issues)
                 candidate_files = [
                     path.relative_to(repo_root).as_posix()
-                    for path in self._candidate_files(repo_root)
+                    for path in candidate_inventory.value
                 ]
                 policy = self.runtime.repo_workspace.publication.resolve_policy(
                     repo_root
@@ -1732,13 +1765,38 @@ class RepoReleaseFinalizerComponent:
             ))
 
     def compute_candidate_digest(self, repo_root: Path) -> str:
+        result = self.compute_candidate_digest_checked(repo_root)
+        if not result.ok or result.value is None:
+            issue = result.issues[0]
+            raise ValueError(f"{issue.kind}: {issue.object_ref or str(repo_root)}")
+        return result.value
+
+    def compute_candidate_digest_checked(self, repo_root: Path) -> ServiceResult[str]:
         repo_root = Path(repo_root)
-        return self._digest_files(repo_root, self._candidate_files(repo_root))
+        candidate_files = self._candidate_file_inventory(repo_root)
+        if not candidate_files.ok or candidate_files.value is None:
+            return self.runtime.foundation.fail(candidate_files.issues)
+        return self.runtime.foundation.ok(
+            self._digest_files(repo_root, candidate_files.value)
+        )
 
     def compute_semantic_manifest_digest(self, repo_root: Path) -> str:
+        result = self.compute_semantic_manifest_digest_checked(repo_root)
+        if not result.ok or result.value is None:
+            issue = result.issues[0]
+            raise ValueError(f"{issue.kind}: {issue.object_ref or str(repo_root)}")
+        return result.value
+
+    def compute_semantic_manifest_digest_checked(
+        self,
+        repo_root: Path,
+    ) -> ServiceResult[str]:
         repo_root = Path(repo_root)
+        candidate_files = self._candidate_file_inventory(repo_root)
+        if not candidate_files.ok or candidate_files.value is None:
+            return self.runtime.foundation.fail(candidate_files.issues)
         semantic_files = []
-        for path in self._candidate_files(repo_root):
+        for path in candidate_files.value:
             relpath = path.relative_to(repo_root)
             if relpath.as_posix() in self._SEMANTIC_EXCLUDED_ROOT_FILES:
                 continue
@@ -1758,7 +1816,9 @@ class RepoReleaseFinalizerComponent:
             if relpath.parts[:2] == ("docs", "lean-constellation"):
                 continue
             semantic_files.append(path)
-        return self._digest_files(repo_root, semantic_files)
+        return self.runtime.foundation.ok(
+            self._digest_files(repo_root, semantic_files)
+        )
 
     def compute_dependency_lock_digest(self, repo_root: Path) -> str:
         repo_root = Path(repo_root)
@@ -1886,26 +1946,62 @@ class RepoReleaseFinalizerComponent:
         return refreshed.ok
 
     def _candidate_files(self, repo_root: Path) -> list[Path]:
+        result = self._candidate_file_inventory(Path(repo_root))
+        if not result.ok or result.value is None:
+            issue = result.issues[0]
+            raise ValueError(f"{issue.kind}: {issue.object_ref or str(repo_root)}")
+        return result.value
+
+    def _candidate_file_inventory(self, repo_root: Path) -> ServiceResult[list[Path]]:
         files: list[Path] = []
+        legacy_paths: set[str] = set()
         policy = self.runtime.repo_workspace.publication.resolve_policy(repo_root)
         include_lake_manifest = (
             policy.value.policy.include_lake_manifest
             if policy.ok and policy.value is not None
             else True
         )
-        for path in repo_root.rglob("*"):
-            if not path.is_file():
-                continue
-            rel = path.relative_to(repo_root)
-            if rel.as_posix() == "lake-manifest.json" and not include_lake_manifest:
-                continue
-            if rel.parts[0] in self._EXCLUDED_TOP_LEVEL:
-                continue
-            if rel.parts[0] == ".lean_constellation" and len(rel.parts) > 1:
-                if rel.parts[1] in self._EXCLUDED_CONSTELLATION_CHILDREN:
+        for current_root, dirnames, filenames in os.walk(
+            repo_root,
+            topdown=True,
+            followlinks=False,
+        ):
+            root = Path(current_root)
+            retained_directories: list[str] = []
+            for dirname in sorted(dirnames):
+                path = root / dirname
+                rel = path.relative_to(repo_root)
+                classification = classify_repo_path(PurePosixPath(rel.as_posix()))
+                if classification.requires_migration:
+                    legacy_paths.add(rel.as_posix())
                     continue
-            files.append(path)
-        return files
+                if classification.release_eligible and not path.is_symlink():
+                    retained_directories.append(dirname)
+            dirnames[:] = retained_directories
+            for filename in sorted(filenames):
+                path = root / filename
+                rel = path.relative_to(repo_root)
+                classification = classify_repo_path(PurePosixPath(rel.as_posix()))
+                if classification.requires_migration:
+                    legacy_paths.add(rel.as_posix())
+                    continue
+                if not path.is_file() or path.is_symlink():
+                    continue
+                if rel.as_posix() == "lake-manifest.json" and not include_lake_manifest:
+                    continue
+                if classification.release_eligible:
+                    files.append(path)
+        if legacy_paths:
+            ordered = sorted(legacy_paths, key=lambda value: PurePosixPath(value).parts)
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "legacy_operational_path_present",
+                    "Legacy operational paths require a task-local migration before Release.",
+                    object_ref=ordered[0],
+                    details={"paths": ", ".join(ordered)},
+                )
+            )
+        return self.runtime.foundation.ok(files)
 
     def _check_base(self, repo_root: Path, *, base_release_id: str | None, summary: str) -> ServiceResult[GateReport]:
         issues = []

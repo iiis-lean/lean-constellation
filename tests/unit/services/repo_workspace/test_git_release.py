@@ -121,6 +121,40 @@ def test_git_release_rejects_staged_and_excluded_paths(tmp_path: Path) -> None:
     assert excluded.issues[0].kind == "git_release_path_excluded"
 
 
+def test_git_release_rejects_lc_work_and_legacy_operational_paths(
+    tmp_path: Path,
+) -> None:
+    runtime = make_runtime()
+    service = runtime.repo_workspace.git_release
+    assert service.ensure_independent_repo(tmp_path).ok
+    release = _release("release_1")
+    files = _write_release_candidate(tmp_path, release, body="def one : Nat := 1\n")
+    work_file = tmp_path / ".lean_constellation" / "work" / "audit" / "gate.jsonl"
+    work_file.parent.mkdir(parents=True)
+    work_file.write_text("{}\n", encoding="utf-8")
+
+    work_rejected = service.commit_release(
+        tmp_path,
+        release=release,
+        candidate_files=[*files, work_file.relative_to(tmp_path).as_posix()],
+        expected_head=None,
+    )
+    assert not work_rejected.ok
+    assert work_rejected.issues[0].kind == "git_release_path_excluded"
+
+    legacy_file = tmp_path / ".lean_constellation" / "source_draft" / "legacy.tex"
+    legacy_file.parent.mkdir(parents=True)
+    legacy_file.write_text("legacy\n", encoding="utf-8")
+    legacy_rejected = service.commit_release(
+        tmp_path,
+        release=release,
+        candidate_files=[*files, legacy_file.relative_to(tmp_path).as_posix()],
+        expected_head=None,
+    )
+    assert not legacy_rejected.ok
+    assert legacy_rejected.issues[0].kind == "legacy_operational_path_present"
+
+
 def test_nested_workspace_repo_can_be_initialized_independently(tmp_path: Path) -> None:
     subprocess.run(["git", "init", "."], cwd=tmp_path, check=True)
     subprocess.run(

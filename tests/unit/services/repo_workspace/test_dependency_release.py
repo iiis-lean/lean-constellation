@@ -222,3 +222,146 @@ def test_dependency_change_token_is_cas_bound(tmp_path: Path) -> None:
 
     assert not rejected.ok
     assert rejected.issues[0].kind == "dependency_change_token_mismatch"
+
+
+def test_dependency_release_preview_rejects_legacy_operational_paths(
+    tmp_path: Path,
+) -> None:
+    runtime = make_runtime()
+    provider = tmp_path / "Provider"
+    consumer = tmp_path / "Consumer"
+    provider_release = publish_native_provider_release(
+        runtime, provider, release_id="provider_r1"
+    )
+    provider_commit = runtime.repo_workspace.git_release.resolve_release_commit(
+        provider, release_id=provider_release.release_id
+    ).value
+    _write_consumer_base(runtime, consumer, provider_commit=provider_commit)
+    legacy = consumer / ".lean_constellation" / "source_draft" / "legacy.tex"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text("legacy\n", encoding="utf-8")
+
+    rejected = runtime.repo_workspace.dependency_release.preview(
+        consumer,
+        provider_repo_key="Provider",
+        target_provider_release_id=provider_release.release_id,
+        target_git_url="https://example.invalid/Provider.git",
+        release_mode=DependencyReleaseMode.DEPENDENCY_MAINTENANCE,
+    )
+
+    assert not rejected.ok
+    assert rejected.issues[0].kind == "legacy_operational_path_present"
+    assert rejected.issues[0].object_ref == ".lean_constellation/source_draft"
+
+
+def test_dependency_release_apply_rolls_back_when_legacy_path_appears_after_refresh(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # noqa: ANN001
+    runtime = make_runtime()
+    provider = tmp_path / "Provider"
+    consumer = tmp_path / "Consumer"
+    provider_release = publish_native_provider_release(
+        runtime, provider, release_id="provider_r1"
+    )
+    provider_commit = runtime.repo_workspace.git_release.resolve_release_commit(
+        provider, release_id=provider_release.release_id
+    ).value
+    _write_consumer_base(runtime, consumer, provider_commit=provider_commit)
+    preview = runtime.repo_workspace.dependency_release.preview(
+        consumer,
+        provider_repo_key="Provider",
+        target_provider_release_id=provider_release.release_id,
+        target_git_url="https://example.invalid/Provider.git",
+        release_mode=DependencyReleaseMode.DEPENDENCY_MAINTENANCE,
+    )
+    assert preview.ok and preview.value is not None
+
+    def update(_repo_root, *, packages=None, transport_rewrites=None):  # noqa: ANN001, ANN202
+        assert packages == ["Provider"]
+        assert transport_rewrites == {
+            "https://example.invalid/Provider.git": provider.resolve().as_uri()
+        }
+        (consumer / "lake-manifest.json").write_text(
+            json.dumps(
+                {
+                    "packages": [
+                        {
+                            "name": "Provider",
+                            "url": "https://example.invalid/Provider.git",
+                            "rev": provider_commit,
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        return runtime.foundation.ok(
+            ToolchainCommandView(
+                ok=True,
+                command=["lake", "update", "Provider"],
+                exit_code=0,
+                summary="targeted update passed",
+            )
+        )
+
+    monkeypatch.setattr(
+        runtime.repo_workspace.lake_dependency,
+        "run_lake_update",
+        update,
+    )
+    monkeypatch.setattr(
+        runtime.repo_workspace.lake_dependency,
+        "run_lake_build",
+        lambda *_args, **_kwargs: runtime.foundation.ok(
+            ToolchainCommandView(
+                ok=True,
+                command=["lake", "build"],
+                exit_code=0,
+                summary="full build passed",
+            )
+        ),
+    )
+    dependency_release = runtime.repo_workspace.dependency_release
+    original_commit = dependency_release._commit_dependency_release
+    legacy = consumer / ".lean_constellation" / "source_draft" / "legacy.tex"
+
+    def inject_legacy_then_commit(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        legacy.parent.mkdir(parents=True)
+        legacy.write_text("concurrent legacy\n", encoding="utf-8")
+        return original_commit(*args, **kwargs)
+
+    monkeypatch.setattr(
+        dependency_release,
+        "_commit_dependency_release",
+        inject_legacy_then_commit,
+    )
+    lakefile_before = (consumer / "lakefile.toml").read_bytes()
+    manifest_path = consumer / "lake-manifest.json"
+    manifest_before = manifest_path.read_bytes() if manifest_path.exists() else None
+    git_before = runtime.repo_workspace.git_release.inspect_repo(consumer).value
+    release_ids_before = [
+        item.release.release_id
+        for item in runtime.repo_workspace.release.list_releases(consumer).value
+    ]
+
+    rejected = dependency_release.apply(
+        consumer,
+        preview=preview.value,
+        expected_recovery_token=preview.value.recovery_token,
+    )
+
+    assert not rejected.ok
+    assert rejected.issues[0].kind == "legacy_operational_path_present"
+    assert (consumer / "lakefile.toml").read_bytes() == lakefile_before
+    assert (
+        manifest_path.read_bytes() if manifest_path.exists() else None
+    ) == manifest_before
+    assert runtime.repo_workspace.git_release.inspect_repo(consumer).value == git_before
+    assert [
+        item.release.release_id
+        for item in runtime.repo_workspace.release.list_releases(consumer).value
+    ] == release_ids_before
+    receipt_root = consumer / ".lean_constellation" / "publication" / "dependency_changes"
+    assert not receipt_root.exists() or not list(receipt_root.glob("*.json"))
+    assert legacy.read_text(encoding="utf-8") == "concurrent legacy\n"

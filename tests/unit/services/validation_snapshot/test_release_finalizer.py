@@ -20,6 +20,7 @@ from lean_constellation.services.validation_snapshot import (
     PreparedRepoReleaseView,
     RepoCheckpointKind,
     RepoCheckpointSnapshotManifest,
+    SnapshotFilesManifest,
     ValidationSnapshotService,
 )
 from tests.unit.services.repo_workspace.test_repo_release import (
@@ -60,6 +61,94 @@ def _prepared_repo(repo_root: Path):
     return runtime, prepared, None
 
 
+def test_candidate_and_semantic_digest_exclude_all_lc_work_kinds(
+    tmp_path: Path,
+) -> None:
+    runtime, _ = _prepare_release_repo(tmp_path)
+    finalizer = runtime.validation_snapshot.release_finalizer
+    candidate_before = finalizer.compute_candidate_digest(tmp_path)
+    semantic_before = finalizer.compute_semantic_manifest_digest(tmp_path)
+    work_files = [
+        ".lean_constellation/work/drafts/source_corpus/article.tex",
+        ".lean_constellation/work/drafts/resources/draft/README.md",
+        ".lean_constellation/work/cache/mathlib_candidates.json",
+        ".lean_constellation/work/previews/source_corpus/page.svg",
+        ".lean_constellation/work/staging/source_corpus/import/file.tex",
+        ".lean_constellation/work/recovery/source_index/update.json",
+        ".lean_constellation/work/audit/gate_gaps.jsonl",
+        ".lean_constellation/work/receipts/remote/result.json",
+        ".lean_constellation/work/unknown/local.bin",
+    ]
+    for relpath in work_files:
+        path = tmp_path / relpath
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"work:{relpath}\n", encoding="utf-8")
+
+    assert finalizer.compute_candidate_digest(tmp_path) == candidate_before
+    assert finalizer.compute_semantic_manifest_digest(tmp_path) == semantic_before
+    assert not any(
+        path.relative_to(tmp_path).as_posix().startswith(".lean_constellation/work/")
+        for path in finalizer._candidate_files(tmp_path)
+    )
+
+
+def test_candidate_rejects_legacy_operational_paths_before_git_commit(
+    tmp_path: Path,
+) -> None:
+    runtime, _ = _prepare_release_repo(tmp_path)
+    legacy = tmp_path / ".lean_constellation" / "source_draft" / "legacy.tex"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text("legacy\n", encoding="utf-8")
+
+    rejected = runtime.validation_snapshot.release_finalizer.preview_candidate_release(
+        tmp_path,
+        base_release_id=None,
+        summary="Legacy path must block.",
+    )
+
+    assert not rejected.ok
+    assert rejected.issues[0].kind == "legacy_operational_path_present"
+    assert rejected.issues[0].object_ref == ".lean_constellation/source_draft"
+    assert runtime.repo_workspace.git_release.inspect_repo(tmp_path).value.head_commit is None
+
+
+def test_prepare_candidate_release_rejects_legacy_operational_paths_from_audited_gate(
+    tmp_path: Path,
+) -> None:
+    runtime, prepared, _ = _prepared_repo(tmp_path)
+    finalizer = runtime.validation_snapshot.release_finalizer
+    audited = CandidateReleaseGateView(
+        candidate_node_contract_versions=prepared.release.node_contract_versions,
+        completion_mode=prepared.release.completion_mode,
+        build=prepared.build,
+        gate=runtime.foundation.gate_passed(
+            "candidate_repo_release",
+            summary="Audited candidate passed.",
+        ),
+        summary="Audited candidate passed.",
+    )
+    legacy = tmp_path / ".lean_constellation" / "source_draft" / "legacy.tex"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text("legacy\n", encoding="utf-8")
+    releases_before = runtime.repo_workspace.release.list_releases(tmp_path).value
+    git_before = runtime.repo_workspace.git_release.inspect_repo(tmp_path).value
+
+    rejected = finalizer.prepare_candidate_release(
+        tmp_path,
+        base_release_id=None,
+        summary="Audited legacy candidate.",
+        audited=audited,
+    )
+
+    assert not rejected.ok
+    assert rejected.issues[0].kind == "legacy_operational_path_present"
+    assert runtime.repo_workspace.release.list_releases(tmp_path).value == releases_before
+    assert runtime.repo_workspace.git_release.inspect_repo(tmp_path).value == git_before
+    assert not (
+        tmp_path / ".lean_constellation" / "publication" / "manifest.json"
+    ).exists()
+
+
 def test_release_commit_publishes_final_truth_checkpoint_and_unique_latest(tmp_path: Path) -> None:
     runtime, prepared, snapshots = _prepared_repo(tmp_path)
 
@@ -95,6 +184,92 @@ def test_release_commit_publishes_final_truth_checkpoint_and_unique_latest(tmp_p
     ).ok
     audit = runtime.validation_snapshot.audit_repo_release_storage(tmp_path)
     assert audit.ok and audit.value is not None and audit.value.passed
+
+
+def test_release_publication_and_checkpoint_share_operational_work_policy(
+    tmp_path: Path,
+) -> None:
+    runtime, prepared, _ = _prepared_repo(tmp_path)
+    finalizer = runtime.validation_snapshot.release_finalizer
+    stable = tmp_path / "StableWitness.lean"
+    stable_bytes = b"theorem stable_witness : True := by trivial\n"
+    stable.write_bytes(stable_bytes)
+    candidate_with_stable = finalizer.compute_candidate_digest_checked(tmp_path)
+    semantic_with_stable = finalizer.compute_semantic_manifest_digest_checked(
+        tmp_path
+    )
+    assert candidate_with_stable.ok and candidate_with_stable.value is not None
+    assert semantic_with_stable.ok and semantic_with_stable.value is not None
+    prepared = prepared.model_copy(
+        update={
+            "candidate_digest": candidate_with_stable.value,
+            "release": prepared.release.model_copy(
+                update={
+                    "semantic_manifest_digest": semantic_with_stable.value,
+                }
+            ),
+        }
+    )
+    work_relpaths = [
+        ".lean_constellation/work/drafts/source_corpus/article.tex",
+        ".lean_constellation/work/drafts/resources/request/README.md",
+        ".lean_constellation/work/cache/mathlib_candidates.json",
+        ".lean_constellation/work/previews/source_corpus/page.svg",
+        ".lean_constellation/work/staging/source_corpus/import/article.tex",
+        ".lean_constellation/work/recovery/source_index/operator_baseline.json",
+        ".lean_constellation/work/audit/gate_gaps.jsonl",
+        ".lean_constellation/work/receipts/remote_publication/release.json",
+        ".lean_constellation/work/unknown/operator-note.txt",
+    ]
+    work_bytes: dict[str, bytes] = {}
+    for relpath in work_relpaths:
+        path = tmp_path / relpath
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = f"operational:{relpath}\n".encode()
+        path.write_bytes(payload)
+        work_bytes[relpath] = payload
+
+    publication = runtime.repo_workspace.publication.build_manifest(tmp_path)
+    candidate = finalizer.compute_candidate_digest_checked(tmp_path)
+    semantic = finalizer.compute_semantic_manifest_digest_checked(tmp_path)
+
+    assert publication.ok and publication.value is not None, publication.issues
+    assert candidate.ok and candidate.value == prepared.candidate_digest
+    assert semantic.ok and semantic.value == prepared.release.semantic_manifest_digest
+    assert any(
+        entry.path == stable.name and entry.disposition == "include"
+        for entry in publication.value.entries
+    )
+    assert not any(
+        entry.path.startswith(".lean_constellation/work/")
+        for entry in publication.value.entries
+    )
+    assert any(
+        entry.path == ".lean_constellation/work"
+        and entry.reason == "operational_work"
+        for entry in publication.value.excluded_directories
+    )
+
+    finalized = finalizer.commit_prepared_release(tmp_path, prepared=prepared)
+
+    assert finalized.ok and finalized.value is not None, finalized.issues
+    checkpoint_root = Path(finalized.value.checkpoint.root)
+    files = runtime.foundation.store.read_json(
+        checkpoint_root / "files_manifest.json",
+        SnapshotFilesManifest,
+    )
+    assert files.ok and files.value is not None, files.issues
+    captured = {entry.source_relpath for entry in files.value.entries}
+    assert stable.name in captured
+    assert not any(
+        relpath.startswith(".lean_constellation/work/")
+        for relpath in captured
+    )
+    assert stable.read_bytes() == stable_bytes
+    assert {
+        relpath: (tmp_path / relpath).read_bytes()
+        for relpath in work_relpaths
+    } == work_bytes
 
 
 def test_publication_commit_failure_leaves_no_release_or_checkpoint(tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001

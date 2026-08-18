@@ -100,6 +100,72 @@ def test_publication_manifest_excludes_runtime_and_contains_no_absolute_paths(
     assert str(tmp_path) not in payload
 
 
+def test_publication_excludes_lc_work_and_rejects_legacy_operational_paths(
+    tmp_path: Path,
+) -> None:
+    runtime, _ = _prepare_release_repo(tmp_path)
+    work_file = (
+        tmp_path
+        / ".lean_constellation"
+        / "work"
+        / "drafts"
+        / "source_corpus"
+        / "candidate.tex"
+    )
+    work_file.parent.mkdir(parents=True)
+    work_file.write_text("operational draft\n", encoding="utf-8")
+
+    manifest = runtime.repo_workspace.publication.build_manifest(tmp_path)
+    assert manifest.ok and manifest.value is not None
+    assert any(
+        entry.path == ".lean_constellation/work"
+        and entry.reason == "operational_work"
+        for entry in manifest.value.excluded_directories
+    )
+    assert not any(
+        entry.path.startswith(".lean_constellation/work/")
+        for entry in manifest.value.entries
+    )
+    assert runtime.repo_workspace.publication.refresh_managed_gitignore(tmp_path).ok
+    gitignore = (tmp_path / ".gitignore").read_text(encoding="utf-8")
+    assert "/.lean_constellation/work/" in gitignore
+    assert "/.lean_constellation/source_draft/" not in gitignore
+
+    legacy_file = tmp_path / ".lean_constellation" / "source_draft" / "legacy.tex"
+    legacy_file.parent.mkdir(parents=True)
+    legacy_file.write_text("legacy draft\n", encoding="utf-8")
+    legacy_bytes = legacy_file.read_bytes()
+
+    rejected = runtime.repo_workspace.publication.build_manifest(tmp_path)
+    assert not rejected.ok
+    assert rejected.issues[0].kind == "legacy_operational_path_present"
+    assert rejected.issues[0].object_ref == ".lean_constellation/source_draft"
+    assert legacy_file.read_bytes() == legacy_bytes
+
+
+def test_publication_rejects_legacy_document_layout_without_deleting_it(
+    tmp_path: Path,
+) -> None:
+    runtime, _ = _prepare_release_repo(tmp_path)
+    legacy_page = (
+        tmp_path
+        / "docs"
+        / "lean-constellation"
+        / "public-api"
+        / "legacy.md"
+    )
+    legacy_page.parent.mkdir(parents=True)
+    legacy_page.write_text("legacy page\n", encoding="utf-8")
+    before = legacy_page.read_bytes()
+
+    rejected = runtime.repo_workspace.publication.prepare_publication(tmp_path)
+
+    assert not rejected.ok
+    assert rejected.issues[0].kind == "legacy_operational_path_present"
+    assert rejected.issues[0].object_ref == "docs/lean-constellation/public-api"
+    assert legacy_page.read_bytes() == before
+
+
 def test_publication_manifest_is_idempotent_and_excludes_itself(
     tmp_path: Path,
 ) -> None:

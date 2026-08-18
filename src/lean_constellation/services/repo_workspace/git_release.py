@@ -19,17 +19,17 @@ from lean_constellation.services.external_clients.process import (
     ExternalCommandResult,
     SubprocessCommandRunner,
 )
-from lean_constellation.services.foundation import IssueSeverity, ServiceResult
+from lean_constellation.services.foundation import (
+    IssueSeverity,
+    ServiceResult,
+    classify_repo_path,
+)
 
 if TYPE_CHECKING:
     from lean_constellation.services.runtime import LeanRuntimeServices
 
 
 _RELEASE_REF_PREFIX = "refs/lean-constellation/releases"
-_EXCLUDED_TOP_LEVEL = {".agent_runtime", ".git", ".lake", ".runtime"}
-_EXCLUDED_CONSTELLATION_DIRS = {"locks", "snapshots", "staging"}
-
-
 class GitRepoStateView(StrictModel):
     repo_root: str
     initialized: bool
@@ -764,23 +764,20 @@ class GitReleaseComponent:
                         object_ref=str(raw_path),
                     )
                 )
-            if path.parts[0] in _EXCLUDED_TOP_LEVEL:
+            classification = classify_repo_path(path)
+            if classification.requires_migration:
                 return self.runtime.foundation.fail(
                     self.runtime.foundation.issue(
-                        "git_release_path_excluded",
-                        "Release candidate contains an excluded runtime path.",
+                        "legacy_operational_path_present",
+                        "Legacy operational paths require a task-local migration before Release.",
                         object_ref=path.as_posix(),
                     )
                 )
-            if (
-                len(path.parts) >= 2
-                and path.parts[0] == ".lean_constellation"
-                and path.parts[1] in _EXCLUDED_CONSTELLATION_DIRS
-            ):
+            if not classification.release_eligible:
                 return self.runtime.foundation.fail(
                     self.runtime.foundation.issue(
                         "git_release_path_excluded",
-                        "Release candidate contains an excluded local recovery path.",
+                        "Release candidate contains a nonportable repository path.",
                         object_ref=path.as_posix(),
                     )
                 )

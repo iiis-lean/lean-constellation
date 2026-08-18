@@ -3,12 +3,15 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from agent_runtime_kit.flow.models import FlowRequest, FlowStatus
 
 from lean_constellation.app import (
     LeanAdminApi,
     RequirementResumeInput,
     SnapshotCreateInput,
+    SnapshotListInput,
     SnapshotRestoreInput,
     create_app_runtime_services,
     initialize_repo_business_truth,
@@ -49,6 +52,42 @@ def test_admin_snapshot_create_and_restore_leaves_runtime_paused(tmp_path) -> No
     assert runtime.ark.pause_controller is not None
     assert runtime.ark.pause_controller.is_paused()
     assert runtime.ark.pause_controller.is_paused() is True
+
+
+@pytest.mark.parametrize("manifest_name", ["snapshot.json", "files_manifest.json"])
+@pytest.mark.parametrize("schema_version", [None, 0], ids=["missing", "mismatch"])
+def test_admin_snapshot_list_rejects_noncurrent_manifest_schema(
+    tmp_path: Path,
+    manifest_name: str,
+    schema_version: int | None,
+) -> None:
+    runtime = create_app_runtime_services(runtime_root=tmp_path / ".runtime")
+    repo_root = tmp_path / "Repo"
+    assert initialize_repo_business_truth(runtime, repo_root).ok
+    admin = LeanAdminApi(runtime)
+    created = admin.create_snapshot(
+        SnapshotCreateInput(
+            repo_root=repo_root,
+            checkpoint_kind="manual_test_stable_point",
+            label="current schema list",
+        )
+    )
+    assert created.ok and created.value is not None, created.issues
+    target_path = Path(created.value.root) / manifest_name
+    payload = json.loads(target_path.read_text(encoding="utf-8"))
+    if schema_version is None:
+        payload.pop("schema_version")
+    else:
+        payload["schema_version"] = schema_version
+    target_path.write_text(json.dumps(payload), encoding="utf-8")
+    before = target_path.read_bytes()
+
+    listed = admin.list_snapshots(SnapshotListInput(repo_root=repo_root))
+
+    assert not listed.ok
+    assert listed.value is None
+    assert listed.issues[0].kind == "repo_checkpoint_snapshot_schema_version_invalid"
+    assert target_path.read_bytes() == before
 
 
 def test_admin_snapshot_restore_restores_decl_review_step_state(tmp_path) -> None:

@@ -5,6 +5,8 @@ from types import SimpleNamespace
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from lean_constellation.app.runtime import ApplicationSnapshotRuntime
 from lean_constellation.domain.common import utc_now_iso
 from lean_constellation.domain.interface import DeclInterface, DeclKind
@@ -1313,6 +1315,115 @@ def test_restore_rejects_manifest_path_escape_before_ark_restore(tmp_path: Path)
     assert restored.issues[0].kind == "repo_checkpoint_archive_path_unsafe"
     assert ark.restored == []
     assert outside_target.read_text(encoding="utf-8") == "keep me\n"
+
+
+@pytest.mark.parametrize("manifest_name", ["snapshot.json", "files_manifest.json"])
+@pytest.mark.parametrize("schema_version", [None, 0], ids=["missing", "mismatch"])
+def test_snapshot_runtime_rejects_noncurrent_manifest_schema_before_ark_restore(
+    tmp_path: Path,
+    manifest_name: str,
+    schema_version: int | None,
+) -> None:
+    foundation = make_runtime().foundation
+    main = tmp_path / "Main.lean"
+    main.write_text("theorem original : True := by trivial\n", encoding="utf-8")
+    ark = FakeArkSnapshotProvider(foundation)
+    snapshot = _snapshot_harness(
+        foundation.runtime,
+        runtime_stability=FakeRuntimeStabilityProvider(foundation),
+        ark_snapshot=ark,
+    )
+    created = snapshot.create_repo_stable_point_snapshot(
+        tmp_path,
+        checkpoint_kind=RepoCheckpointKind.MANUAL_TEST_STABLE_POINT,
+    )
+    assert created.ok and created.value is not None, created.issues
+    snapshot_root = Path(created.value.root)
+    target_path = snapshot_root / manifest_name
+    payload = json.loads(target_path.read_text(encoding="utf-8"))
+    if schema_version is None:
+        payload.pop("schema_version")
+    else:
+        payload["schema_version"] = schema_version
+    target_path.write_text(json.dumps(payload), encoding="utf-8")
+    main.write_text("-- modified after snapshot\n", encoding="utf-8")
+    repo_before = main.read_bytes()
+    archive_before = {
+        path.relative_to(snapshot_root).as_posix(): path.read_bytes()
+        for path in sorted(snapshot_root.rglob("*"))
+        if path.is_file()
+    }
+
+    validated = snapshot.validate_repo_checkpoint_snapshot(
+        tmp_path,
+        snapshot_id=created.value.snapshot_id,
+    )
+    restored = snapshot.restore_repo_checkpoint_snapshot(
+        tmp_path,
+        snapshot_id=created.value.snapshot_id,
+    )
+
+    assert not validated.ok
+    assert validated.issues[0].kind == "repo_checkpoint_snapshot_schema_version_invalid"
+    assert not restored.ok
+    assert restored.issues[0].kind == "repo_checkpoint_snapshot_schema_version_invalid"
+    assert ark.restored == []
+    assert main.read_bytes() == repo_before
+    assert {
+        path.relative_to(snapshot_root).as_posix(): path.read_bytes()
+        for path in sorted(snapshot_root.rglob("*"))
+        if path.is_file()
+    } == archive_before
+
+
+def test_snapshot_runtime_rejects_symlinked_work_root_before_ark_restore(
+    tmp_path: Path,
+) -> None:
+    foundation = make_runtime().foundation
+    main = tmp_path / "Main.lean"
+    main.write_text("theorem original : True := by trivial\n", encoding="utf-8")
+    ark = FakeArkSnapshotProvider(foundation)
+    snapshot = _snapshot_harness(
+        foundation.runtime,
+        runtime_stability=FakeRuntimeStabilityProvider(foundation),
+        ark_snapshot=ark,
+    )
+    created = snapshot.create_repo_stable_point_snapshot(
+        tmp_path,
+        checkpoint_kind=RepoCheckpointKind.REPO_RELEASE,
+    )
+    assert created.ok and created.value is not None, created.issues
+    snapshot_root = Path(created.value.root)
+    main.write_text("-- modified after snapshot\n", encoding="utf-8")
+    external_work = tmp_path.parent / f"{tmp_path.name}_external_work"
+    (external_work / "cache").mkdir(parents=True)
+    external_file = external_work / "cache" / "outside.bin"
+    external_file.write_text("outside work\n", encoding="utf-8")
+    work_root = tmp_path / ".lean_constellation" / "work"
+    work_root.symlink_to(external_work, target_is_directory=True)
+    repo_before = main.read_bytes()
+    archive_before = {
+        path.relative_to(snapshot_root).as_posix(): path.read_bytes()
+        for path in sorted(snapshot_root.rglob("*"))
+        if path.is_file()
+    }
+
+    restored = snapshot.restore_repo_checkpoint_snapshot(
+        tmp_path,
+        snapshot_id=created.value.snapshot_id,
+    )
+
+    assert not restored.ok
+    assert restored.issues[0].kind == "repo_checkpoint_invalidation_path_unsafe"
+    assert ark.restored == []
+    assert main.read_bytes() == repo_before
+    assert work_root.is_symlink()
+    assert external_file.read_text(encoding="utf-8") == "outside work\n"
+    assert {
+        path.relative_to(snapshot_root).as_posix(): path.read_bytes()
+        for path in sorted(snapshot_root.rglob("*"))
+        if path.is_file()
+    } == archive_before
 
 
 def test_restore_keeps_extra_files_and_rebuilds_indexes(tmp_path: Path) -> None:

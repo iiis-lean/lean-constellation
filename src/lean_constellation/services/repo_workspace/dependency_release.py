@@ -102,6 +102,14 @@ class RepoDependencyReleaseComponent:
                     "Dependency changes require a dependency validation profile.",
                 )
             )
+        semantic_digest_result = (
+            self.runtime.validation_snapshot.release_finalizer.compute_semantic_manifest_digest_checked(
+                consumer_root
+            )
+        )
+        if not semantic_digest_result.ok or semantic_digest_result.value is None:
+            return self.runtime.foundation.fail(semantic_digest_result.issues)
+        semantic_digest = semantic_digest_result.value
         provider_root = (consumer_root.parent / provider_repo_key).resolve()
         provider_release = self.runtime.repo_workspace.release.get_release(
             provider_root, release_id=target_provider_release_id
@@ -187,11 +195,6 @@ class RepoDependencyReleaseComponent:
         )
         if not publication.ok or publication.value is None:
             return self.runtime.foundation.fail(publication.issues)
-        semantic_digest = (
-            self.runtime.validation_snapshot.release_finalizer.compute_semantic_manifest_digest(
-                consumer_root
-            )
-        )
         dependency_digest = (
             self.runtime.validation_snapshot.release_finalizer.compute_dependency_lock_digest(
                 consumer_root
@@ -374,11 +377,14 @@ class RepoDependencyReleaseComponent:
         )
         if not base.ok or base.value is None:
             return self.runtime.foundation.fail(base.issues)
-        semantic_digest = (
-            self.runtime.validation_snapshot.release_finalizer.compute_semantic_manifest_digest(
+        semantic_digest_result = (
+            self.runtime.validation_snapshot.release_finalizer.compute_semantic_manifest_digest_checked(
                 repo_root
             )
         )
+        if not semantic_digest_result.ok or semantic_digest_result.value is None:
+            return self.runtime.foundation.fail(semantic_digest_result.issues)
+        semantic_digest = semantic_digest_result.value
         if semantic_digest != base.value.release.semantic_manifest_digest:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
@@ -437,14 +443,17 @@ class RepoDependencyReleaseComponent:
             status=RepoPublicationStatus.STABLE,
             latest_release_id=release.release_id,
         )
+        candidate_digest_result = (
+            self.runtime.validation_snapshot.release_finalizer.compute_candidate_digest_checked(
+                repo_root
+            )
+        )
+        if not candidate_digest_result.ok or candidate_digest_result.value is None:
+            return self.runtime.foundation.fail(candidate_digest_result.issues)
         prepared = PreparedRepoReleaseView(
             release=release,
             publication=target_publication,
-            candidate_digest=(
-                self.runtime.validation_snapshot.release_finalizer.compute_candidate_digest(
-                    repo_root
-                )
-            ),
+            candidate_digest=candidate_digest_result.value,
             expected_git_head=state.value.head_commit,
             build=ToolchainCommandView(
                 ok=True,
