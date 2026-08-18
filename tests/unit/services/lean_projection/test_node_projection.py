@@ -203,12 +203,32 @@ def test_refresh_prelude_changed_and_no_changed(tmp_path: Path) -> None:
     assert first.ok
     assert first.value is not None
     assert first.value.changed is True
-    assert Path(first.value.path).exists()
+    path = Path(first.value.path)
+    assert path.exists()
+    first_bytes = path.read_bytes()
 
     second = component.refresh_prelude(tmp_path, node_path="Main.Topic.Core")
     assert second.ok
     assert second.value is not None
     assert second.value.changed is False
+    assert path.read_bytes() == first_bytes
+
+
+def test_repeated_interface_refresh_is_byte_identical(tmp_path: Path) -> None:
+    _create_nodes(tmp_path)
+    component = make_runtime().lean_projection.node_projection
+
+    first = component.refresh_interfaces(tmp_path, node_path="Main.Topic.Core")
+    assert first.ok and first.value is not None
+    assert first.value.changed is True
+    path = Path(first.value.path)
+    first_bytes = path.read_bytes()
+
+    second = component.refresh_interfaces(tmp_path, node_path="Main.Topic.Core")
+
+    assert second.ok and second.value is not None
+    assert second.value.changed is False
+    assert path.read_bytes() == first_bytes
 
 
 def test_refresh_and_check_prelude_report_filesystem_errors(tmp_path: Path) -> None:

@@ -3,7 +3,12 @@ from pathlib import Path
 
 from tests.unit_services_helpers import make_runtime, valid_resource_readme
 
-from lean_constellation.services.material import ResourceMetadata, ResourceMetadataInput, ResourceTargetView
+from lean_constellation.services.material import (
+    ResourceMaterialManifest,
+    ResourceMetadata,
+    ResourceMetadataInput,
+    ResourceTargetView,
+)
 
 
 def _write_valid_draft_files(draft_root: Path, *, text: str = "alpha\nbeta theorem\n") -> None:
@@ -47,6 +52,52 @@ def test_resource_draft_and_finalized_resource_persist_domain_target_not_view(tm
     loaded = make_runtime().foundation.store.read_json(resource_json_path, ResourceMetadata)
     assert loaded.ok and loaded.value is not None
     assert loaded.value.target.canonical_locator == "https://example.com/math/page"
+
+
+def test_resource_metadata_uses_manifest_sha_only(tmp_path: Path) -> None:
+    service = make_runtime().material
+    draft = service.allocate_resource_draft(tmp_path, target="https://example.com/manifest-sha")
+    assert draft.ok and draft.value is not None
+    _write_valid_draft_files(Path(draft.value.draft_root), text="canonical bytes\n")
+    finalized = service.finalize_resource_draft(
+        tmp_path,
+        draft_id=draft.value.draft.draft_id,
+        summary="Manifest owns the canonical file digest.",
+    )
+    assert finalized.ok and finalized.value is not None
+
+    resource_path = Path(finalized.value.resource_root) / "resource.json"
+    manifest_path = Path(finalized.value.resource_root) / "manifest.json"
+    resource_payload = json.loads(resource_path.read_text(encoding="utf-8"))
+    manifest = make_runtime().foundation.store.read_json(manifest_path, ResourceMaterialManifest)
+
+    assert "content_hash" not in resource_payload
+    assert manifest.ok and manifest.value is not None
+    canonical = next(item for item in manifest.value.files if item.path == manifest.value.canonical_entry)
+    assert len(canonical.sha256) == 64
+
+
+def test_resource_metadata_rejects_removed_content_hash_through_service(tmp_path: Path) -> None:
+    service = make_runtime().material
+    draft = service.allocate_resource_draft(tmp_path, target="https://example.com/old-resource")
+    assert draft.ok and draft.value is not None
+    _write_valid_draft_files(Path(draft.value.draft_root))
+    finalized = service.finalize_resource_draft(
+        tmp_path,
+        draft_id=draft.value.draft.draft_id,
+        summary="Current resource truth.",
+    )
+    assert finalized.ok and finalized.value is not None
+    resource_path = Path(finalized.value.resource_root) / "resource.json"
+    payload = json.loads(resource_path.read_text(encoding="utf-8"))
+    payload["content_hash"] = "0" * 64
+    resource_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    listed = service.resource_library.list_resources(tmp_path)
+
+    assert not listed.ok
+    assert listed.issues[0].kind == "schema_validation_failed"
+    assert json.loads(resource_path.read_text(encoding="utf-8")) == payload
 
 
 def test_register_local_resource_accepts_view_but_persists_domain_target(tmp_path: Path) -> None:

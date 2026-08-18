@@ -304,7 +304,6 @@ class OperatorSourceCorpusManifestView(StrictModel):
     overview: str | None = None
     entry_path: str | None = None
     created_from_mode: str
-    generated_at: str
     files: list[SourceCorpusFileView] = Field(default_factory=list)
     summary: str
 
@@ -332,7 +331,6 @@ class OperatorResourceView(StrictModel):
     source_url: str | None = None
     notes: str | None = None
     canonical_entry: str
-    content_hash: str | None = None
     summary: str
 
 
@@ -483,7 +481,6 @@ def _resource_view(value: ResourceView) -> OperatorResourceView:
         source_url=resource.source_url,
         notes=resource.notes,
         canonical_entry=resource.canonical_entry,
-        content_hash=resource.content_hash,
         summary=value.summary,
     )
 
@@ -1136,7 +1133,7 @@ class RepoMaterialOperatorApi:
                     expected=", ".join(baseline.value.resolved_file_scope),
                 )
             )
-        manifest = runtime.material.source_corpus.refresh_source_corpus_manifest(repo_root)
+        manifest = runtime.material.source_corpus.validate_frozen_source_corpus_manifest(repo_root)
         if not manifest.ok or manifest.value is None:
             return runtime.foundation.fail(manifest.issues)
         manifest_digest = runtime.material.source_corpus.canonical_manifest_digest(manifest.value)

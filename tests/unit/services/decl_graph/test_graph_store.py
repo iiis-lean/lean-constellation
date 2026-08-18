@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from tests.unit_services_helpers import make_runtime
@@ -55,8 +56,6 @@ def test_ensure_decl_graph_creates_empty_content_node_store(tmp_path: Path) -> N
     assert index.value == DeclGraphIndex(
         node_id=node.value.node_id,
         node_path="Main.Topic.Core",
-        summary="Empty DeclGraph index for Content node Main.Topic.Core.",
-        updated_at=index.value.updated_at,
     )
 
 
@@ -87,10 +86,7 @@ def test_decl_graph_reports_corrupt_index_schema(tmp_path: Path) -> None:
     result = runtime.decl_graph.get_decl_graph_index(tmp_path, node_path="Main.Topic.Core")
 
     assert not result.ok
-    assert [issue.kind for issue in result.issues] == [
-        "schema_version_missing",
-        "schema_validation_failed",
-    ]
+    assert result.issues[0].kind == "decl_graph_index_schema_version_invalid"
 
 
 def test_rebuild_decl_graph_index_scans_stable_sorted_store(tmp_path: Path) -> None:
@@ -113,12 +109,21 @@ def test_rebuild_decl_graph_index_scans_stable_sorted_store(tmp_path: Path) -> N
         path.write_text("{}\n", encoding="utf-8")
 
     rebuilt = runtime.decl_graph.rebuild_decl_graph_index(tmp_path, node_path="Main.Topic.Core")
+    index_path = Path(ensured.value.index_path)
+    first_bytes = index_path.read_bytes()
+    repeated = runtime.decl_graph.rebuild_decl_graph_index(tmp_path, node_path="Main.Topic.Core")
 
     assert rebuilt.ok
     assert rebuilt.value is not None
     assert rebuilt.value.strategy_ids == ["a_strategy", "b_strategy"]
     assert rebuilt.value.round_ids == ["round_01", "round_02"]
     assert rebuilt.value.decl_names == ["A_decl", "Z_decl"]
+    assert repeated.ok
+    assert index_path.read_bytes() == first_bytes
+    payload = json.loads(first_bytes)
+    assert payload["schema_version"] == 2
+    assert "updated_at" not in payload
+    assert "summary" not in payload
 
     view = runtime.decl_graph.get_decl_graph_store_view(tmp_path, node_path="Main.Topic.Core")
     assert view.ok
@@ -126,3 +131,32 @@ def test_rebuild_decl_graph_index_scans_stable_sorted_store(tmp_path: Path) -> N
     assert view.value.strategy_count == 2
     assert view.value.round_count == 2
     assert view.value.decl_count == 2
+
+
+def test_decl_graph_index_rejects_previous_schema_version_and_removed_fields(tmp_path: Path) -> None:
+    _create_content_node(tmp_path)
+    runtime = make_runtime()
+    ensured = runtime.decl_graph.ensure_decl_graph(tmp_path, node_path="Main.Topic.Core")
+    assert ensured.ok and ensured.value is not None
+    path = Path(ensured.value.index_path)
+    current = json.loads(path.read_text(encoding="utf-8"))
+
+    missing = {key: value for key, value in current.items() if key != "schema_version"}
+    path.write_text(json.dumps(missing), encoding="utf-8")
+    missing_loaded = runtime.decl_graph.get_decl_graph_index(tmp_path, node_path="Main.Topic.Core")
+
+    previous = {**current, "schema_version": 1}
+    path.write_text(json.dumps(previous), encoding="utf-8")
+    previous_loaded = runtime.decl_graph.get_decl_graph_index(tmp_path, node_path="Main.Topic.Core")
+
+    removed = {**current, "updated_at": "2026-08-19T00:00:00Z", "summary": "old derived fields"}
+    path.write_text(json.dumps(removed), encoding="utf-8")
+    removed_loaded = runtime.decl_graph.get_decl_graph_index(tmp_path, node_path="Main.Topic.Core")
+
+    assert not missing_loaded.ok
+    assert missing_loaded.issues[0].kind == "decl_graph_index_schema_version_invalid"
+    assert not previous_loaded.ok
+    assert previous_loaded.issues[0].kind == "decl_graph_index_schema_version_invalid"
+    assert not removed_loaded.ok
+    assert removed_loaded.issues[0].kind == "schema_validation_failed"
+    assert json.loads(path.read_text(encoding="utf-8")) == removed

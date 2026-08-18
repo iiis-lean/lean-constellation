@@ -20,7 +20,6 @@ def _write_source(repo_root: Path) -> None:
     )
     (source_root / "chapters" / "one.md").write_text("Definition A.\nTheorem B.\n", encoding="utf-8")
     (source_root / "chapters" / "two.md").write_text("Definition C.\nTheorem D.\n", encoding="utf-8")
-    (source_root / "artifact.bin").write_bytes(b"\x00\x01")
 
 
 def _prepare_source(repo_root: Path):
@@ -34,6 +33,82 @@ def _prepare_source(repo_root: Path):
     )
     assert prepared.ok, prepared.issues
     return runtime
+
+
+def _manifest_snapshot(runtime, repo_root: Path) -> tuple[bytes, int]:  # noqa: ANN001
+    path = runtime.material.source_corpus._manifest_path(repo_root)  # noqa: SLF001
+    return path.read_bytes(), path.stat().st_mtime_ns
+
+
+def _reject_manifest_writes(runtime, repo_root: Path, monkeypatch) -> None:  # noqa: ANN001
+    manifest_path = runtime.material.source_corpus._manifest_path(repo_root)  # noqa: SLF001
+    real_write = runtime.foundation.store.write_json_atomic
+
+    def reject_manifest_write(path, value, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003, ANN202
+        assert Path(path) != manifest_path, "read path attempted to rewrite frozen SourceCorpus truth"
+        return real_write(path, value, *args, **kwargs)
+
+    monkeypatch.setattr(runtime.foundation.store, "write_json_atomic", reject_manifest_write)
+
+
+def test_source_scope_resolution_validates_without_rewriting_manifest(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime = _prepare_source(tmp_path)
+    before = _manifest_snapshot(runtime, tmp_path)
+    _reject_manifest_writes(runtime, tmp_path, monkeypatch)
+
+    resolved = runtime.material.resolve_source_scope(
+        tmp_path,
+        source_scope=SourceScope(mode="selected", selectors=["chapters/one.md"]),
+    )
+
+    assert resolved.ok and resolved.value is not None, resolved.issues
+    assert _manifest_snapshot(runtime, tmp_path) == before
+
+
+def test_source_scope_resolution_rejects_file_drift_without_rewriting_manifest(
+    tmp_path: Path,
+) -> None:
+    runtime = _prepare_source(tmp_path)
+    before = _manifest_snapshot(runtime, tmp_path)
+    (tmp_path / ".lean_constellation/source/chapters/one.md").write_text(
+        "Changed after the manifest was frozen.\n",
+        encoding="utf-8",
+    )
+
+    resolved = runtime.material.resolve_source_scope(
+        tmp_path,
+        source_scope=SourceScope(mode="selected", selectors=["chapters/one.md"]),
+    )
+
+    assert not resolved.ok
+    assert resolved.issues[0].kind == "source_corpus_manifest_drift"
+    assert _manifest_snapshot(runtime, tmp_path) == before
+
+
+def test_open_source_index_update_reuses_frozen_manifest_without_write(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime = _prepare_source(tmp_path)
+    resolved = runtime.material.resolve_source_scope(
+        tmp_path,
+        source_scope=SourceScope(mode="selected", selectors=["chapters/one.md"]),
+    )
+    assert resolved.ok and resolved.value is not None, resolved.issues
+    before = _manifest_snapshot(runtime, tmp_path)
+    _reject_manifest_writes(runtime, tmp_path, monkeypatch)
+
+    opened = runtime.material.open_source_index_update(
+        tmp_path,
+        resolved_scope=resolved.value,
+        index_policy="auto",
+    )
+
+    assert opened.ok and opened.value is not None, opened.issues
+    assert _manifest_snapshot(runtime, tmp_path) == before
 
 
 def _complete_block(runtime, repo_root: Path, *, path: str, title: str) -> str:
@@ -84,12 +159,11 @@ def test_scope_resolver_supports_exact_directory_glob_all_and_none(tmp_path: Pat
     assert globbed.ok and globbed.value.resolved_file_paths == ["chapters/one.md", "chapters/two.md"]
     assert all_files.ok and all_files.value.resolved_file_paths == [
         "README.md",
-        "artifact.bin",
         "chapters/one.md",
         "chapters/two.md",
     ]
     assert none.ok and none.value.resolved_file_paths == []
-    assert all_files.value.artifact_file_paths == ["artifact.bin"]
+    assert all_files.value.artifact_file_paths == []
 
     unsafe = runtime.material.resolve_source_scope(
         tmp_path,
@@ -105,6 +179,13 @@ def test_scope_resolver_supports_exact_directory_glob_all_and_none(tmp_path: Pat
     nested = tmp_path / ".lean_constellation" / "source" / "chapters" / "nested" / "three.md"
     nested.parent.mkdir()
     nested.write_text("Nested theorem.\n", encoding="utf-8")
+    refreshed_truth = runtime.material.submit_source_corpus_prepared(
+        tmp_path,
+        entry_path="README.md",
+        overview="Incremental source fixture.",
+        preparation_summary="Updated the frozen source fixture.",
+    )
+    assert refreshed_truth.ok, refreshed_truth.issues
     single_level = runtime.material.resolve_source_scope(
         tmp_path,
         source_scope=SourceScope(mode="selected", selectors=["chapters/*.md"]),

@@ -54,6 +54,27 @@ def _digest(result) -> str:  # noqa: ANN001
     return result.value.current_index_digest
 
 
+def test_source_corpus_manifest_view_is_current_and_timestamp_free(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    repo_root = make_repo(workspace)
+    _write_source(repo_root)
+    api = _api(workspace)
+    prepared = api.workspace_runtime.material.submit_source_corpus_prepared(
+        repo_root,
+        entry_path="README.md",
+        overview="Operator fixture.",
+        preparation_summary="Prepared fixture.",
+    )
+    assert prepared.ok, prepared.issues
+
+    manifest = api.get_source_corpus_manifest("MainRepo")
+
+    assert manifest.ok and manifest.value is not None, manifest.issues
+    payload = manifest.value.model_dump(mode="json")
+    assert payload["schema_version"] == 3
+    assert "generated_at" not in payload
+
+
 def test_source_index_granular_operator_update_survives_facade_restart(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     repo_root = make_repo(workspace)

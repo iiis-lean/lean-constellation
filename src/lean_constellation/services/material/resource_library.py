@@ -49,7 +49,6 @@ class ResourceMetadata(StrictModel):
     notes: str | None = None
     canonical_entry: str
     created_at: str = Field(default_factory=utc_now_iso)
-    content_hash: str | None = None
 
 
 class ResourceDraftStatus(StrEnum):
@@ -437,7 +436,6 @@ class ResourceLibraryComponent:
             source_url=draft.target.target if draft.target.kind == "web_url" else None,
             notes=summary.strip(),
             canonical_entry=dest_entry.relative_to(dest).as_posix(),
-            content_hash=canonical_file.sha256,
         )
         resource_write = self.runtime.foundation.store.write_json_atomic(
             self.runtime.foundation.layout.resource_metadata_path(ctx, resource_key),
@@ -577,11 +575,6 @@ class ResourceLibraryComponent:
             source_url=metadata.source_url,
             notes=metadata.notes,
             canonical_entry=dest_entry.relative_to(dest).as_posix(),
-            content_hash=next(
-                item.sha256
-                for item in manifest.value.files
-                if item.path == manifest.value.canonical_entry
-            ),
         )
         write = self.runtime.foundation.store.write_json_atomic(
             self.runtime.foundation.layout.resource_metadata_path(ctx, resource_key),

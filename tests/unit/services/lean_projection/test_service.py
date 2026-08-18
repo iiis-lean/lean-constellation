@@ -211,8 +211,16 @@ def test_lean_projection_service_refresh_wrappers(tmp_path: Path) -> None:
     assert node.ok
     assert node.value is not None
     assert node.value.changed is True
-    assert (tmp_path / "Main" / "Topic" / "Core" / "Prelude.lean").exists()
-    assert (tmp_path / "Main" / "Topic" / "Core" / "Interfaces.lean").exists()
+    prelude = tmp_path / "Main" / "Topic" / "Core" / "Prelude.lean"
+    interfaces = tmp_path / "Main" / "Topic" / "Core" / "Interfaces.lean"
+    assert prelude.exists()
+    assert interfaces.exists()
+    first_projection = (prelude.read_bytes(), interfaces.read_bytes())
+
+    repeated = service.refresh_node_projection(tmp_path, node_path="Main.Topic.Core")
+    assert repeated.ok and repeated.value is not None
+    assert repeated.value.changed is False
+    assert (prelude.read_bytes(), interfaces.read_bytes()) == first_projection
 
     adapter = service.refresh_adapter_projection(tmp_path)
     assert adapter.ok

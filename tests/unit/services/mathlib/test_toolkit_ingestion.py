@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from tests.unit_services_helpers import make_runtime
@@ -78,6 +79,49 @@ def test_search_external_mathlib_reuses_stable_candidate_id_for_same_query_and_i
     cached = service.runtime.foundation.read_json(cache_path, MathlibCandidateCache)
     assert cached.ok and cached.value is not None
     assert list(cached.value.candidates) == [first.value.candidates[0].candidate_id]
+
+
+def test_mathlib_candidate_cache_is_timestamp_free_and_deterministic(tmp_path: Path) -> None:
+    def dispatch(tool_name: str, payload: dict):
+        assert tool_name == "lean_explore.find"
+        return {"results": [{"name": "Nat.add_assoc", "module": "Init", "kind": "theorem"}]}
+
+    service = _service(dispatch)
+    cache_path = tmp_path / ".lean_constellation" / "work" / "cache" / "mathlib_candidates.json"
+
+    first = service.search_external_mathlib(tmp_path, query="Nat add", search_kinds=["theorem"], limit=5)
+    first_bytes = cache_path.read_bytes()
+    second = service.search_external_mathlib(tmp_path, query="Nat add", search_kinds=["theorem"], limit=5)
+
+    assert first.ok and second.ok
+    assert cache_path.read_bytes() == first_bytes
+    payload = json.loads(first_bytes)
+    assert "updated_at" not in payload
+    assert all("created_at" not in candidate for candidate in payload["candidates"].values())
+
+
+def test_mathlib_candidate_cache_rejects_removed_timestamp_fields(tmp_path: Path) -> None:
+    service = _service(lambda tool_name, payload: (_ for _ in ()).throw(AssertionError(tool_name)))
+    path = tmp_path / ".lean_constellation" / "work" / "cache" / "mathlib_candidates.json"
+    path.parent.mkdir(parents=True)
+    payload = {
+        "candidates": {
+            "mc_old": {
+                "candidate_id": "mc_old",
+                "name": "Nat.add_assoc",
+                "source_kind": "mathlib_search",
+                "created_at": "2026-08-19T00:00:00Z",
+            }
+        },
+        "updated_at": "2026-08-19T00:00:00Z",
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    inspected = service.inspect_mathlib_search_candidate(tmp_path, candidate_id="mc_old")
+
+    assert not inspected.ok
+    assert inspected.issues[0].kind == "schema_validation_failed"
+    assert json.loads(path.read_text(encoding="utf-8")) == payload
 
 
 def test_mathlib_candidate_legacy_cache_is_not_loaded(tmp_path: Path) -> None:

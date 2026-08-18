@@ -1,4 +1,3 @@
-import hashlib
 import json
 from pathlib import Path
 
@@ -275,7 +274,7 @@ def test_resource_manifest_requires_explicit_canonical_when_outputs_are_ambiguou
     assert checked.ok and checked.value is not None and checked.value.passed
     assert finalized.ok and finalized.value is not None
     assert finalized.value.resource.canonical_entry == "article/b.md"
-    assert finalized.value.resource.content_hash == hashlib.sha256(b"selected entry\n").hexdigest()
+    assert "content_hash" not in finalized.value.resource.model_dump()
 
 
 def test_resource_manifest_rejects_old_schema_and_binary_canonical_entry(tmp_path: Path) -> None:
@@ -335,7 +334,8 @@ def test_resource_manifest_records_file_truth_and_matches_final_metadata(tmp_pat
         if item.path == manifest_loaded.value.canonical_entry
     )
     assert finalized.value.resource.canonical_entry == manifest_loaded.value.canonical_entry
-    assert finalized.value.resource.content_hash == canonical.sha256
+    assert len(canonical.sha256) == 64
+    assert "content_hash" not in finalized.value.resource.model_dump()
 
 
 def test_resource_static_readme_needs_no_workflow_sections(tmp_path: Path) -> None:

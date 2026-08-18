@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import Field, field_validator
 
-from lean_constellation.domain.common import StrictModel, utc_now_iso
+from lean_constellation.domain.common import StrictModel
 from lean_constellation.services.foundation import FoundationContext, IssueSeverity, ServiceIssue, ServiceResult
 from lean_constellation.services.mathlib.mathlib_index import MathlibDeclEntryView, MathlibIndexComponent, MathlibModuleEntryView
 
@@ -31,7 +31,6 @@ class MathlibCandidateView(StrictModel):
     source_kind: str = "mathlib_search"
     search_query: str | None = None
     raw_excerpt: str | None = None
-    created_at: str = Field(default_factory=utc_now_iso)
 
     @field_validator("candidate_id")
     @classmethod
@@ -52,7 +51,6 @@ class MathlibCandidateView(StrictModel):
 
 class MathlibCandidateCache(StrictModel):
     candidates: dict[str, MathlibCandidateView] = Field(default_factory=dict)
-    updated_at: str = Field(default_factory=utc_now_iso)
 
 
 class MathlibExternalSearchView(StrictModel):
@@ -1036,7 +1034,6 @@ class ToolkitIngestionComponent:
         return self.runtime.foundation.read_json(path, MathlibCandidateCache)
 
     def _save_candidate_cache(self, repo_root: Path, cache: MathlibCandidateCache) -> ServiceResult[MathlibCandidateCache]:
-        cache.updated_at = utc_now_iso()
         write = self.runtime.foundation.write_json_atomic(self._candidate_cache_path(repo_root), cache)
         if not write.ok:
             return self.runtime.foundation.fail(write.issues)

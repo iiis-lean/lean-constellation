@@ -500,13 +500,6 @@ class DeclCatalogComponent:
             for name in updated_index.decl_names
             if name not in set(created_decl_names)
         ]
-        updated_index.updated_at = discarded_at
-        updated_index.summary = (
-            f"DeclGraph index updated after discarding {round_id}: "
-            f"{len(updated_index.decl_names)} decls, "
-            f"{len(updated_index.round_ids)} rounds, "
-            f"{len(updated_index.strategy_ids)} strategies."
-        )
 
         with self.runtime.foundation.store.mutation(
             "discard_decl_round_draft"

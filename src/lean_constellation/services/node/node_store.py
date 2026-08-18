@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import Field
 
-from lean_constellation.domain.common import StrictModel, utc_now_iso
+from lean_constellation.domain.common import StrictModel
 from lean_constellation.services.foundation import FoundationContext, ServiceResult, WriteMode
 
 if TYPE_CHECKING:
@@ -26,11 +26,9 @@ class NodeIndexEntry(StrictModel):
 
 
 class NodeIndex(StrictModel):
-    schema_version: int = 1
+    schema_version: Literal[2] = 2
     entries: list[NodeIndexEntry] = Field(default_factory=list)
     active_path_to_node_id: dict[str, str] = Field(default_factory=dict)
-    rebuilt_at: str = Field(default_factory=utc_now_iso)
-    summary: str
 
 
 class NodeStore:
@@ -52,6 +50,27 @@ class NodeStore:
         if not path.exists():
             return self.rebuild_index(repo_root)
         loaded = self.runtime.foundation.store.read_json(path, NodeIndex)
+        noncurrent = next(
+            (
+                issue
+                for issue in loaded.issues
+                if issue.kind in {"schema_version_missing", "schema_version_mismatch"}
+            ),
+            None,
+        )
+        if noncurrent is not None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "node_index_schema_version_invalid",
+                    "Node index must declare the current schema version.",
+                    object_ref=str(path),
+                    field="schema_version",
+                    current=noncurrent.current,
+                    expected=noncurrent.expected,
+                    suggested_action="Delete and rebuild the derived node index in the task-local repo.",
+                    details={"store_issue_kind": noncurrent.kind},
+                )
+            )
         return loaded
 
     def rebuild_index(self, repo_root: Path) -> ServiceResult[NodeIndex]:
@@ -111,7 +130,6 @@ class NodeStore:
         index = NodeIndex(
             entries=entries,
             active_path_to_node_id=active_path_to_node_id,
-            summary=f"Indexed {len(entries)} nodes; {len(active_path_to_node_id)} active paths.",
         )
         return self.runtime.foundation.ok(index)
 

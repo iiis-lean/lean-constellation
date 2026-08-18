@@ -712,6 +712,21 @@ def _source_readme_text() -> str:
     )
 
 
+def _prepare_stable_source_corpus(runtime, repo_root: Path, *, entry_path: str) -> None:  # noqa: ANN001
+    source_root = repo_root / ".lean_constellation" / "source"
+    source_root.mkdir(parents=True, exist_ok=True)
+    readme = source_root / "README.md"
+    if not readme.exists():
+        readme.write_text(_source_readme_text(), encoding="utf-8")
+    prepared = runtime.material.submit_source_corpus_prepared(
+        repo_root,
+        entry_path=entry_path,
+        overview="Application tool fixture.",
+        preparation_summary="Prepared current SourceCorpus fixture.",
+    )
+    assert prepared.ok, prepared.issues
+
+
 def test_source_corpus_tool_invokes_material_service(tmp_path: Path) -> None:
     runtime = create_test_runtime_services(register_application_tools=True)
     assert SourceCorpusCheckArgs().relpath == (
@@ -818,6 +833,7 @@ def test_source_range_validation_and_preview_tools_invoke_material_service(tmp_p
     source_root = tmp_path / ".lean_constellation" / "source"
     source_root.mkdir(parents=True)
     (source_root / "source.md").write_text("line one\nline two\nline three\n", encoding="utf-8")
+    _prepare_stable_source_corpus(runtime, tmp_path, entry_path="source.md")
 
     raw = _raw(tmp_path, view="source_index_builder", agent_type="SourceIndexBuilderAgent")
     validated = _unwrap_tool_result(
@@ -859,6 +875,7 @@ def test_source_reads_use_corpus_validity_without_node_material_read_acl(
         "outside before\nassigned one\nassigned two\noutside after\n",
         encoding="utf-8",
     )
+    _prepare_stable_source_corpus(runtime, tmp_path, entry_path="source.md")
     assert runtime.node.node_tree.ensure_root_scope_node(tmp_path).ok
     assert runtime.node.create_content_node(
         tmp_path,
@@ -1084,6 +1101,7 @@ def test_source_and_resource_text_search_tools_enforce_material_boundary(tmp_pat
     source_root = tmp_path / ".lean_constellation" / "source"
     source_root.mkdir(parents=True)
     (source_root / "source.md").write_text("shared needle from source\n", encoding="utf-8")
+    _prepare_stable_source_corpus(runtime, tmp_path, entry_path="source.md")
 
     target = runtime.material.normalize_resource_target("https://example.com/resource")
     assert target.ok and target.value is not None
@@ -1755,6 +1773,7 @@ def test_current_node_dependency_and_material_tools_invoke_mutation_wrappers(tmp
     source_root = tmp_path / ".lean_constellation" / "source"
     source_root.mkdir(parents=True)
     (source_root / "notes.md").write_text("line 1\nline 2\n", encoding="utf-8")
+    _prepare_stable_source_corpus(runtime, tmp_path, entry_path="notes.md")
     raw = _raw(
         tmp_path,
         view="node_dir_dependency_recon",
@@ -1804,6 +1823,7 @@ def test_coordinator_node_contract_write_tools_invoke_path_based_mutation_wrappe
     source_root = tmp_path / ".lean_constellation" / "source"
     source_root.mkdir(parents=True)
     (source_root / "notes.md").write_text("line 1\nline 2\n", encoding="utf-8")
+    _prepare_stable_source_corpus(runtime, tmp_path, entry_path="notes.md")
     assert runtime.mathlib.upsert_mathlib_module_entry(tmp_path, module="Mathlib.Data.Nat.Basic").ok
     assert runtime.mathlib.upsert_mathlib_decl_entry(
         tmp_path,

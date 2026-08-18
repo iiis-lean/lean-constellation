@@ -8,6 +8,7 @@ from pydantic import ValidationError
 
 from lean_constellation.domain.preparation import RepoDependencyRequirement, RepoPreparationInput, SourceMaterialInput
 from lean_constellation.domain.repo_release import RepoRelease
+from lean_constellation.app.operator_data.repo_material import OperatorResourceView
 from lean_constellation.services.decl_graph import (
     Decl,
     DeclGraphIndex,
@@ -19,8 +20,11 @@ from lean_constellation.services.decl_graph import (
 from lean_constellation.domain.lean_check import LeanCheck, LeanDiagnosticItem, LeanDiagnostics, SorryAxiomOccurrence, SorryAxiomScan
 from lean_constellation.services.decl_graph.models import DeclProof, DeclStatement
 from lean_constellation.services.material.resource_library import ResourceDraft, ResourceMetadata, ResourceTarget
+from lean_constellation.services.material.source_corpus import SourceCorpusManifestView
+from lean_constellation.services.mathlib import MathlibCandidateCache, MathlibCandidateView, MathlibSearchCandidateView
 from lean_constellation.services.material.source_index import SourceBlock, SourceBlockRef, SourceFileIndex, SourceIndex, SourceLink
 from lean_constellation.services.node.contract_fields import ContractMaterialRef, NodeDep, NodeMathlibDeclUse, NodeMathlibModuleUse
+from lean_constellation.services.node.node_store import NodeIndex
 from lean_constellation.services.node.node_tree import NodeContract, NodeMetadata
 from lean_constellation.services.validation_snapshot.snapshot_restore import RepoCheckpointSnapshotManifest
 
@@ -71,6 +75,22 @@ def test_business_truth_models_do_not_embed_bare_any_or_view_types() -> None:
                 offenders.append(f"{model.__name__}.{field_name}: embeds View model")
 
     assert offenders == []
+
+
+def test_source_node_decl_graph_mathlib_resource_models_omit_removed_operational_fields() -> None:
+    removed_fields = {
+        SourceCorpusManifestView: {"generated_at"},
+        NodeIndex: {"rebuilt_at", "summary"},
+        DeclGraphIndex: {"updated_at", "summary"},
+        MathlibCandidateView: {"created_at"},
+        MathlibCandidateCache: {"updated_at"},
+        MathlibSearchCandidateView: {"created_at"},
+        ResourceMetadata: {"content_hash"},
+        OperatorResourceView: {"content_hash"},
+    }
+
+    for model, removed in removed_fields.items():
+        assert removed.isdisjoint(model.model_fields), model.__name__
 
 
 @pytest.mark.parametrize(

@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from lean_constellation.domain.common import utc_now_iso
 from lean_constellation.domain.repo import RepoFormat
 from lean_constellation.services.decl_graph.models import (
     DeclGraphIndex,
@@ -67,7 +66,29 @@ class GraphStoreComponent:
         paths = self._paths(repo_root, node_path)
         if paths is None:
             return self._invalid_node_path(node_path)
-        return self.runtime.foundation.store.read_json(paths.index_path, DeclGraphIndex)
+        loaded = self.runtime.foundation.store.read_json(paths.index_path, DeclGraphIndex)
+        noncurrent = next(
+            (
+                issue
+                for issue in loaded.issues
+                if issue.kind in {"schema_version_missing", "schema_version_mismatch"}
+            ),
+            None,
+        )
+        if noncurrent is not None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "decl_graph_index_schema_version_invalid",
+                    "Decl graph index must declare the current schema version.",
+                    object_ref=str(paths.index_path),
+                    field="schema_version",
+                    current=noncurrent.current,
+                    expected=noncurrent.expected,
+                    suggested_action="Delete and rebuild the derived decl graph index in the task-local repo.",
+                    details={"store_issue_kind": noncurrent.kind},
+                )
+            )
+        return loaded
 
     def get_store_view(self, repo_root: Path, *, node_path: str) -> ServiceResult[DeclGraphStoreView]:
         index = self.get_index(repo_root, node_path=node_path)
@@ -124,11 +145,6 @@ class GraphStoreComponent:
             strategy_ids=strategy_ids,
             round_ids=round_ids,
             decl_names=decl_names,
-            updated_at=utc_now_iso(),
-            summary=(
-                f"DeclGraph index rebuilt for {node_path}: "
-                f"{len(decl_names)} decls, {len(round_ids)} rounds, {len(strategy_ids)} strategies."
-            ),
         )
         written = self.runtime.foundation.store.write_json_atomic(paths.index_path, index, mode=WriteMode.OVERWRITE)
         if not written.ok:
@@ -215,7 +231,6 @@ class GraphStoreComponent:
         return self.runtime.foundation.ok(DeclGraphIndex(
             node_id=node.value.node_id,
             node_path=node_path,
-            summary=f"Empty DeclGraph index for Content node {node_path}.",
         ))
 
     def _paths(self, repo_root: Path, node_path: str) -> "_GraphPaths | None":

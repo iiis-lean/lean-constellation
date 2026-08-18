@@ -266,16 +266,14 @@ class DeclRevisionRef(StrictModel):
 class DeclGraphIndex(StrictModel):
     """Small cached index for one Content node decl graph."""
 
-    schema_version: int = 1
+    schema_version: Literal[2] = 2
     node_id: str
     node_path: str
     strategy_ids: list[str] = Field(default_factory=list)
     round_ids: list[str] = Field(default_factory=list)
     decl_names: list[str] = Field(default_factory=list)
-    updated_at: str = Field(default_factory=utc_now_iso)
-    summary: str
 
-    @field_validator("node_id", "node_path", "summary")
+    @field_validator("node_id", "node_path")
     @classmethod
     def _non_empty_text(cls, value: str) -> str:
         if not value or not value.strip():

@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Literal
 
 from pydantic import Field
 
-from lean_constellation.domain.common import StrictModel, utc_now_iso
+from lean_constellation.domain.common import StrictModel
 from lean_constellation.domain.refs import SourceRef
 from lean_constellation.services.external_clients import (
     AcquiredArtifactResult,
@@ -43,12 +43,11 @@ class SourceCorpusFileView(StrictModel):
 
 
 class SourceCorpusManifestView(StrictModel):
-    schema_version: Literal[2] = 2
+    schema_version: Literal[3] = 3
     relpath: str = ".lean_constellation/source"
     overview: str | None = None
     entry_path: str | None = None
     created_from_mode: str = "scan"
-    generated_at: str = Field(default_factory=utc_now_iso)
     files: list[SourceCorpusFileView] = Field(default_factory=list)
     summary: str
 
@@ -1152,39 +1151,89 @@ class SourceCorpusComponent:
 
     def get_source_corpus_manifest(self, repo_root: Path) -> ServiceResult[SourceCorpusManifestView]:
         path = self._manifest_path(repo_root)
-        if path.exists():
-            loaded = self.runtime.foundation.store.read_json(path, SourceCorpusManifestView)
-            if not loaded.ok or loaded.value is None:
-                return self.runtime.foundation.fail(loaded.issues)
-            schema_issues = [
-                issue
-                for issue in loaded.issues
-                if issue.kind in {"schema_version_missing", "schema_version_mismatch"}
-            ]
-            if schema_issues:
-                return self.runtime.foundation.fail([self._as_schema_error(issue) for issue in schema_issues])
-            return loaded
-        return self.scan_source_corpus(repo_root, relpath=self._source_relpath(repo_root))
+        if not path.exists():
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "source_corpus_manifest_missing",
+                    "Persisted current SourceCorpus manifest truth is required.",
+                    object_ref=str(path),
+                )
+            )
+        loaded = self.runtime.foundation.store.read_json(path, SourceCorpusManifestView)
+        if not loaded.ok or loaded.value is None:
+            return self.runtime.foundation.fail(loaded.issues)
+        schema_issues = [
+            issue
+            for issue in loaded.issues
+            if issue.kind in {"schema_version_missing", "schema_version_mismatch"}
+        ]
+        if schema_issues:
+            return self.runtime.foundation.fail([self._as_schema_error(issue) for issue in schema_issues])
+        return loaded
 
-    def refresh_source_corpus_manifest(self, repo_root: Path) -> ServiceResult[SourceCorpusManifestView]:
-        """Fresh-scan and persist the manifest while preserving descriptive metadata."""
+    def validate_frozen_source_corpus_manifest(
+        self,
+        repo_root: Path,
+    ) -> ServiceResult[SourceCorpusManifestView]:
+        """Validate stable SourceCorpus bytes without mutating persisted manifest truth."""
 
-        existing = self.get_source_corpus_manifest(repo_root)
-        if not existing.ok or existing.value is None:
-            return self.runtime.foundation.fail(existing.issues)
+        persisted = self.get_source_corpus_manifest(repo_root)
+        if not persisted.ok or persisted.value is None:
+            return self.runtime.foundation.fail(persisted.issues)
         scanned = self.scan_source_corpus(
             repo_root,
-            relpath=existing.value.relpath,
-            overview=existing.value.overview,
-            entry_path=existing.value.entry_path,
-            created_from_mode=existing.value.created_from_mode,
+            relpath=self._source_relpath(repo_root),
+            overview=persisted.value.overview,
+            entry_path=persisted.value.entry_path,
+            created_from_mode=persisted.value.created_from_mode,
         )
         if not scanned.ok or scanned.value is None:
-            return self.runtime.foundation.fail(scanned.issues)
-        written = self.runtime.foundation.store.write_json_atomic(self._manifest_path(repo_root), scanned.value)
-        if not written.ok:
-            return self.runtime.foundation.fail(written.issues)
-        return self.runtime.foundation.ok(scanned.value)
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "source_corpus_manifest_drift",
+                    "Stable SourceCorpus no longer matches its persisted manifest truth.",
+                    object_ref=str(self._manifest_path(repo_root)),
+                    details={
+                        "scan_issues": json.dumps(
+                            [issue.model_dump(mode="json") for issue in scanned.issues],
+                            sort_keys=True,
+                        )
+                    },
+                )
+            )
+        expected = self._frozen_manifest_payload(persisted.value)
+        current = self._frozen_manifest_payload(scanned.value)
+        if current != expected:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "source_corpus_manifest_drift",
+                    "Stable SourceCorpus no longer matches its persisted manifest truth.",
+                    object_ref=str(self._manifest_path(repo_root)),
+                    current=self._payload_digest(current),
+                    expected=self._payload_digest(expected),
+                )
+            )
+        return persisted
+
+    @staticmethod
+    def _frozen_manifest_payload(manifest: SourceCorpusManifestView) -> dict[str, object]:
+        return {
+            "relpath": manifest.relpath,
+            "overview": manifest.overview,
+            "entry_path": manifest.entry_path,
+            "created_from_mode": manifest.created_from_mode,
+            "files": [item.model_dump(mode="json") for item in manifest.files],
+        }
+
+    @staticmethod
+    def _payload_digest(payload: object) -> str:
+        encoded = json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
 
     @staticmethod
     def canonical_manifest_digest(manifest: SourceCorpusManifestView) -> str:

@@ -740,18 +740,26 @@ def test_source_corpus_submit_prepared_and_blocked_gates(tmp_path: Path) -> None
     assert blocked.value.attempted_targets == ["missing paper"]
 
 
-def test_get_manifest_falls_back_to_scan_and_validate_source_ref_errors(tmp_path: Path) -> None:
+def test_get_manifest_requires_persisted_current_truth_and_validate_source_ref_errors(
+    tmp_path: Path,
+) -> None:
     _write_source(tmp_path)
     service = make_runtime().material
 
-    fallback = service.source_corpus.get_source_corpus_manifest(tmp_path)
+    missing_manifest = service.source_corpus.get_source_corpus_manifest(tmp_path)
+    prepared = service.submit_source_corpus_prepared(
+        tmp_path,
+        entry_path="README.md",
+        overview="Current source corpus.",
+        preparation_summary="Persisted current SourceCorpus truth.",
+    )
+    assert prepared.ok, prepared.issues
     outside = service.source_corpus.validate_source_ref(tmp_path, path="../outside.md", start_line=1, end_line=1)
     missing = service.source_corpus.validate_source_ref(tmp_path, path="missing.md", start_line=1, end_line=1)
     invalid_range = service.source_corpus.validate_source_ref(tmp_path, path="README.md", start_line=100, end_line=101)
 
-    assert fallback.ok
-    assert fallback.value is not None
-    assert fallback.value.created_from_mode == "scan"
+    assert not missing_manifest.ok
+    assert missing_manifest.issues[0].kind == "source_corpus_manifest_missing"
     assert outside.ok and outside.value is not None
     assert outside.value.issue_code == "source_ref_outside_root"
     assert missing.ok and missing.value is not None
@@ -828,6 +836,13 @@ def test_validate_source_refs_reuses_manifest_lookup_and_actual_line_count_per_f
 def test_check_target_in_source_corpus_matches_path_and_sha(tmp_path: Path) -> None:
     _write_source(tmp_path)
     service = make_runtime().material
+    prepared = service.submit_source_corpus_prepared(
+        tmp_path,
+        entry_path="README.md",
+        overview="Current source corpus.",
+        preparation_summary="Persisted current SourceCorpus truth.",
+    )
+    assert prepared.ok, prepared.issues
     manifest = service.source_corpus.get_source_corpus_manifest(tmp_path)
     assert manifest.ok
     assert manifest.value is not None
@@ -1105,9 +1120,25 @@ def test_source_corpus_rejects_runtime_artifacts_symlinks_and_old_manifest_schem
     )
     assert prepared.ok
     manifest_path = tmp_path / ".lean_constellation" / "source_corpus" / "manifest.json"
-    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-    payload.pop("schema_version")
-    manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+    current_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    missing_version = dict(current_payload)
+    missing_version.pop("schema_version")
+    manifest_path.write_text(json.dumps(missing_version), encoding="utf-8")
+    missing = service.source_corpus.get_source_corpus_manifest(tmp_path)
+    assert not missing.ok
+    assert any(issue.kind == "schema_version_missing" for issue in missing.issues)
+
+    previous_version = dict(current_payload)
+    previous_version["schema_version"] = 2
+    manifest_path.write_text(json.dumps(previous_version), encoding="utf-8")
     old = service.source_corpus.get_source_corpus_manifest(tmp_path)
     assert not old.ok
-    assert any(issue.kind == "schema_version_missing" for issue in old.issues)
+    assert any(issue.kind == "schema_version_mismatch" for issue in old.issues)
+
+    removed_field = dict(current_payload)
+    removed_field["generated_at"] = "2026-08-19T00:00:00Z"
+    manifest_path.write_text(json.dumps(removed_field), encoding="utf-8")
+    extra = service.source_corpus.get_source_corpus_manifest(tmp_path)
+    assert not extra.ok
+    assert any(issue.kind == "schema_validation_failed" for issue in extra.issues)

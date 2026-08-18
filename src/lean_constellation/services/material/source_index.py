@@ -346,15 +346,10 @@ class SourceIndexComponent:
         *,
         source_scope: SourceScope,
     ) -> ServiceResult[ResolvedSourceScopeView]:
-        refreshed = self.source_corpus.refresh_source_corpus_manifest(repo_root)
-        if not refreshed.ok or refreshed.value is None:
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue(
-                    "source_corpus_manifest_refresh_failed",
-                    "; ".join(issue.message for issue in refreshed.issues),
-                )
-            )
-        manifest = refreshed.value
+        validated = self.source_corpus.validate_frozen_source_corpus_manifest(repo_root)
+        if not validated.ok or validated.value is None:
+            return self.runtime.foundation.fail(validated.issues)
+        manifest = validated.value
         paths = sorted(item.path for item in manifest.files)
         if source_scope.mode == "none":
             resolved: list[str] = []
@@ -411,7 +406,7 @@ class SourceIndexComponent:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue("source_index_policy_invalid", f"Unsupported SourceIndex policy: {index_policy}")
             )
-        manifest = self.source_corpus.refresh_source_corpus_manifest(repo_root)
+        manifest = self.source_corpus.validate_frozen_source_corpus_manifest(repo_root)
         if not manifest.ok or manifest.value is None:
             return self.runtime.foundation.fail(manifest.issues)
         if self._manifest_digest(manifest.value) != resolved_scope.manifest_digest:
