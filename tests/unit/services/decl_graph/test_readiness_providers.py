@@ -4,12 +4,21 @@ from tests.unit_services_helpers import (
     initialize_native_test_repo,
     lean_check_payload,
     make_runtime,
+    publish_native_provider_release,
     write_proof_formal_for_test,
     write_statement_formal_for_test,
 )
 
-from lean_constellation.domain.repo import ProofAvailability, RepoCompletionMode
+from lean_constellation.domain.refs import DeclRef
+from lean_constellation.domain.repo import (
+    ProofAvailability,
+    RepoCompletionMode,
+    RepoPublicationState,
+    RepoPublicationStatus,
+)
 from lean_constellation.services.decl_graph import DeclReadinessReason, DeclState
+from lean_constellation.services.decl_graph.models import RepoDeclDep
+from lean_constellation.services.foundation import WriteMode
 from lean_constellation.services.lean_projection.lean_check import (
     LeanCheckView,
 )
@@ -283,6 +292,163 @@ def test_batch_readiness_evaluates_shared_exact_state_once(tmp_path: Path, monke
     ]
     assert all(result.ok and result.value is not None for result in separate)
     assert batch_dump == [result.value.model_dump(mode="json") for result in separate if result.value is not None]
+
+
+def test_shared_external_dependency_uses_fresh_operation_context(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    provider_root = tmp_path / "Provider"
+    _create_content_node(provider_root)
+    provider_round = _create_round_draft(provider_root)
+    _create_decl(
+        provider_root,
+        round_id=provider_round,
+        name="external_shared",
+        public=True,
+    )
+    _start_round(provider_root, provider_round)
+    _prove_theorem(
+        provider_root,
+        round_id=provider_round,
+        name="external_shared",
+    )
+    _publish_committed_heads(provider_root, ["external_shared"])
+    runtime = make_runtime()
+    assert runtime.node.export.add_scope_export(
+        provider_root,
+        scope_path="Main.Topic",
+        decl_node=NODE_PATH,
+        decl_name="external_shared",
+    ).ok
+    assert runtime.node.contract._commit_scope_contract_after_guard(
+        provider_root,
+        scope_path="Main.Topic",
+        summary="Publish the provider Topic boundary.",
+    ).ok
+    assert runtime.node.export.add_scope_export(
+        provider_root,
+        scope_path="Main",
+        decl_node=NODE_PATH,
+        decl_name="external_shared",
+    ).ok
+    publish_native_provider_release(
+        runtime,
+        provider_root,
+        release_id="provider_r1",
+    )
+
+    consumer_root = tmp_path / "Consumer"
+    _create_content_node(consumer_root)
+    consumer_round = _create_round_draft(consumer_root)
+    for name in ("left", "right"):
+        _create_decl(
+            consumer_root,
+            round_id=consumer_round,
+            name=name,
+            public=True,
+        )
+    _start_round(consumer_root, consumer_round)
+    for name in ("left", "right"):
+        _prove_theorem(
+            consumer_root,
+            round_id=consumer_round,
+            name=name,
+        )
+    _publish_committed_heads(consumer_root, ["left", "right"])
+    external_ref = DeclRef(
+        repo="Provider",
+        node=NODE_PATH,
+        name="external_shared",
+        revision=1,
+    )
+    for name in ("left", "right"):
+        revision = runtime.decl_graph.get_decl_revision(
+            consumer_root,
+            node_path=NODE_PATH,
+            name=name,
+            revision=1,
+        )
+        assert revision.ok and revision.value is not None
+        assert revision.value.proof is not None
+        revision.value.proof.deps = [
+            RepoDeclDep(
+                ref=external_ref,
+                reason="Both readiness roots share one external dependency.",
+            )
+        ]
+        assert runtime.foundation.store.write_json_atomic(
+            runtime.decl_graph.graph_store.revision_path(
+                consumer_root,
+                node_path=NODE_PATH,
+                decl_name=name,
+                revision=1,
+            ),
+            revision.value,
+            mode=WriteMode.UPDATE_EXISTING,
+        ).ok
+
+    resolver = runtime.decl_graph.ref_compatibility
+    original_batch = resolver.resolve_public_decl_refs_batch
+    original_boundary = resolver._load_public_boundary_context
+    batch_sizes: list[int] = []
+    context_ids: list[int] = []
+    boundary_reads = 0
+
+    def record_batch(*args, **kwargs):  # noqa: ANN001, ANN202
+        batch_sizes.append(len(kwargs["refs"]))
+        context_ids.append(id(kwargs["operation_context"]))
+        return original_batch(*args, **kwargs)
+
+    def count_boundary(*args, **kwargs):  # noqa: ANN001, ANN202
+        nonlocal boundary_reads
+        boundary_reads += 1
+        return original_boundary(*args, **kwargs)
+
+    monkeypatch.setattr(resolver, "resolve_public_decl_refs_batch", record_batch)
+    monkeypatch.setattr(resolver, "_load_public_boundary_context", count_boundary)
+    monkeypatch.setattr(
+        resolver,
+        "resolve_public_decl_ref",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("readiness must not call the public single wrapper")
+        ),
+    )
+
+    first = runtime.decl_graph.check_decl_proof_policy_batch(
+        consumer_root,
+        roots=[
+            (NODE_PATH, "left", ProofAvailability.PROVED),
+            (NODE_PATH, "right", ProofAvailability.PROVED),
+        ],
+    )
+
+    assert first.ok and first.value is not None
+    assert [report.ready for report in first.value] == [True, True]
+    assert batch_sizes == [1, 1]
+    assert len(set(context_ids)) == 1
+    assert boundary_reads == 1
+
+    assert runtime.foundation.store.write_json_atomic(
+        runtime.repo_workspace.metadata._repo_publication_path(provider_root),
+        RepoPublicationState(status=RepoPublicationStatus.DEVELOPING),
+        mode=WriteMode.UPDATE_EXISTING,
+    ).ok
+    second = runtime.decl_graph.check_decl_proof_policy_batch(
+        consumer_root,
+        roots=[
+            (NODE_PATH, "left", ProofAvailability.PROVED),
+            (NODE_PATH, "right", ProofAvailability.PROVED),
+        ],
+    )
+
+    assert second.ok and second.value is not None
+    assert [report.ready for report in second.value] == [False, False]
+    assert batch_sizes == [1, 1, 1, 1]
+    assert context_ids[0] == context_ids[1]
+    assert context_ids[2] == context_ids[3]
+    assert context_ids[0] != context_ids[2]
+    assert boundary_reads == 1
 
 
 def test_definition_declared_with_statement_check_is_ready(tmp_path: Path) -> None:

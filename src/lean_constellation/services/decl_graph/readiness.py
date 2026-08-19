@@ -62,6 +62,7 @@ class _ReadinessKey:
 
 @dataclass
 class _ReadinessEvaluationContext:
+    decl_ref_context: object
     reports: dict[_ReadinessKey, DeclReadinessReport] = field(default_factory=dict)
     active: set[_ReadinessKey] = field(default_factory=set)
     current: dict[
@@ -143,7 +144,9 @@ class DeclReadinessComponent:
     ) -> ServiceResult[list[DeclReadinessReport]]:
         """Evaluate multiple roots with one exact-state dependency traversal."""
 
-        context = _ReadinessEvaluationContext()
+        context = _ReadinessEvaluationContext(
+            decl_ref_context=self.runtime.decl_graph.ref_compatibility.create_operation_context()
+        )
         reports: list[DeclReadinessReport] = []
         for node_path, decl_name, target in roots:
             report = self._check_decl_proof_policy_satisfied(
@@ -655,7 +658,9 @@ class DeclReadinessComponent:
         round_overlay: dict[str, tuple[Decl, DeclRevision]] | None = None,
         context: _ReadinessEvaluationContext | None = None,
     ) -> ServiceResult[DeclReadinessReport]:
-        context = context or _ReadinessEvaluationContext()
+        context = context or _ReadinessEvaluationContext(
+            decl_ref_context=self.runtime.decl_graph.ref_compatibility.create_operation_context()
+        )
         normalized_root = str(Path(repo_root).resolve())
         overlay_id = id(round_overlay) if round_overlay is not None else None
         overlay_pair = round_overlay.get(decl_name) if round_overlay is not None else None
@@ -863,6 +868,7 @@ class DeclReadinessComponent:
                 fallback_node_path=node_path,
                 local_target=dep_target,
                 provider_target_override=provider_target_override,
+                operation_context=context.decl_ref_context,
             )
             if not resolved_dep.ok or resolved_dep.value is None:
                 label = self._decl_ref_label(dep_ref, fallback_node_path=node_path)
@@ -956,6 +962,7 @@ class DeclReadinessComponent:
         ref: DeclRef,
         fallback_node_path: str,
         local_target: ProofAvailability,
+        operation_context: object,
         provider_target_override: ProofAvailability | None = None,
     ) -> ServiceResult[_ResolvedReadinessDependency]:
         if ref.repo:
@@ -972,16 +979,18 @@ class DeclReadinessComponent:
             effective_target = provider_target_override or proof_availability_for_completion_mode(
                 config.value.config.completion_mode
             )
-            compatible = self.runtime.decl_graph.ref_compatibility.resolve_public_decl_ref(
+            compatible_batch = self.runtime.decl_graph.ref_compatibility.resolve_public_decl_refs_batch(
                 repo_root,
-                ref=ref,
+                refs=[ref],
                 required_availability=effective_target,
+                operation_context=operation_context,
             )
-            if not compatible.ok or compatible.value is None:
-                return self.runtime.foundation.fail(compatible.issues)
-            if not compatible.value.compatible:
-                if compatible.value.reason == "state_too_low":
-                    current_state = compatible.value.current_state or "missing"
+            if not compatible_batch.ok or compatible_batch.value is None:
+                return self.runtime.foundation.fail(compatible_batch.issues)
+            compatible = compatible_batch.value[0]
+            if not compatible.compatible:
+                if compatible.reason == "state_too_low":
+                    current_state = compatible.current_state or "missing"
                     return self.runtime.foundation.fail(
                         self.runtime.foundation.issue(
                             "dependency_provider_availability_insufficient",
@@ -999,7 +1008,7 @@ class DeclReadinessComponent:
                         "dependency_decl_ref_incompatible",
                         "Cross-repo declaration dependency anchor is not compatible with the provider release head.",
                         object_ref=f"{provider_key}:{ref.node}:{ref.name}@{ref.revision}",
-                        current=compatible.value.reason,
+                        current=compatible.reason,
                     )
                 )
             repo_format = self.runtime.repo_workspace.metadata.get_repo_format(provider_root)
@@ -1016,7 +1025,7 @@ class DeclReadinessComponent:
                     repo_root=provider_root,
                     node_path=ref.node,
                     required_availability=effective_target,
-                    revision=compatible.value.resolved_revision or ref.revision,
+                    revision=compatible.resolved_revision or ref.revision,
                     release_id=release_id,
                 )
             )
@@ -1049,20 +1058,22 @@ class DeclReadinessComponent:
                     )
                 )
         local_ref = ref.model_copy(update={"node": dep_node})
-        compatible = self.runtime.decl_graph.ref_compatibility.resolve_decl_ref(
+        compatible_batch = self.runtime.decl_graph.ref_compatibility.resolve_decl_refs_batch(
             repo_root,
-            ref=local_ref,
+            refs=[local_ref],
             required_availability=local_target,
+            operation_context=operation_context,
         )
-        if not compatible.ok or compatible.value is None:
-            return self.runtime.foundation.fail(compatible.issues)
-        if not compatible.value.compatible:
+        if not compatible_batch.ok or compatible_batch.value is None:
+            return self.runtime.foundation.fail(compatible_batch.issues)
+        compatible = compatible_batch.value[0]
+        if not compatible.compatible:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
                     "dependency_decl_ref_incompatible",
                     "Declaration dependency anchor is not compatible with the current contract head.",
                     object_ref=f"{dep_node}:{ref.name}@{ref.revision}",
-                    current=compatible.value.reason,
+                    current=compatible.reason,
                 )
             )
         return self.runtime.foundation.ok(
@@ -1070,7 +1081,7 @@ class DeclReadinessComponent:
                 repo_root=Path(repo_root),
                 node_path=dep_node,
                 required_availability=local_target,
-                revision=compatible.value.resolved_revision or ref.revision,
+                revision=compatible.resolved_revision or ref.revision,
             )
         )
 
