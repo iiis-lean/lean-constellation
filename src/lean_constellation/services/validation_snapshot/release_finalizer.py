@@ -468,7 +468,7 @@ class RepoReleaseFinalizerComponent:
         if not availability_index.ok or availability_index.value is None:
             return self.runtime.foundation.fail(availability_index.issues)
 
-        build = self.runtime.external.lean_toolchain.run_lake_build(repo_root)
+        build = self._run_candidate_lake_build(repo_root)
         if build.ok:
             reports.append(
                 self.runtime.foundation.gate_passed(
@@ -636,7 +636,7 @@ class RepoReleaseFinalizerComponent:
         if not availability_index.ok or availability_index.value is None:
             return self.runtime.foundation.fail(availability_index.issues)
 
-        build = self.runtime.external.lean_toolchain.run_lake_build(repo_root)
+        build = self._run_candidate_lake_build(repo_root)
         if build.ok:
             reports.append(
                 self.runtime.foundation.gate_passed(
@@ -1750,11 +1750,17 @@ class RepoReleaseFinalizerComponent:
                         "Restored release publication truth is inconsistent.",
                         object_ref=preview.release_id,
                     ))
-                build = self.runtime.external.lean_toolchain.run_lake_build(repo_root)
-                if not build.ok:
+                build = self.runtime.repo_workspace.lake_dependency.run_lake_build(
+                    repo_root
+                )
+                if not build.ok or build.value is None:
+                    issue = build.issues[0]
                     return self.runtime.foundation.fail(self.runtime.foundation.issue(
                         "release_lake_build_failed", "Restored release failed Lake build.",
-                        details={"stderr": build.stderr_excerpt or build.raw_excerpt or ""},
+                        details={
+                            "issue_code": issue.kind,
+                            "stderr": issue.details.get("stderr", ""),
+                        },
                     ))
                 return restored
         except Exception as exc:
@@ -1763,6 +1769,19 @@ class RepoReleaseFinalizerComponent:
                 f"Release restore failed: {exc}",
                 object_ref=preview.release_id,
             ))
+
+    def _run_candidate_lake_build(self, repo_root: Path) -> ToolchainCommandView:
+        built = self.runtime.repo_workspace.lake_dependency.run_lake_build(repo_root)
+        if built.ok and built.value is not None:
+            return built.value
+        issue = built.issues[0]
+        return ToolchainCommandView(
+            ok=False,
+            command=["lake", "build"],
+            summary=issue.message,
+            stderr_excerpt=issue.details.get("stderr") or None,
+            issue_code=issue.kind,
+        )
 
     def compute_candidate_digest(self, repo_root: Path) -> str:
         result = self.compute_candidate_digest_checked(repo_root)

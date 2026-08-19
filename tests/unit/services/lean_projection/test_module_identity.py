@@ -1,7 +1,9 @@
+import json
 from pathlib import Path
 
 from tests.unit_services_helpers import make_runtime
 
+from lean_constellation.domain.lake_project import LocalLakePackageCacheConfig, NativeLakeProjectConfig
 from lean_constellation.services.external_clients import ExternalCommandResult, LeanCheckSummaryView
 from lean_constellation.services.lean_projection.annotation import LeanDeclarationLocationView
 from lean_constellation.services.lean_projection.module_identity import ModuleIdentityComponent
@@ -67,6 +69,54 @@ def test_module_identity_builds_standard_target_and_queries_environment_owner(tm
     assert lake.imports == [module, "Lean"]
     assert "getModuleIdxFor? decl.getId" in lake.code
     assert f"lc_verify_decl_module WeightedSieve.actualResult from {module}" in lake.code
+
+
+def test_module_identity_build_uses_configured_cache_gateway(tmp_path: Path) -> None:
+    cache_root = tmp_path / "cache"
+    repo_root = tmp_path / "repo"
+    package = {
+        "name": "mathlib",
+        "type": "git",
+        "url": "https://example.invalid/mathlib4",
+        "rev": "mathlib-rev",
+    }
+    manifest = {
+        "version": "1.2.0",
+        "packagesDir": ".lake/packages",
+        "packages": [package],
+        "name": "cache",
+        "lakeDir": ".lake",
+    }
+    cache_root.mkdir()
+    (cache_root / "lake-manifest.json").write_text(
+        json.dumps(manifest),
+        encoding="utf-8",
+    )
+    cache_package = cache_root / ".lake" / "packages" / "mathlib"
+    cache_package.mkdir(parents=True)
+    repo_root.mkdir()
+    (repo_root / "lake-manifest.json").write_text(
+        json.dumps({**manifest, "name": "module-test"}),
+        encoding="utf-8",
+    )
+    lake = RecordingLake()
+    runtime = make_runtime(
+        external_overrides={"lake": lake},
+        native_lake_project_config=NativeLakeProjectConfig(
+            local_package_cache=LocalLakePackageCacheConfig(
+                cache_project_root=cache_root,
+            )
+        ),
+    )
+    component = ModuleIdentityComponent(runtime)
+
+    built = component.build_module(repo_root, module="WeightedSieve.Main")
+
+    assert built.ok and built.value is not None
+    assert lake.build_target == "+WeightedSieve.Main"
+    target = repo_root / ".lake" / "packages" / "mathlib"
+    assert target.is_symlink()
+    assert target.resolve() == cache_package.resolve()
 
 
 def test_module_identity_rejects_candidate_not_owned_by_decl_module(tmp_path: Path) -> None:

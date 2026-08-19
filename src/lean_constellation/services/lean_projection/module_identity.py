@@ -78,20 +78,25 @@ class ModuleIdentityComponent:
                 )
             )
         target = f"+{module}"
-        result = self.runtime.external.lean_toolchain.run_lake_build(Path(repo_root), target=target)
-        if not result.ok:
+        built = self.runtime.repo_workspace.lake_dependency.run_lake_build(
+            Path(repo_root),
+            target=target,
+        )
+        if not built.ok or built.value is None:
+            issue = built.issues[0]
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
                     "decl_module_build_failed",
-                    result.summary,
+                    issue.message,
                     object_ref=module,
                     details={
                         "target": target,
-                        "provider": result.provider,
-                        "issue_code": result.issue_code or "",
+                        "provider": "lake_dependency",
+                        "issue_code": issue.kind,
                     },
                 )
             )
+        result = built.value
         artifacts = module_artifact_relpaths(module)
         return self.runtime.foundation.ok(
             ModuleBuildView(

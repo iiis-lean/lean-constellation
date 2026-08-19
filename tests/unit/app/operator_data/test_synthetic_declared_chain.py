@@ -309,7 +309,10 @@ def _passed_review(round_id: str, stage: str, names: list[str]) -> RoundStageRev
     )
 
 
-def test_operator_constructs_publishes_and_restores_synthetic_declared_repo(tmp_path) -> None:
+def test_operator_constructs_publishes_and_restores_synthetic_declared_repo(
+    tmp_path,
+    monkeypatch,
+) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     source = tmp_path / "source"
@@ -758,6 +761,20 @@ def test_operator_constructs_publishes_and_restores_synthetic_declared_repo(tmp_
         ).stdout
         == ""
     )
+    cache_preflights: list[Path] = []
+    original_cache_preflight = (
+        runtime.repo_workspace.lake_dependency.ensure_configured_package_cache_for_build
+    )
+
+    def record_cache_preflight(build_root):  # noqa: ANN001, ANN202
+        cache_preflights.append(Path(build_root))
+        return original_cache_preflight(build_root)
+
+    monkeypatch.setattr(
+        runtime.repo_workspace.lake_dependency,
+        "ensure_configured_package_cache_for_build",
+        record_cache_preflight,
+    )
     restore_preview = _require(
         runtime.validation_snapshot.preview_repo_release_restore(
             repo_root,
@@ -772,6 +789,7 @@ def test_operator_constructs_publishes_and_restores_synthetic_declared_repo(tmp_
         )
     )
     assert restored.dry_run is False
+    assert cache_preflights == [repo_root]
     assert lakefile.read_text(encoding="utf-8") == released_lakefile
     after_restore = _require(
         api.decl_projection.check_projection_sync(

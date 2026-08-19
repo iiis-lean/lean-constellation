@@ -735,6 +735,9 @@ class LakeDependencyComponent:
         target: str | None = None,
         transport_rewrites: dict[str, str] | None = None,
     ) -> ServiceResult[ToolchainCommandView]:
+        preflight = self.ensure_configured_package_cache_for_build(Path(repo_root))
+        if not preflight.ok:
+            return self.runtime.foundation.fail(preflight.issues)
         summary = self.runtime.external.lean_toolchain.run_lake_build(
             Path(repo_root),
             target=target,
@@ -750,6 +753,215 @@ class LakeDependencyComponent:
                 )
             )
         return self.runtime.foundation.ok(summary)
+
+    def ensure_configured_package_cache_for_build(
+        self,
+        repo_root: Path,
+    ) -> ServiceResult[dict[str, object]]:
+        """Restore configured package links without changing dependency truth."""
+
+        cache = self.config.local_package_cache
+        if cache is None:
+            return self.runtime.foundation.ok(
+                {"linked_packages": [], "written_paths": []}
+            )
+        if cache.manifest_path is None or not cache.manifest_path.is_file():
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "local_lake_cache_manifest_missing",
+                    "Local Lake package cache manifest is missing.",
+                    object_ref=(
+                        str(cache.manifest_path)
+                        if cache.manifest_path is not None
+                        else None
+                    ),
+                )
+            )
+        if cache.packages_root is None or not cache.packages_root.is_dir():
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "local_lake_cache_packages_missing",
+                    "Local Lake package cache packages directory is missing.",
+                    object_ref=(
+                        str(cache.packages_root)
+                        if cache.packages_root is not None
+                        else None
+                    ),
+                )
+            )
+        repo_root = Path(repo_root)
+        target_manifest_path = repo_root / "lake-manifest.json"
+        if not target_manifest_path.is_file():
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "local_lake_target_manifest_missing",
+                    "Configured package-cache build requires the target Lake manifest.",
+                    object_ref=str(target_manifest_path),
+                )
+            )
+        cache_manifest = self._read_local_lake_manifest(cache.manifest_path)
+        if not cache_manifest.ok or cache_manifest.value is None:
+            return self.runtime.foundation.fail(cache_manifest.issues)
+        target_manifest = self._read_local_lake_manifest(
+            target_manifest_path,
+            issue_kind="local_lake_target_manifest_invalid",
+            description="Target Lake manifest",
+        )
+        if not target_manifest.ok or target_manifest.value is None:
+            return self.runtime.foundation.fail(target_manifest.issues)
+
+        cache_entries = self._package_manifest_entries(cache_manifest.value)
+        if not cache_entries.ok or cache_entries.value is None:
+            return self.runtime.foundation.fail(cache_entries.issues)
+        target_entries = self._package_manifest_entries(
+            target_manifest.value,
+            manifest_path=target_manifest_path,
+            issue_kind="local_lake_target_manifest_invalid",
+        )
+        if not target_entries.ok or target_entries.value is None:
+            return self.runtime.foundation.fail(target_entries.issues)
+        raw_package_names = (
+            list(cache.package_names)
+            if cache.package_names is not None
+            else list(cache_entries.value)
+        )
+        package_names: list[str] = []
+        for raw_name in raw_package_names:
+            try:
+                name = self.runtime.foundation.layout.ensure_safe_key(raw_name)
+            except ValueError as exc:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "local_lake_cache_package_name_invalid",
+                        f"Configured Lake package name is invalid: {exc}",
+                        object_ref=raw_name,
+                    )
+                )
+            package_names.append(name)
+        if len(package_names) != len(set(package_names)):
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "local_lake_cache_package_name_invalid",
+                    "Configured Lake package names must be unique after normalization.",
+                    object_ref=str(cache.manifest_path),
+                )
+            )
+
+        packages_root = repo_root / ".lake" / "packages"
+        planned: list[tuple[str, Path, Path]] = []
+        linked_packages: list[str] = []
+        for name in package_names:
+            cache_entry = cache_entries.value.get(name)
+            target_entry = target_entries.value.get(name)
+            if cache_entry is None:
+                if cache.require_all_packages:
+                    return self.runtime.foundation.fail(
+                        self.runtime.foundation.issue(
+                            "local_lake_cache_manifest_package_missing",
+                            "Local Lake package cache manifest is missing a configured package.",
+                            object_ref=name,
+                        )
+                    )
+                continue
+            if target_entry is None:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "local_lake_target_manifest_package_missing",
+                        "Target Lake manifest is missing a configured cache package.",
+                        object_ref=name,
+                    )
+                )
+            cache_identity = self._package_manifest_identity(cache_entry)
+            target_identity = self._package_manifest_identity(target_entry)
+            if target_identity != cache_identity:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "local_lake_cache_package_identity_mismatch",
+                        "Target and cache Lake package identities do not match.",
+                        object_ref=name,
+                        current=json.dumps(target_identity, sort_keys=True),
+                        expected=json.dumps(cache_identity, sort_keys=True),
+                    )
+                )
+            source = cache.packages_root / name
+            if not source.exists():
+                if cache.require_all_packages:
+                    return self.runtime.foundation.fail(
+                        self.runtime.foundation.issue(
+                            "local_lake_cache_package_missing",
+                            f"Local Lake package cache package is missing: {name}",
+                            object_ref=str(source),
+                        )
+                    )
+                continue
+            target = packages_root / name
+            if target.is_symlink():
+                if not self._is_expected_package_symlink(target, source):
+                    return self.runtime.foundation.fail(
+                        self.runtime.foundation.issue(
+                            "local_lake_cache_package_conflict",
+                            "Repo package path is not the expected cache symlink.",
+                            object_ref=str(target),
+                        )
+                    )
+                linked_packages.append(name)
+                continue
+            if target.exists():
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "local_lake_cache_package_conflict",
+                        "Repo package path exists and is not a cache symlink.",
+                        object_ref=str(target),
+                    )
+                )
+            planned.append((name, source, target))
+
+        try:
+            self.runtime.foundation.layout.assert_within(repo_root, packages_root)
+            for _, _, target in planned:
+                self.runtime.foundation.layout.assert_within(repo_root, target)
+        except ValueError as exc:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "local_lake_cache_package_path_unsafe",
+                    "Configured Lake package links must remain inside the repository.",
+                    object_ref=str(packages_root),
+                    details={"error": str(exc)},
+                )
+            )
+
+        written: list[Path] = []
+        try:
+            for name, source, target in planned:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.symlink_to(source, target_is_directory=source.is_dir())
+                written.append(target)
+                linked_packages.append(name)
+            for name in linked_packages:
+                source = cache.packages_root / name
+                target = packages_root / name
+                if (
+                    not target.is_symlink()
+                    or not self._is_expected_package_symlink(target, source)
+                ):
+                    raise OSError(f"cache symlink readback failed for {name}")
+        except OSError as exc:
+            for path in reversed(written):
+                if path.is_symlink():
+                    path.unlink()
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "local_lake_cache_link_failed",
+                    f"Could not restore configured Lake package links: {exc}",
+                    object_ref=str(repo_root),
+                )
+            )
+        return self.runtime.foundation.ok(
+            {
+                "linked_packages": sorted(linked_packages),
+                "written_paths": [str(path) for path in written],
+            }
+        )
 
     def run_minimal_import_check(self, repo_root: Path, *, module: str) -> ServiceResult[ToolchainLeanCheckView]:
         result = self.runtime.external.lean_toolchain.run_minimal_import_check(Path(repo_root), module)
@@ -898,26 +1110,89 @@ class LakeDependencyComponent:
         written.append(manifest_path)
         return self.runtime.foundation.ok({"linked_packages": package_names, "written_paths": [str(path) for path in written]})
 
-    def _read_local_lake_manifest(self, manifest_path: Path) -> ServiceResult[dict[str, object]]:
+    def _read_local_lake_manifest(
+        self,
+        manifest_path: Path,
+        *,
+        issue_kind: str = "local_lake_cache_manifest_invalid",
+        description: str = "Local Lake package cache manifest",
+    ) -> ServiceResult[dict[str, object]]:
         try:
             payload = json.loads(manifest_path.read_text(encoding="utf-8"))
         except Exception as exc:  # noqa: BLE001 - file boundary.
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
-                    "local_lake_cache_manifest_invalid",
-                    f"Local Lake package cache manifest is invalid: {exc}",
+                    issue_kind,
+                    f"{description} is invalid: {exc}",
                     object_ref=str(manifest_path),
                 )
             )
         if not isinstance(payload, dict) or not isinstance(payload.get("packages"), list):
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
-                    "local_lake_cache_manifest_invalid",
-                    "Local Lake package cache manifest must contain a packages list.",
+                    issue_kind,
+                    f"{description} must contain a packages list.",
                     object_ref=str(manifest_path),
                 )
             )
         return self.runtime.foundation.ok(payload)
+
+    def _package_manifest_entries(
+        self,
+        manifest: dict[str, object],
+        *,
+        manifest_path: Path | None = None,
+        issue_kind: str = "local_lake_cache_manifest_invalid",
+    ) -> ServiceResult[dict[str, dict[str, object]]]:
+        entries: dict[str, dict[str, object]] = {}
+        for item in manifest.get("packages", []):
+            if not isinstance(item, dict) or not isinstance(item.get("name"), str):
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        issue_kind,
+                        "Lake manifest package entries must have string names.",
+                        object_ref=str(manifest_path) if manifest_path else None,
+                    )
+                )
+            name = str(item["name"])
+            if name in entries:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        issue_kind,
+                        "Lake manifest package names must be unique.",
+                        object_ref=name,
+                    )
+                )
+            entries[name] = item
+        return self.runtime.foundation.ok(entries)
+
+    @staticmethod
+    def _package_manifest_identity(entry: dict[str, object]) -> dict[str, object]:
+        identity_fields = (
+            "name",
+            "type",
+            "source",
+            "url",
+            "git",
+            "rev",
+            "revision",
+            "commit",
+            "inputRev",
+            "scope",
+            "subDir",
+            "subdir",
+        )
+        return {field: entry[field] for field in identity_fields if field in entry}
+
+    @staticmethod
+    def _is_expected_package_symlink(target: Path, source: Path) -> bool:
+        try:
+            return (
+                target.is_symlink()
+                and target.resolve(strict=False) == source.resolve(strict=False)
+            )
+        except (OSError, RuntimeError):
+            return False
 
     def _validate_manifest_git_pin(
         self,

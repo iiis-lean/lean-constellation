@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
+from lean_constellation.domain.lake_project import LocalLakePackageCacheConfig, NativeLakeProjectConfig
 from lean_constellation.domain.interface import DeclInterface, DeclKind
 from lean_constellation.domain.refs import DeclRef, MaterialRef, NodeRef, ResourceRef, SourceRef
 from lean_constellation.domain.repo import RepoCompletionMode, RepoFormat, RepoModel, RepoPublicationStatus
@@ -110,6 +112,77 @@ def test_candidate_rejects_legacy_operational_paths_before_git_commit(
     assert rejected.issues[0].kind == "legacy_operational_path_present"
     assert rejected.issues[0].object_ref == ".lean_constellation/source_draft"
     assert runtime.repo_workspace.git_release.inspect_repo(tmp_path).value.head_commit is None
+
+
+def test_candidate_preview_restores_configured_cache_before_lake_build(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime, _ = _prepare_release_repo(tmp_path)
+    cache_root = tmp_path.parent / "cache"
+    package = {
+        "name": "mathlib",
+        "type": "git",
+        "url": "https://example.invalid/mathlib4",
+        "rev": "mathlib-rev",
+    }
+    cache_manifest = {
+        "version": "1.2.0",
+        "packagesDir": ".lake/packages",
+        "packages": [package],
+        "name": "cache",
+        "lakeDir": ".lake",
+    }
+    cache_root.mkdir()
+    (cache_root / "lake-manifest.json").write_text(
+        json.dumps(cache_manifest),
+        encoding="utf-8",
+    )
+    cache_package = cache_root / ".lake" / "packages" / "mathlib"
+    cache_package.mkdir(parents=True)
+    target_manifest = {**cache_manifest, "name": "candidate"}
+    target_bytes = json.dumps(target_manifest).encode()
+    (tmp_path / "lake-manifest.json").write_bytes(target_bytes)
+    runtime.repo_workspace.lake_dependency.config = NativeLakeProjectConfig(
+        local_package_cache=LocalLakePackageCacheConfig(
+            cache_project_root=cache_root,
+        )
+    )
+    monkeypatch.setattr(
+        runtime.validation_snapshot.readiness_gate,
+        "check_repo_ready",
+        lambda *_args, **_kwargs: runtime.foundation.ok(
+            runtime.foundation.gate_passed(
+                "repo_ready",
+                summary="Configured cache fixture is ready.",
+            )
+        ),
+    )
+    calls: list[Path] = []
+
+    def build(repo_root, **_kwargs):  # noqa: ANN001, ANN202
+        calls.append(Path(repo_root))
+        target = Path(repo_root) / ".lake" / "packages" / "mathlib"
+        assert target.is_symlink()
+        assert target.resolve() == cache_package.resolve()
+        return ToolchainCommandView(
+            ok=True,
+            command=["lake", "build"],
+            exit_code=0,
+            summary="Configured candidate build passed.",
+        )
+
+    monkeypatch.setattr(runtime.external.lean_toolchain, "run_lake_build", build)
+
+    preview = runtime.validation_snapshot.release_finalizer.preview_candidate_release(
+        tmp_path,
+        base_release_id=None,
+        summary="Configured cache candidate.",
+    )
+
+    assert preview.ok and preview.value is not None
+    assert calls == [tmp_path]
+    assert (tmp_path / "lake-manifest.json").read_bytes() == target_bytes
 
 
 def test_prepare_candidate_release_rejects_legacy_operational_paths_from_audited_gate(

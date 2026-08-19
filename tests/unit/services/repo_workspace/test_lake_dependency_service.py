@@ -5,6 +5,8 @@ from pathlib import Path
 import json
 import tomllib
 
+import pytest
+
 from lean_constellation.domain.lake_project import LocalLakePackageCacheConfig, NativeLakeProjectConfig
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode, UpstreamDependencyInput
 from lean_constellation.domain.repo import RepoFormat
@@ -96,10 +98,46 @@ class FakeExternal:
         self.lake = FakeLakeClient()
 
 
-def _lake_component() -> tuple[LakeDependencyComponent, FakeExternal]:
+def _lake_component(
+    *,
+    config: NativeLakeProjectConfig | None = None,
+) -> tuple[LakeDependencyComponent, FakeExternal]:
     external = FakeExternal()
-    runtime = make_runtime(external_overrides={"lake": external.lake})
+    runtime = make_runtime(
+        external_overrides={"lake": external.lake},
+        native_lake_project_config=config,
+    )
     return runtime.repo_workspace.lake_dependency, external
+
+
+def _write_cache_and_target_manifests(
+    *,
+    cache_root: Path,
+    repo_root: Path,
+    cache_packages: list[dict[str, object]],
+    target_packages: list[dict[str, object]] | None = None,
+) -> bytes:
+    cache_root.mkdir(parents=True, exist_ok=True)
+    cache_manifest = {
+        "version": "1.2.0",
+        "packagesDir": ".lake/packages",
+        "packages": cache_packages,
+        "name": "cache",
+        "lakeDir": ".lake",
+    }
+    (cache_root / "lake-manifest.json").write_text(
+        json.dumps(cache_manifest, indent=1) + "\n",
+        encoding="utf-8",
+    )
+    repo_root.mkdir(parents=True, exist_ok=True)
+    target_manifest = {
+        **cache_manifest,
+        "name": "target",
+        "packages": target_packages if target_packages is not None else cache_packages,
+    }
+    target_bytes = (json.dumps(target_manifest, indent=1) + "\n").encode()
+    (repo_root / "lake-manifest.json").write_bytes(target_bytes)
+    return target_bytes
 
 
 def test_initialize_native_skeleton_and_parse_dependencies(tmp_path: Path) -> None:
@@ -480,6 +518,301 @@ def test_lake_command_wrapper_failures_and_target(tmp_path: Path) -> None:
     import_check = component.run_minimal_import_check(tmp_path, module="Missing")
     assert not import_check.ok
     assert import_check.issues[0].kind == "minimal_import_check_failed"
+
+
+def test_build_cache_preflight_is_noop_without_runtime_cache_config(
+    tmp_path: Path,
+) -> None:
+    component, external = _lake_component()
+
+    built = component.run_lake_build(tmp_path, target="Main")
+
+    assert built.ok
+    assert external.lake.built == [(tmp_path, "Main")]
+    assert not (tmp_path / ".lake").exists()
+
+
+def test_lake_build_restores_configured_package_links_before_command(
+    tmp_path: Path,
+) -> None:
+    cache = tmp_path / "cache"
+    repo = tmp_path / "repo"
+    packages = [
+        {
+            "name": "mathlib",
+            "type": "git",
+            "url": "https://example.invalid/mathlib4",
+            "rev": "mathlib-rev",
+        },
+        {
+            "name": "aesop",
+            "type": "git",
+            "url": "https://example.invalid/aesop",
+            "rev": "aesop-rev",
+        },
+    ]
+    _write_cache_and_target_manifests(
+        cache_root=cache,
+        repo_root=repo,
+        cache_packages=packages,
+    )
+    for package in ("mathlib", "aesop"):
+        (cache / ".lake" / "packages" / package).mkdir(parents=True)
+    config = NativeLakeProjectConfig(
+        local_package_cache=LocalLakePackageCacheConfig(cache_project_root=cache)
+    )
+    component, external = _lake_component(config=config)
+
+    built = component.run_lake_build(repo)
+
+    assert built.ok
+    assert external.lake.built == [(repo, None)]
+    for package in ("mathlib", "aesop"):
+        target = repo / ".lake" / "packages" / package
+        assert target.is_symlink()
+        assert target.resolve() == (cache / ".lake" / "packages" / package).resolve()
+
+
+def test_build_cache_preflight_preserves_target_manifest_and_extra_packages(
+    tmp_path: Path,
+) -> None:
+    cache = tmp_path / "cache"
+    repo = tmp_path / "repo"
+    mathlib = {
+        "name": "mathlib",
+        "type": "git",
+        "url": "https://example.invalid/mathlib4",
+        "rev": "mathlib-rev",
+    }
+    provider = {
+        "name": "Provider",
+        "type": "git",
+        "url": "https://example.invalid/provider",
+        "rev": "provider-rev",
+    }
+    target_bytes = _write_cache_and_target_manifests(
+        cache_root=cache,
+        repo_root=repo,
+        cache_packages=[mathlib],
+        target_packages=[mathlib, provider],
+    )
+    (cache / ".lake" / "packages" / "mathlib").mkdir(parents=True)
+    provider_path = repo / ".lake" / "packages" / "Provider"
+    provider_path.mkdir(parents=True)
+    sentinel = provider_path / "sentinel"
+    sentinel.write_text("provider checkout\n", encoding="utf-8")
+    config = NativeLakeProjectConfig(
+        local_package_cache=LocalLakePackageCacheConfig(
+            cache_project_root=cache,
+            package_names=["mathlib"],
+        )
+    )
+    component, external = _lake_component(config=config)
+
+    built = component.run_lake_build(repo)
+
+    assert built.ok
+    assert external.lake.built == [(repo, None)]
+    assert (repo / "lake-manifest.json").read_bytes() == target_bytes
+    assert sentinel.read_text(encoding="utf-8") == "provider checkout\n"
+
+
+def test_build_cache_preflight_rejects_manifest_identity_mismatch_before_command(
+    tmp_path: Path,
+) -> None:
+    cache = tmp_path / "cache"
+    repo = tmp_path / "repo"
+    cached = {
+        "name": "mathlib",
+        "type": "git",
+        "url": "https://example.invalid/mathlib4",
+        "rev": "cache-rev",
+    }
+    target = {**cached, "rev": "target-rev"}
+    target_bytes = _write_cache_and_target_manifests(
+        cache_root=cache,
+        repo_root=repo,
+        cache_packages=[cached],
+        target_packages=[target],
+    )
+    (cache / ".lake" / "packages" / "mathlib").mkdir(parents=True)
+    component, external = _lake_component(
+        config=NativeLakeProjectConfig(
+            local_package_cache=LocalLakePackageCacheConfig(cache_project_root=cache)
+        )
+    )
+
+    rejected = component.run_lake_build(repo)
+
+    assert not rejected.ok
+    assert rejected.issues[0].kind == "local_lake_cache_package_identity_mismatch"
+    assert external.lake.built == []
+    assert (repo / "lake-manifest.json").read_bytes() == target_bytes
+    assert not (repo / ".lake").exists()
+
+
+def test_build_cache_preflight_rejects_missing_configured_package_before_command(
+    tmp_path: Path,
+) -> None:
+    cache = tmp_path / "cache"
+    repo = tmp_path / "repo"
+    package = {
+        "name": "mathlib",
+        "type": "git",
+        "url": "https://example.invalid/mathlib4",
+        "rev": "mathlib-rev",
+    }
+    _write_cache_and_target_manifests(
+        cache_root=cache,
+        repo_root=repo,
+        cache_packages=[package],
+    )
+    (cache / ".lake" / "packages").mkdir(parents=True)
+    component, external = _lake_component(
+        config=NativeLakeProjectConfig(
+            local_package_cache=LocalLakePackageCacheConfig(cache_project_root=cache)
+        )
+    )
+
+    rejected = component.run_lake_build(repo)
+
+    assert not rejected.ok
+    assert rejected.issues[0].kind == "local_lake_cache_package_missing"
+    assert external.lake.built == []
+    assert not (repo / ".lake").exists()
+
+
+@pytest.mark.parametrize("conflict_kind", ["directory", "wrong_symlink"])
+def test_build_cache_preflight_rejects_conflicting_package_path_without_deletion(
+    tmp_path: Path,
+    conflict_kind: str,
+) -> None:
+    cache = tmp_path / "cache"
+    repo = tmp_path / "repo"
+    package = {
+        "name": "mathlib",
+        "type": "git",
+        "url": "https://example.invalid/mathlib4",
+        "rev": "mathlib-rev",
+    }
+    _write_cache_and_target_manifests(
+        cache_root=cache,
+        repo_root=repo,
+        cache_packages=[package],
+    )
+    expected = cache / ".lake" / "packages" / "mathlib"
+    expected.mkdir(parents=True)
+    target = repo / ".lake" / "packages" / "mathlib"
+    target.parent.mkdir(parents=True)
+    if conflict_kind == "directory":
+        target.mkdir()
+        sentinel = target / "sentinel"
+        sentinel.write_text("keep\n", encoding="utf-8")
+    else:
+        wrong = tmp_path / "wrong"
+        wrong.mkdir()
+        target.symlink_to(wrong, target_is_directory=True)
+        sentinel = wrong / "sentinel"
+        sentinel.write_text("keep\n", encoding="utf-8")
+    component, external = _lake_component(
+        config=NativeLakeProjectConfig(
+            local_package_cache=LocalLakePackageCacheConfig(cache_project_root=cache)
+        )
+    )
+
+    rejected = component.run_lake_build(repo)
+
+    assert not rejected.ok
+    assert rejected.issues[0].kind == "local_lake_cache_package_conflict"
+    assert external.lake.built == []
+    assert sentinel.read_text(encoding="utf-8") == "keep\n"
+    if conflict_kind == "wrong_symlink":
+        assert target.is_symlink()
+        assert target.resolve() == (tmp_path / "wrong").resolve()
+
+
+@pytest.mark.parametrize("symlink_parent", ["lake", "packages"])
+def test_build_cache_preflight_rejects_package_parent_symlink_escape_without_external_write(
+    tmp_path: Path,
+    symlink_parent: str,
+) -> None:
+    cache = tmp_path / "cache"
+    repo = tmp_path / "repo"
+    package = {
+        "name": "mathlib",
+        "type": "git",
+        "url": "https://example.invalid/mathlib4",
+        "rev": "mathlib-rev",
+    }
+    target_bytes = _write_cache_and_target_manifests(
+        cache_root=cache,
+        repo_root=repo,
+        cache_packages=[package],
+    )
+    (cache / ".lake" / "packages" / "mathlib").mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sentinel = outside / "sentinel"
+    sentinel.write_text("keep\n", encoding="utf-8")
+    if symlink_parent == "lake":
+        (repo / ".lake").symlink_to(outside, target_is_directory=True)
+        escaped_target = outside / "packages" / "mathlib"
+    else:
+        (repo / ".lake").mkdir()
+        (repo / ".lake" / "packages").symlink_to(
+            outside,
+            target_is_directory=True,
+        )
+        escaped_target = outside / "mathlib"
+    component, external = _lake_component(
+        config=NativeLakeProjectConfig(
+            local_package_cache=LocalLakePackageCacheConfig(cache_project_root=cache)
+        )
+    )
+
+    rejected = component.run_lake_build(repo)
+
+    assert not rejected.ok
+    assert rejected.issues[0].kind == "local_lake_cache_package_path_unsafe"
+    assert external.lake.built == []
+    assert (repo / "lake-manifest.json").read_bytes() == target_bytes
+    assert sentinel.read_text(encoding="utf-8") == "keep\n"
+    assert not escaped_target.exists()
+
+
+def test_build_cache_preflight_rejects_duplicate_normalized_package_names_before_write(
+    tmp_path: Path,
+) -> None:
+    cache = tmp_path / "cache"
+    repo = tmp_path / "repo"
+    package = {
+        "name": "mathlib",
+        "type": "git",
+        "url": "https://example.invalid/mathlib4",
+        "rev": "mathlib-rev",
+    }
+    target_bytes = _write_cache_and_target_manifests(
+        cache_root=cache,
+        repo_root=repo,
+        cache_packages=[package],
+    )
+    (cache / ".lake" / "packages" / "mathlib").mkdir(parents=True)
+    component, external = _lake_component(
+        config=NativeLakeProjectConfig(
+            local_package_cache=LocalLakePackageCacheConfig(
+                cache_project_root=cache,
+                package_names=["mathlib", " mathlib "],
+            )
+        )
+    )
+
+    rejected = component.run_lake_build(repo)
+
+    assert not rejected.ok
+    assert rejected.issues[0].kind == "local_lake_cache_package_name_invalid"
+    assert external.lake.built == []
+    assert (repo / "lake-manifest.json").read_bytes() == target_bytes
+    assert not (repo / ".lake").exists()
 
 
 def test_repo_workspace_service_marks_provider_ready_and_attach(tmp_path: Path) -> None:
