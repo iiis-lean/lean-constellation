@@ -376,6 +376,9 @@ class FakeLeanProjectionForConsistency:
     ) -> None:
         self.foundation = foundation
         self.formal_capture_passed = formal_capture_passed
+        self.dependency_contexts: list[object] = []
+        self.node_dependency_contexts: list[object | None] = []
+        self.identity_contexts: list[object | None] = []
         self.repair = FakeRepairForConsistency(foundation, passed=repo_projection_passed)
         self.node_projection = FakeNodeProjectionForConsistency(
             foundation,
@@ -406,8 +409,29 @@ class FakeLeanProjectionForConsistency:
             )
         )
 
-    def check_decl_dependency_identity(self, repo_root: Path, *, node_path: str, decl_name: str, stage: str):
+    def create_decl_dependency_resolution_context(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        node_dependency_context: object | None = None,
+    ) -> object:
+        context = object()
+        self.dependency_contexts.append(context)
+        self.node_dependency_contexts.append(node_dependency_context)
+        return context
+
+    def check_decl_dependency_identity(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        decl_name: str,
+        stage: str,
+        operation_context: object | None = None,
+    ):
         del repo_root, stage
+        self.identity_contexts.append(operation_context)
         return self.foundation.ok(
             self.foundation.gate_passed(
                 "decl_dependency_identity",

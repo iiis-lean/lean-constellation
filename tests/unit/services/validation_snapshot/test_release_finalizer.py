@@ -752,9 +752,11 @@ def test_candidate_preview_shares_one_release_audit_across_content_nodes(
     context_ids: list[int] = []
     scope_context_ids: list[int] = []
     decl_context_ids: list[int] = []
+    dependency_contexts: list[object | None] = []
     original_capture = runtime.node.release_guard.capture_content_contract_head
     original_scope_guard = runtime.node.release_guard.check_scope_contract_candidate
     original_decl_guard = runtime.decl_graph.release_guard.check_update_candidate
+    original_validate_deps = runtime.node.dependency.validate_node_deps
 
     def record_capture(*args, **kwargs):  # noqa: ANN001, ANN202
         context_ids.append(id(kwargs["release_audit_context"]))
@@ -767,6 +769,10 @@ def test_candidate_preview_shares_one_release_audit_across_content_nodes(
     def record_decl_guard(*args, **kwargs):  # noqa: ANN001, ANN202
         decl_context_ids.append(id(kwargs["release_audit_context"]))
         return original_decl_guard(*args, **kwargs)
+
+    def record_validate_deps(*args, **kwargs):  # noqa: ANN001, ANN202
+        dependency_contexts.append(kwargs.get("operation_context"))
+        return original_validate_deps(*args, **kwargs)
 
     monkeypatch.setattr(
         runtime.node.release_guard,
@@ -782,6 +788,11 @@ def test_candidate_preview_shares_one_release_audit_across_content_nodes(
         runtime.decl_graph.release_guard,
         "check_update_candidate",
         record_decl_guard,
+    )
+    monkeypatch.setattr(
+        runtime.node.dependency,
+        "validate_node_deps",
+        record_validate_deps,
     )
     monkeypatch.setattr(
         runtime.lean_projection,
@@ -825,6 +836,9 @@ def test_candidate_preview_shares_one_release_audit_across_content_nodes(
     assert len(scope_context_ids) == 2
     assert len(decl_context_ids) == 3
     assert len(set([*context_ids, *scope_context_ids, *decl_context_ids])) == 1
+    assert len(dependency_contexts) == 4
+    assert all(context is not None for context in dependency_contexts)
+    assert len({id(context) for context in dependency_contexts}) == 1
 
 
 def test_adapter_candidate_gate_uses_committed_main_and_adapter_ready(

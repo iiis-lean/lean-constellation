@@ -1,6 +1,7 @@
 from tests.unit_services_helpers import make_runtime, publish_adapter_provider_ready, publish_native_provider_release
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
@@ -24,6 +25,8 @@ from lean_constellation.domain.repo import (
     RepoCompletionMode,
     WorkspaceConfig,
 )
+from lean_constellation.domain.refs import DeclRef
+from lean_constellation.domain.repo_release import ResolvedDeclRefView
 from lean_constellation.services.foundation import FoundationContext, FoundationService
 from lean_constellation.services.repo_workspace import (
     RepoMetadataComponent,
@@ -62,6 +65,129 @@ def _catalog_components() -> tuple[
     foundation, metadata, requirement, preparation = _components()
     catalog = metadata.runtime.repo_workspace.workspace_catalog
     return foundation, metadata, requirement, preparation, catalog
+
+
+def test_requirement_provider_truth_batches_valid_interfaces_and_maps_blocker(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    foundation, metadata, requirement, _preparation = _components()
+    runtime = metadata.runtime
+    consumer = tmp_path / "consumer"
+    provider = tmp_path / "provider"
+    assert metadata.ensure_repo_model(consumer).ok
+    assert metadata.ensure_repo_model(provider).ok
+    assert metadata.update_repo_config(
+        provider,
+        completion_mode=RepoCompletionMode.INTERFACE_DECLARED,
+    ).ok
+    assert requirement.create_requirement(
+        consumer,
+        name="need_provider",
+        target_repo="provider",
+        reason="Use two provider declarations.",
+    ).ok
+    for name in ("first", "second"):
+        assert requirement.add_requirement_interface(
+            consumer,
+            requirement_name="need_provider",
+            interface_name=name,
+            kind=DeclKind.THEOREM,
+            summary=f"Provider {name} theorem.",
+        ).ok
+    refs = [
+        DeclRef(repo=None, node="Main.Provider", name="first", revision=1),
+        DeclRef(repo=None, node="Main.Provider", name="second", revision=1),
+    ]
+    monkeypatch.setattr(
+        runtime.decl_graph.ref_compatibility,
+        "list_current_public_decl_refs",
+        lambda *_args, **_kwargs: foundation.ok(
+            [
+                ResolvedDeclRefView(
+                    anchor=ref,
+                    resolved_revision=1,
+                    compatible=True,
+                )
+                for ref in refs
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        runtime.decl_graph.ref_compatibility,
+        "list_public_interface_bindings",
+        lambda *_args, **_kwargs: foundation.ok(
+            {"first": refs[0], "second": refs[1]}
+        ),
+    )
+    monkeypatch.setattr(
+        runtime.decl_graph,
+        "get_decl",
+        lambda *_args, **_kwargs: foundation.ok(
+            SimpleNamespace(kind=DeclKind.THEOREM.value)
+        ),
+    )
+    batches: list[list[tuple[str, str, ProofAvailability]]] = []
+
+    def check_batch(_repo_root: Path, *, roots, **_kwargs):
+        selected = list(roots)
+        batches.append(selected)
+        return foundation.ok(
+            [
+                SimpleNamespace(
+                    ready=False,
+                    blocker=SimpleNamespace(
+                        reason=SimpleNamespace(value="dependency_not_ready"),
+                        message="First provider theorem is not ready.",
+                    ),
+                    summary="First provider theorem is blocked.",
+                ),
+                SimpleNamespace(
+                    ready=True,
+                    blocker=None,
+                    summary="Second provider theorem is ready.",
+                ),
+            ]
+        )
+
+    monkeypatch.setattr(
+        runtime.decl_graph,
+        "check_decl_proof_policy_batch",
+        check_batch,
+    )
+    monkeypatch.setattr(
+        runtime.decl_graph,
+        "check_decl_proof_policy_satisfied",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("provider interface collection must not use the single wrapper")
+        ),
+    )
+    requirement_path = requirement._path(consumer, "need_provider")
+    before = requirement_path.read_bytes()
+
+    checked = requirement.validate_requirement_provider_truth(
+        consumer,
+        requirement_name="need_provider",
+        provider_repo="provider",
+        require_stable=False,
+    )
+
+    assert not checked.ok
+    assert len(checked.issues) == 1
+    assert checked.issues[0].kind == "provider_interface_proof_policy_unsatisfied"
+    assert checked.issues[0].object_ref == "provider:Main.Provider:first"
+    assert checked.issues[0].field == "first"
+    assert checked.issues[0].details == {
+        "reason": "dependency_not_ready",
+        "message": "First provider theorem is not ready.",
+    }
+    assert batches == [
+        [
+            ("Main.Provider", "first", ProofAvailability.DECLARED),
+            ("Main.Provider", "second", ProofAvailability.DECLARED),
+        ]
+    ]
+    assert requirement_path.read_bytes() == before
 
 
 def test_requirement_current_schema_requires_typed_provider_route() -> None:

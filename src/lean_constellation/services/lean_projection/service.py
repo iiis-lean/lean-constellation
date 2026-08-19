@@ -10,6 +10,7 @@ from lean_constellation.services.foundation import GateReport, MutationSummaryVi
 from lean_constellation.services.lean_projection.adapter_facade import AdapterFacadeComponent, AdapterFacadeProvider
 from lean_constellation.services.lean_projection.annotation import AnnotationComponent
 from lean_constellation.services.lean_projection.decl_file import (
+    DeclDependencyResolutionContext,
     DeclOwnedLeanFileView,
     DeclManagedProjectionRefreshView,
     DeclFileComponent,
@@ -33,6 +34,7 @@ from lean_constellation.services.lean_projection.safe_apply import (
 from lean_constellation.services.decl_graph.models import DeclDependencyMutationReceipt, DeclState
 
 if TYPE_CHECKING:
+    from lean_constellation.services.node.dependency import NodeDependencyEvaluationContext
     from lean_constellation.services.runtime import LeanRuntimeServices
 
 
@@ -227,12 +229,27 @@ class LeanProjectionService:
         node_path: str,
         decl_name: str,
         stage: str,
+        operation_context: DeclDependencyResolutionContext | None = None,
     ) -> ServiceResult[GateReport]:
         return self.decl_file.check_decl_dependency_identity(
             repo_root,
             node_path=node_path,
             decl_name=decl_name,
             stage=stage,
+            operation_context=operation_context,
+        )
+
+    def create_decl_dependency_resolution_context(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        node_dependency_context: NodeDependencyEvaluationContext | None = None,
+    ) -> DeclDependencyResolutionContext:
+        return self.decl_file.create_dependency_resolution_context(
+            repo_root,
+            consumer_node_path=node_path,
+            node_dependency_context=node_dependency_context,
         )
 
     def sync_decl_file_after_revision_reset(

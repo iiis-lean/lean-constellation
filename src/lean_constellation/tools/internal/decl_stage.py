@@ -443,6 +443,107 @@ def _assert_statement_decl_dep_visible(
     return runtime.foundation.ok(DeclRef(node=current_node, name=dep_name, revision=current.value.revision))
 
 
+def _resolve_statement_decl_deps_batch(
+    runtime,
+    ctx,
+    dependencies,
+    *,
+    decl_name: str,
+    round_id: str,
+):
+    """Resolve statement dependencies with one public-list read per target."""
+
+    current_node = _node(ctx)
+    actor_role = _actor_role(ctx)
+    repo_public: dict[str, list[object]] = {}
+    node_public: dict[str, list[object]] = {}
+    resolved: list[RepoDeclDep] = []
+    for item in dependencies:
+        if item.repository:
+            repo_key = runtime.foundation.layout.ensure_safe_key(item.repository)
+            if repo_key not in repo_public:
+                public = runtime.node.public_decl_access.list_repo_public_decls(
+                    ctx.repo_root,
+                    repo_key=repo_key,
+                    actor_role=actor_role,
+                    current_node_path=current_node,
+                )
+                if not public.ok or public.value is None:
+                    return runtime.foundation.fail(public.issues)
+                repo_public[repo_key] = list(public.value)
+            ref = next(
+                (
+                    public_ref.ref
+                    for public_ref in repo_public[repo_key]
+                    if public_ref.ref.name == item.name
+                ),
+                None,
+            )
+            if ref is None:
+                return runtime.foundation.fail(
+                    runtime.foundation.issue(
+                        "statement_dep_not_visible",
+                        "Statement dependency is not visible on the requested provider repo public interface.",
+                        object_ref=item.name,
+                        current=repo_key,
+                    )
+                )
+            if item.revision is not None:
+                ref = ref.model_copy(update={"revision": item.revision})
+            resolved.append(RepoDeclDep(ref=ref, reason=item.reason))
+            continue
+
+        dep_node = item.node or current_node
+        if dep_node != current_node:
+            if dep_node not in node_public:
+                public = runtime.node.public_decl_access.list_node_public_decls(
+                    ctx.repo_root,
+                    node_path=dep_node,
+                    actor_role=actor_role,
+                    stable_boundary=True,
+                    current_node_path=current_node,
+                )
+                if not public.ok or public.value is None:
+                    return runtime.foundation.fail(public.issues)
+                node_public[dep_node] = list(public.value)
+            ref = next(
+                (
+                    public_ref.ref
+                    for public_ref in node_public[dep_node]
+                    if public_ref.ref.name == item.name
+                ),
+                None,
+            )
+            if ref is None:
+                return runtime.foundation.fail(
+                    runtime.foundation.issue(
+                        "statement_dep_not_visible",
+                        "Statement dependency is not visible on the requested provider node public interface.",
+                        object_ref=item.name,
+                        current=dep_node,
+                    )
+                )
+            if item.revision is not None:
+                ref = ref.model_copy(update={"revision": item.revision})
+            resolved.append(RepoDeclDep(ref=ref, reason=item.reason))
+            continue
+
+        visible = _assert_statement_decl_dep_visible(
+            runtime,
+            ctx,
+            decl_name=decl_name,
+            dep_name=item.name,
+            dep_node=item.node,
+            dep_repo=item.repository,
+            revision=item.revision,
+            round_id=round_id,
+        )
+        if not visible.ok or visible.value is None:
+            return runtime.foundation.fail(visible.issues)
+        resolved.append(RepoDeclDep(ref=visible.value, reason=item.reason))
+    return runtime.foundation.ok(resolved)
+
+
 def _add_statement_repo_dependencies(runtime, ctx, args: RepoDeclDependenciesAddArgs):
     target = _dependency_mutation_round(
         runtime,
@@ -452,21 +553,15 @@ def _add_statement_repo_dependencies(runtime, ctx, args: RepoDeclDependenciesAdd
     )
     if not target.ok or target.value is None:
         return target
-    resolved = []
-    for item in args.dependencies:
-        visible = _assert_statement_decl_dep_visible(
-            runtime,
-            ctx,
-            decl_name=args.decl_name,
-            dep_name=item.name,
-            dep_node=item.node,
-            dep_repo=item.repository,
-            revision=item.revision,
-            round_id=target.value,
-        )
-        if not visible.ok or visible.value is None:
-            return runtime.foundation.fail(visible.issues)
-        resolved.append(RepoDeclDep(ref=visible.value, reason=item.reason))
+    resolved = _resolve_statement_decl_deps_batch(
+        runtime,
+        ctx,
+        args.dependencies,
+        decl_name=args.decl_name,
+        round_id=target.value,
+    )
+    if not resolved.ok or resolved.value is None:
+        return runtime.foundation.fail(resolved.issues)
     return _apply_dependency_capture_policy(
         runtime,
         ctx,
@@ -477,7 +572,7 @@ def _add_statement_repo_dependencies(runtime, ctx, args: RepoDeclDependenciesAdd
             ctx,
             decl_name=args.decl_name,
             stage="statement",
-            dependencies=resolved,
+            dependencies=resolved.value,
             round_id=target.value,
         ),
     )

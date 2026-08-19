@@ -12,6 +12,7 @@ from tests.unit_services_helpers import (
 from lean_constellation.domain.refs import DeclRef
 from lean_constellation.domain.refs import NodeRef
 from lean_constellation.domain.repo import RepoCompletionMode
+from lean_constellation.domain.repo_release import ResolvedDeclRefView
 from lean_constellation.services.foundation import FoundationContext, WriteMode
 from lean_constellation.services.decl_graph import DeclState
 from lean_constellation.services.decl_graph.models import (
@@ -24,7 +25,10 @@ from lean_constellation.services.decl_graph.models import (
 from lean_constellation.services.foundation import FoundationService, ServiceResult
 from lean_constellation.services.node import ContractVersionStatus, NodeContractSnapshot
 from lean_constellation.services.node.contract_fields import NodeDep, NodeDepActor
-from lean_constellation.services.node.dependency import DependencyComponent
+from lean_constellation.services.node.dependency import (
+    DependencyComponent,
+    VisibleNodeBoundaryItem,
+)
 
 
 class RejectingInterfaceIdentityProvider:
@@ -773,6 +777,66 @@ def test_validate_node_deps_reports_cycle_and_batch_dependency(tmp_path: Path) -
     assert batch.value.issues[0].kind == "content_batch_dependency_present"
 
 
+def test_validate_node_deps_builds_one_graph_for_multiple_local_dependencies(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _create_base_tree(tmp_path)
+    runtime = make_runtime()
+    assert runtime.node.commit_content_contract(
+        tmp_path,
+        node_path="Main.Topic.B",
+        summary="B ready.",
+    ).ok
+    assert runtime.node.commit_content_contract(
+        tmp_path,
+        node_path="Main.Topic.Consumer",
+        summary="Consumer ready.",
+    ).ok
+    component = runtime.node.dependency
+    for target in ("Main.Topic.B", "Main.Topic.Consumer"):
+        assert component.add_node_dep(
+            tmp_path,
+            node_path="Main.Topic.A",
+            target_node=target,
+            expected_decl_names=None,
+            reason=f"A uses {target}.",
+            actor="coordinator",
+        ).ok
+
+    tree_calls = 0
+    contract_calls: dict[str, int] = {}
+    original_get_node_tree = component.node_tree.get_node_tree
+    original_get_current_contract = component.contract.get_current_contract
+
+    def counted_get_node_tree(repo_root: Path):
+        nonlocal tree_calls
+        tree_calls += 1
+        return original_get_node_tree(repo_root)
+
+    def counted_get_current_contract(repo_root: Path, *, node_path: str):
+        contract_calls[node_path] = contract_calls.get(node_path, 0) + 1
+        return original_get_current_contract(repo_root, node_path=node_path)
+
+    monkeypatch.setattr(component.node_tree, "get_node_tree", counted_get_node_tree)
+    monkeypatch.setattr(
+        component.contract,
+        "get_current_contract",
+        counted_get_current_contract,
+    )
+
+    validated = component.validate_node_deps(
+        tmp_path,
+        node_path="Main.Topic.A",
+    )
+
+    assert validated.ok and validated.value is not None
+    assert validated.value.passed is True
+    assert tree_calls == 1
+    assert contract_calls
+    assert set(contract_calls.values()) == {1}
+
+
 def test_validate_node_deps_reports_invalid_expected_public_missing_unready_and_unattached_external(tmp_path: Path) -> None:
     _create_base_tree(tmp_path)
     ref = _commit_provider_scope(tmp_path)
@@ -855,7 +919,262 @@ def test_validate_node_deps_reports_invalid_expected_public_missing_unready_and_
     assert [issue.kind for issue in external.value.issues] == ["node_dep_external_boundary_unavailable"]
 
 
-def test_check_content_batch_independent_reports_pass_duplicates_missing_noncontent_and_transitive_dependency(tmp_path: Path) -> None:
+def test_validate_node_deps_batches_external_expected_refs_with_one_context(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _create_base_tree(tmp_path)
+    runtime = make_runtime()
+    component = runtime.node.dependency
+    refs = [
+        DeclRef(repo="ProviderRepo", node="Main", name="First", revision=1),
+        DeclRef(repo="ProviderRepo", node="Main", name="Second", revision=1),
+    ]
+    foundation = runtime.foundation
+    consumer_path = foundation.node_contract_path(
+        FoundationContext(repo_root=tmp_path),
+        "Main.Topic.Consumer",
+        1,
+    )
+    consumer = foundation.read_json(consumer_path, NodeContractSnapshot)
+    assert consumer.ok and consumer.value is not None
+    consumer.value.deps = [
+        NodeDep(
+            dep_id="dep-external-batch",
+            target=NodeRef(repo="ProviderRepo", node="Main"),
+            expected_decl_refs=refs,
+            reason="Consume two provider declarations.",
+        )
+    ]
+    assert foundation.write_json_atomic(
+        consumer_path,
+        consumer.value,
+        mode=WriteMode.UPDATE_EXISTING,
+    ).ok
+    monkeypatch.setattr(
+        component,
+        "_external_lake_boundaries",
+        lambda _repo_root: foundation.ok(
+            [
+                VisibleNodeBoundaryItem(
+                    repo="ProviderRepo",
+                    node_path="Main",
+                    node_kind="scope",
+                    ready=True,
+                    import_module="ProviderRepo.Main.Interfaces",
+                    exported_decl_refs=refs,
+                    summary="Stable external boundary.",
+                )
+            ]
+        ),
+    )
+    batches: list[tuple[list[DeclRef], object | None]] = []
+
+    def resolve_batch(_repo_root: Path, *, refs, operation_context, **_kwargs):
+        batches.append((list(refs), operation_context))
+        return foundation.ok(
+            [
+                ResolvedDeclRefView(
+                    anchor=ref,
+                    resolved_revision=ref.revision,
+                    compatible=True,
+                )
+                for ref in refs
+            ]
+        )
+
+    monkeypatch.setattr(
+        runtime.decl_graph.ref_compatibility,
+        "resolve_public_decl_refs_batch",
+        resolve_batch,
+    )
+
+    validated = component.validate_node_deps(
+        tmp_path,
+        node_path="Main.Topic.Consumer",
+    )
+
+    assert validated.ok and validated.value is not None
+    assert validated.value.passed is True
+    assert len(batches) == 1
+    assert batches[0][0] == refs
+    assert batches[0][1] is not None
+
+
+def test_validate_node_deps_replays_failed_external_batch_in_original_issue_order(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _create_base_tree(tmp_path)
+    runtime = make_runtime()
+    component = runtime.node.dependency
+    refs = [
+        DeclRef(repo="OtherRepo", node="Main", name="WrongBefore", revision=1),
+        DeclRef(repo="ProviderRepo", node="Main", name="Incompatible", revision=1),
+        DeclRef(repo="ProviderRepo", node="Main", name="FirstFailure", revision=1),
+        DeclRef(repo="OtherRepo", node="Main", name="WrongAfter", revision=1),
+        DeclRef(repo="ProviderRepo", node="Main", name="SecondFailure", revision=1),
+    ]
+    foundation = runtime.foundation
+    consumer_path = foundation.node_contract_path(
+        FoundationContext(repo_root=tmp_path),
+        "Main.Topic.Consumer",
+        1,
+    )
+    consumer = foundation.read_json(consumer_path, NodeContractSnapshot)
+    assert consumer.ok and consumer.value is not None
+    consumer.value.deps = [
+        NodeDep(
+            dep_id="dep-external-mixed-failure",
+            target=NodeRef(repo="ProviderRepo", node="Main"),
+            expected_decl_refs=refs,
+            reason="Preserve mixed expected-ref issue order.",
+        )
+    ]
+    assert foundation.write_json_atomic(
+        consumer_path,
+        consumer.value,
+        mode=WriteMode.UPDATE_EXISTING,
+    ).ok
+    before = consumer_path.read_bytes()
+    monkeypatch.setattr(
+        component,
+        "_external_lake_boundaries",
+        lambda _repo_root: foundation.ok(
+            [
+                VisibleNodeBoundaryItem(
+                    repo="ProviderRepo",
+                    node_path="Main",
+                    node_kind="scope",
+                    ready=True,
+                    import_module="ProviderRepo.Main.Interfaces",
+                    exported_decl_refs=refs,
+                    summary="Stable external boundary.",
+                )
+            ]
+        ),
+    )
+    calls: list[tuple[list[DeclRef], object | None]] = []
+
+    def resolve_batch(_repo_root: Path, *, refs, operation_context, **_kwargs):
+        selected = list(refs)
+        calls.append((selected, operation_context))
+        if len(selected) > 1:
+            return foundation.fail(
+                foundation.issue(
+                    "synthetic_public_batch_failure",
+                    "The multi-ref batch failed before positional results were available.",
+                )
+            )
+        ref = selected[0]
+        if ref.name == "Incompatible":
+            return foundation.ok(
+                [
+                    ResolvedDeclRefView(
+                        anchor=ref,
+                        resolved_revision=2,
+                        compatible=False,
+                        reason="declaration_revision_mismatch",
+                    )
+                ]
+            )
+        return foundation.fail(
+            foundation.issue(
+                f"synthetic_{ref.name.lower()}",
+                "Synthetic positional resolver failure.",
+                object_ref=f"{ref.repo}:{ref.node}:{ref.name}@{ref.revision}",
+                field="revision",
+            )
+        )
+
+    monkeypatch.setattr(
+        runtime.decl_graph.ref_compatibility,
+        "resolve_public_decl_refs_batch",
+        resolve_batch,
+    )
+    monkeypatch.setattr(
+        runtime.decl_graph.ref_compatibility,
+        "resolve_public_decl_ref",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("public single resolver must remain unreachable")
+        ),
+    )
+
+    validated = component.validate_node_deps(
+        tmp_path,
+        node_path="Main.Topic.Consumer",
+    )
+
+    assert validated.ok and validated.value is not None
+    assert validated.value.passed is False
+    assert [issue.kind for issue in validated.value.issues] == [
+        "node_dep_external_expected_decl_repo_mismatch",
+        "node_dep_external_expected_decl_incompatible",
+        "synthetic_firstfailure",
+        "node_dep_external_expected_decl_repo_mismatch",
+        "synthetic_secondfailure",
+    ]
+    assert [issue.object_ref for issue in validated.value.issues] == [
+        "OtherRepo:Main:WrongBefore@1",
+        "ProviderRepo:Main:Incompatible@1",
+        "ProviderRepo:Main:FirstFailure@1",
+        "OtherRepo:Main:WrongAfter@1",
+        "ProviderRepo:Main:SecondFailure@1",
+    ]
+    assert [issue.field for issue in validated.value.issues] == [
+        "deps.0",
+        "deps.0",
+        "revision",
+        "deps.0",
+        "revision",
+    ]
+    assert [len(batch) for batch, _context in calls] == [3, 1, 1, 1]
+    assert calls[0][1] is not None
+    assert all(context is calls[0][1] for _batch, context in calls)
+    assert consumer_path.read_bytes() == before
+
+
+def test_validate_node_deps_rejects_wrong_repo_context_before_contract_read(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    first = tmp_path / "First"
+    second = tmp_path / "Second"
+    _create_base_tree(first)
+    _create_base_tree(second)
+    runtime = make_runtime()
+    component = runtime.node.dependency
+    context = component.create_evaluation_context(first)
+    assert context.ok and context.value is not None
+    reads = 0
+    original = component.contract.get_current_contract
+
+    def counted_current_contract(repo_root: Path, *, node_path: str):
+        nonlocal reads
+        reads += 1
+        return original(repo_root, node_path=node_path)
+
+    monkeypatch.setattr(
+        component.contract,
+        "get_current_contract",
+        counted_current_contract,
+    )
+
+    rejected = component.validate_node_deps(
+        second,
+        node_path="Main.Topic.Consumer",
+        operation_context=context.value,
+    )
+
+    assert not rejected.ok
+    assert rejected.issues[0].kind == "node_dependency_evaluation_context_mismatch"
+    assert reads == 0
+
+
+def test_check_content_batch_independent_reports_pass_duplicates_missing_noncontent_and_transitive_dependency(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
     _create_base_tree(tmp_path)
     tree = make_runtime().node.node_tree
     assert tree.create_content_node(
@@ -873,11 +1192,34 @@ def test_check_content_batch_independent_reports_pass_duplicates_missing_noncont
         tmp_path, node_path="Main.Topic.C", summary="C ready."
     ).ok
     component = make_runtime().node.dependency
+    tree_calls = 0
+    contract_calls: dict[str, int] = {}
+    original_get_node_tree = component.node_tree.get_node_tree
+    original_get_current_contract = component.contract.get_current_contract
+
+    def counted_get_node_tree(repo_root: Path):
+        nonlocal tree_calls
+        tree_calls += 1
+        return original_get_node_tree(repo_root)
+
+    def counted_get_current_contract(repo_root: Path, *, node_path: str):
+        contract_calls[node_path] = contract_calls.get(node_path, 0) + 1
+        return original_get_current_contract(repo_root, node_path=node_path)
+
+    monkeypatch.setattr(component.node_tree, "get_node_tree", counted_get_node_tree)
+    monkeypatch.setattr(
+        component.contract,
+        "get_current_contract",
+        counted_get_current_contract,
+    )
 
     independent = component.check_content_batch_independent(tmp_path, node_paths=["Main.Topic.A", "Main.Topic.B"])
     assert independent.ok
     assert independent.value is not None
     assert independent.value.passed is True
+    assert tree_calls == 1
+    assert contract_calls
+    assert set(contract_calls.values()) == {1}
 
     malformed = component.check_content_batch_independent(
         tmp_path,
@@ -909,8 +1251,13 @@ def test_check_content_batch_independent_reports_pass_duplicates_missing_noncont
         actor="coordinator",
     ).ok
 
+    tree_calls = 0
+    contract_calls.clear()
     transitive = component.check_content_batch_independent(tmp_path, node_paths=["Main.Topic.A", "Main.Topic.C"])
     assert transitive.ok
     assert transitive.value is not None
     assert transitive.value.passed is False
     assert transitive.value.issues[0].kind == "content_batch_dependency_present"
+    assert tree_calls == 1
+    assert contract_calls
+    assert set(contract_calls.values()) == {1}

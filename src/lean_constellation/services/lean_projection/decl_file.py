@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from pydantic import Field
 
@@ -37,10 +38,22 @@ from lean_constellation.services.lean_projection.managed_file import ManagedDecl
 from lean_constellation.services.lean_projection.module_identity import ModuleBuildView, ModuleIdentityComponent
 
 if TYPE_CHECKING:
+    from lean_constellation.services.node.dependency import NodeDependencyEvaluationContext
     from lean_constellation.services.runtime import LeanRuntimeServices
 
 
 DeclFileStage = Literal["statement", "proof"]
+
+
+@dataclass
+class DeclDependencyResolutionContext:
+    """Caller-owned invariant reads for one declaration dependency operation."""
+
+    repo_root: Path
+    consumer_node_path: str
+    decl_ref_context: object
+    node_dependency_context: NodeDependencyEvaluationContext | None = None
+    node_boundary: ServiceResult[Any] | None = None
 
 
 class LeanPathView(StrictModel):
@@ -230,6 +243,26 @@ class DeclFileComponent:
         self.revision_provider = revision_provider or _MissingDeclFileRevisionProvider(runtime)
         self.managed_file = managed_file or ManagedDeclFileComponent(runtime, annotation=self.annotation)
         self.module_identity = module_identity or ModuleIdentityComponent(runtime)
+
+    def create_dependency_resolution_context(
+        self,
+        repo_root: Path,
+        *,
+        consumer_node_path: str,
+        node_dependency_context: NodeDependencyEvaluationContext | None = None,
+    ) -> DeclDependencyResolutionContext:
+        """Create one unpersisted context for a projection/readiness operation."""
+
+        return DeclDependencyResolutionContext(
+            repo_root=Path(repo_root).resolve(strict=False),
+            consumer_node_path=consumer_node_path,
+            decl_ref_context=(
+                node_dependency_context.decl_ref_context
+                if node_dependency_context is not None
+                else self.runtime.decl_graph.ref_compatibility.create_operation_context()
+            ),
+            node_dependency_context=node_dependency_context,
+        )
 
     def derive_decl_file_path(
         self,
@@ -462,11 +495,16 @@ class DeclFileComponent:
                     field="statement.formal.code",
                 )
             )
+        dependency_context = self.create_dependency_resolution_context(
+            repo_root,
+            consumer_node_path=node_path,
+        )
         statement_dependencies = self._resolve_dependencies(
             repo_root,
             consumer_node_path=node_path,
             dependencies=revision.value.statement.deps,
             require_complete=False,
+            operation_context=dependency_context,
         )
         if not statement_dependencies.ok or statement_dependencies.value is None:
             return self.runtime.foundation.fail(statement_dependencies.issues)
@@ -475,6 +513,7 @@ class DeclFileComponent:
             consumer_node_path=node_path,
             dependencies=revision.value.proof.deps if revision.value.proof is not None else [],
             require_complete=False,
+            operation_context=dependency_context,
         )
         if not proof_dependencies.ok or proof_dependencies.value is None:
             return self.runtime.foundation.fail(proof_dependencies.issues)
@@ -538,11 +577,16 @@ class DeclFileComponent:
                 )
             )
 
+        dependency_context = self.create_dependency_resolution_context(
+            repo_root,
+            consumer_node_path=node_path,
+        )
         statement_dependencies = self._resolve_dependencies(
             repo_root,
             consumer_node_path=node_path,
             dependencies=revision.value.statement.deps,
             require_complete=False,
+            operation_context=dependency_context,
         )
         if not statement_dependencies.ok or statement_dependencies.value is None:
             return self.runtime.foundation.fail(statement_dependencies.issues)
@@ -553,6 +597,7 @@ class DeclFileComponent:
                 consumer_node_path=node_path,
                 dependencies=revision.value.proof.deps if revision.value.proof is not None else [],
                 require_complete=False,
+                operation_context=dependency_context,
             )
             if not proof_dependencies.ok or proof_dependencies.value is None:
                 return self.runtime.foundation.fail(proof_dependencies.issues)
@@ -732,11 +777,16 @@ class DeclFileComponent:
         managed = self.managed_file.validate(file_text.value)
         if not managed.ok:
             return self.runtime.foundation.fail(managed.issues)
+        dependency_context = self.create_dependency_resolution_context(
+            repo_root,
+            consumer_node_path=node_path,
+        )
         statement_dependencies = self._resolve_dependencies(
             repo_root,
             consumer_node_path=node_path,
             dependencies=revision.value.statement.deps,
             require_complete=True,
+            operation_context=dependency_context,
         )
         if not statement_dependencies.ok or statement_dependencies.value is None:
             return self.runtime.foundation.fail(statement_dependencies.issues)
@@ -745,6 +795,7 @@ class DeclFileComponent:
             consumer_node_path=node_path,
             dependencies=revision.value.proof.deps if revision.value.proof is not None else [],
             require_complete=True,
+            operation_context=dependency_context,
         )
         if not proof_dependencies.ok or proof_dependencies.value is None:
             return self.runtime.foundation.fail(proof_dependencies.issues)
@@ -898,6 +949,10 @@ class DeclFileComponent:
         managed_regions = self.managed_file.validate(file_text.value)
         if managed_regions.ok:
             policy = self.annotation.projection_policy()
+            dependency_context = self.create_dependency_resolution_context(
+                repo_root,
+                consumer_node_path=node_path,
+            )
             statement_dependencies_value: list[ResolvedDependencyProjection] = []
             if policy.include_dependencies:
                 statement_dependencies = self._resolve_dependencies(
@@ -905,6 +960,7 @@ class DeclFileComponent:
                     consumer_node_path=node_path,
                     dependencies=revision.value.statement.deps,
                     require_complete=True,
+                    operation_context=dependency_context,
                 )
                 if not statement_dependencies.ok or statement_dependencies.value is None:
                     return self.runtime.foundation.fail(statement_dependencies.issues)
@@ -917,6 +973,7 @@ class DeclFileComponent:
                         consumer_node_path=node_path,
                         dependencies=revision.value.proof.deps if revision.value.proof is not None else [],
                         require_complete=True,
+                        operation_context=dependency_context,
                     )
                     if not proof_dependencies.ok or proof_dependencies.value is None:
                         return self.runtime.foundation.fail(proof_dependencies.issues)
@@ -983,12 +1040,20 @@ class DeclFileComponent:
         node_path: str,
         decl_name: str,
         stage: DeclFileStage | str,
+        operation_context: DeclDependencyResolutionContext | None = None,
     ) -> ServiceResult[GateReport]:
         """Require final module/full-name identity for all dependencies of a captured stage."""
 
         normalized_stage = self._normalize_stage(stage)
         if normalized_stage is None:
             return self.runtime.foundation.fail(self._invalid_stage_issue(stage))
+        context = self._dependency_resolution_context(
+            repo_root,
+            consumer_node_path=node_path,
+            operation_context=operation_context,
+        )
+        if not context.ok or context.value is None:
+            return self.runtime.foundation.fail(context.issues)
         revision = self._load_revision(repo_root, node_path=node_path, decl_name=decl_name)
         if not revision.ok or revision.value is None:
             return self.runtime.foundation.fail(revision.issues)
@@ -1025,6 +1090,7 @@ class DeclFileComponent:
                 consumer_node_path=node_path,
                 dependencies=dependencies,
                 require_complete=True,
+                operation_context=context.value,
             )
             if not resolved.ok:
                 issues.extend(resolved.issues)
@@ -1175,7 +1241,15 @@ class DeclFileComponent:
         consumer_node_path: str,
         dependencies: Sequence[object],
         require_complete: bool,
+        operation_context: DeclDependencyResolutionContext | None = None,
     ) -> ServiceResult[list[ResolvedDependencyProjection]]:
+        context = self._dependency_resolution_context(
+            repo_root,
+            consumer_node_path=consumer_node_path,
+            operation_context=operation_context,
+        )
+        if not context.ok or context.value is None:
+            return self.runtime.foundation.fail(context.issues)
         values: list[ResolvedDependencyProjection] = []
         for dependency in dependencies:
             if getattr(dependency, "kind", None) == "mathlib_decl":
@@ -1208,6 +1282,7 @@ class DeclFileComponent:
                 repo_root,
                 consumer_node_path=consumer_node_path,
                 ref=ref,
+                operation_context=context.value,
             )
             if not resolved.ok or resolved.value is None:
                 return self.runtime.foundation.fail(resolved.issues)
@@ -1228,6 +1303,7 @@ class DeclFileComponent:
         *,
         consumer_node_path: str,
         ref,
+        operation_context: DeclDependencyResolutionContext,
     ) -> ServiceResult[ResolvedRepoDeclDependencyProjection]:  # noqa: ANN001
         if ref.repo is None and ref.node == consumer_node_path:
             revision = self._load_revision(repo_root, node_path=ref.node, decl_name=ref.name)
@@ -1252,7 +1328,11 @@ class DeclFileComponent:
                     resolved_revision=revision.value.revision,
                 )
             )
-        boundary = self.runtime.node.dependency.list_node_deps(repo_root, node_path=consumer_node_path)
+        boundary = self._node_dependency_boundary(
+            repo_root,
+            consumer_node_path=consumer_node_path,
+            operation_context=operation_context,
+        )
         if not boundary.ok or boundary.value is None:
             return self.runtime.foundation.fail(boundary.issues)
         boundary_node = "Main" if ref.repo is not None else ref.node
@@ -1271,10 +1351,22 @@ class DeclFileComponent:
         target_root = Path(repo_root)
         resolved_revision = ref.revision
         if ref.repo is not None:
-            compatibility = self.runtime.decl_graph.ref_compatibility.resolve_public_decl_ref(
-                Path(repo_root),
-                ref=ref,
-                required_availability=ProofAvailability.DECLARED,
+            compatibility_batch = (
+                self.runtime.decl_graph.ref_compatibility.resolve_public_decl_refs_batch(
+                    Path(repo_root),
+                    refs=[ref],
+                    required_availability=ProofAvailability.DECLARED,
+                    operation_context=operation_context.decl_ref_context,
+                )
+            )
+            if (
+                not compatibility_batch.ok
+                or compatibility_batch.value is None
+            ):
+                return self.runtime.foundation.fail(compatibility_batch.issues)
+            compatibility = self.runtime.foundation.ok(
+                compatibility_batch.value[0],
+                warnings=compatibility_batch.issues,
             )
             if not compatibility.ok or compatibility.value is None:
                 return self.runtime.foundation.fail(compatibility.issues)
@@ -1320,6 +1412,66 @@ class DeclFileComponent:
                 resolved_revision=resolved_revision,
             )
         )
+
+    def _dependency_resolution_context(
+        self,
+        repo_root: Path,
+        *,
+        consumer_node_path: str,
+        operation_context: DeclDependencyResolutionContext | None,
+    ) -> ServiceResult[DeclDependencyResolutionContext]:
+        canonical_root = Path(repo_root).resolve(strict=False)
+        if operation_context is None:
+            return self.runtime.foundation.ok(
+                self.create_dependency_resolution_context(
+                    canonical_root,
+                    consumer_node_path=consumer_node_path,
+                )
+            )
+        if (
+            operation_context.repo_root != canonical_root
+            or operation_context.consumer_node_path != consumer_node_path
+            or (
+                operation_context.node_dependency_context is not None
+                and operation_context.node_dependency_context.repo_root != canonical_root
+            )
+        ):
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "decl_dependency_resolution_context_mismatch",
+                    "Declaration dependency context belongs to another repository or Content operation.",
+                    object_ref=consumer_node_path,
+                    current=(
+                        f"{operation_context.repo_root}:"
+                        f"{operation_context.consumer_node_path}"
+                    ),
+                    expected=f"{canonical_root}:{consumer_node_path}",
+                )
+            )
+        return self.runtime.foundation.ok(operation_context)
+
+    def _node_dependency_boundary(
+        self,
+        repo_root: Path,
+        *,
+        consumer_node_path: str,
+        operation_context: DeclDependencyResolutionContext,
+    ) -> ServiceResult[Any]:
+        if operation_context.node_boundary is None:
+            if operation_context.node_dependency_context is not None:
+                operation_context.node_boundary = (
+                    self.runtime.node.dependency.list_node_deps_from_context(
+                        repo_root,
+                        node_path=consumer_node_path,
+                        operation_context=operation_context.node_dependency_context,
+                    )
+                )
+            else:
+                operation_context.node_boundary = self.runtime.node.dependency.list_node_deps(
+                    repo_root,
+                    node_path=consumer_node_path,
+                )
+        return operation_context.node_boundary
 
     def _module_mismatch_issue(
         self,

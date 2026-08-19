@@ -199,6 +199,11 @@ class RepoReleaseFinalizerComponent:
             ))
         active_nodes = [node for node in nodes.value if node.lifecycle == NodeLifecycle.ACTIVE]
         active_by_path = {node.path: node for node in active_nodes}
+        dependency_context = (
+            self.runtime.node.dependency.create_evaluation_context(repo_root)
+        )
+        if not dependency_context.ok or dependency_context.value is None:
+            return self.runtime.foundation.fail(dependency_context.issues)
         release_audit_context = None
         tree_issues = []
         if len(active_by_path) != len(active_nodes):
@@ -272,7 +277,11 @@ class RepoReleaseFinalizerComponent:
                 ))
                 continue
             node_versions[node.node_id] = contract.version
-            deps = self.runtime.node.dependency.validate_node_deps(repo_root, node_path=node.path)
+            deps = self.runtime.node.dependency.validate_node_deps(
+                repo_root,
+                node_path=node.path,
+                operation_context=dependency_context.value,
+            )
             if deps.ok and deps.value is not None:
                 reports.append(deps.value)
             else:

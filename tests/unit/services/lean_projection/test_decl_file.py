@@ -1,9 +1,11 @@
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from tests.unit_services_helpers import initialize_native_test_repo, make_runtime
 
 from lean_constellation.domain.repo import DocstringProjectionConfig, WorkspaceConfig
+from lean_constellation.domain.refs import DeclRef
 from lean_constellation.services.decl_graph import DeclFileRevisionView
 from lean_constellation.services.external_clients import (
     ExternalCommandResult,
@@ -192,6 +194,184 @@ def test_same_node_dependency_import_and_docstring_use_module_and_full_name(tmp_
     text = Path(prepared.value.path).read_text(encoding="utf-8")
     assert "import Main.Topic.Core.Defs.helper" in text
     assert "`Main.Topic.Core::helper` → `Example.helper` from `Main.Topic.Core.Defs.helper`" in text
+
+
+def test_dependency_identity_context_reuses_boundary_and_rejects_wrong_identity(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    revisions: dict[tuple[str, str], dict[str, Any]] = {}
+    for name in ("first", "second"):
+        revision = _revision(name=name)
+        revision["state"] = "declared"
+        revision["version_status"] = "committed"
+        revision["lean_decl_name"] = f"Example.{name}"
+        revision["statement"]["deps"] = [
+            {
+                "kind": "repo_decl",
+                "ref": {
+                    "repo": "Provider",
+                    "node": "Main",
+                    "name": "helper",
+                    "revision": 1,
+                },
+            }
+        ]
+        revisions[("Main.Topic.Core", name)] = revision
+    component = _component(revisions)
+    boundary_present = True
+    boundary_reads = 0
+    resolver_contexts: list[object] = []
+    revision_reads = 0
+    original_revision = component.revision_provider.get_current_decl_revision
+
+    def get_revision(*args, **kwargs):  # noqa: ANN002, ANN003
+        nonlocal revision_reads
+        revision_reads += 1
+        return original_revision(*args, **kwargs)
+
+    def list_node_deps(_repo_root: Path, *, node_path: str):
+        nonlocal boundary_reads
+        boundary_reads += 1
+        assert node_path == "Main.Topic.Core"
+        deps = (
+            [SimpleNamespace(target_repo="Provider", target_node="Main")]
+            if boundary_present
+            else []
+        )
+        return component.runtime.foundation.ok(SimpleNamespace(deps=deps))
+
+    def resolve_public_batch(
+        _repo_root: Path,
+        *,
+        refs: list[DeclRef],
+        required_availability,
+        operation_context,
+    ):
+        del required_availability
+        resolver_contexts.append(operation_context)
+        return component.runtime.foundation.ok(
+            [
+                SimpleNamespace(
+                    compatible=True,
+                    resolved_revision=ref.revision,
+                    reason="exact",
+                )
+                for ref in refs
+            ]
+        )
+
+    monkeypatch.setattr(
+        component.revision_provider,
+        "get_current_decl_revision",
+        get_revision,
+    )
+    monkeypatch.setattr(
+        component.runtime.node.dependency,
+        "list_node_deps",
+        list_node_deps,
+    )
+    monkeypatch.setattr(
+        component.runtime.decl_graph.ref_compatibility,
+        "resolve_public_decl_refs_batch",
+        resolve_public_batch,
+    )
+    monkeypatch.setattr(
+        component.runtime.decl_graph.decl_catalog,
+        "get_decl",
+        lambda *_args, **_kwargs: component.runtime.foundation.ok(
+            SimpleNamespace(module="Provider.Main.Defs.helper")
+        ),
+    )
+    monkeypatch.setattr(
+        component.runtime.decl_graph.decl_catalog,
+        "get_decl_revision",
+        lambda *_args, **_kwargs: component.runtime.foundation.ok(
+            SimpleNamespace(lean_decl_name="Provider.helper")
+        ),
+    )
+    context = component.create_dependency_resolution_context(
+        tmp_path,
+        consumer_node_path="Main.Topic.Core",
+    )
+
+    first = component.check_decl_dependency_identity(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        decl_name="first",
+        stage="statement",
+        operation_context=context,
+    )
+    second = component.check_decl_dependency_identity(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        decl_name="second",
+        stage="statement",
+        operation_context=context,
+    )
+
+    assert first.ok and first.value is not None and first.value.passed
+    assert second.ok and second.value is not None and second.value.passed
+    assert boundary_reads == 1
+    assert len(resolver_contexts) == 2
+    assert resolver_contexts[0] is resolver_contexts[1]
+    assert revision_reads == 2
+
+    wrong_context = component.create_dependency_resolution_context(
+        tmp_path,
+        consumer_node_path="Main.Other",
+    )
+    wrong = component.check_decl_dependency_identity(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        decl_name="first",
+        stage="statement",
+        operation_context=wrong_context,
+    )
+    assert not wrong.ok
+    assert wrong.issues[0].kind == "decl_dependency_resolution_context_mismatch"
+    assert revision_reads == 2
+    assert boundary_reads == 1
+
+    foreign_node_context = (
+        component.runtime.node.dependency.create_evaluation_context(
+            tmp_path / "Foreign"
+        )
+    )
+    assert foreign_node_context.ok and foreign_node_context.value is not None
+    wrong_embedded_context = component.create_dependency_resolution_context(
+        tmp_path,
+        consumer_node_path="Main.Topic.Core",
+        node_dependency_context=foreign_node_context.value,
+    )
+    wrong_embedded = component.check_decl_dependency_identity(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        decl_name="first",
+        stage="statement",
+        operation_context=wrong_embedded_context,
+    )
+    assert not wrong_embedded.ok
+    assert wrong_embedded.issues[0].kind == "decl_dependency_resolution_context_mismatch"
+    assert revision_reads == 2
+    assert boundary_reads == 1
+
+    boundary_present = False
+    fresh_context = component.create_dependency_resolution_context(
+        tmp_path,
+        consumer_node_path="Main.Topic.Core",
+    )
+    refreshed = component.check_decl_dependency_identity(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        decl_name="first",
+        stage="statement",
+        operation_context=fresh_context,
+    )
+    assert refreshed.ok and refreshed.value is not None
+    assert not refreshed.value.passed
+    assert refreshed.value.issues[0].kind == "decl_dependency_node_boundary_missing"
+    assert boundary_reads == 2
 
 
 def test_capture_builds_module_confirms_full_name_and_saves_truth(tmp_path: Path) -> None:

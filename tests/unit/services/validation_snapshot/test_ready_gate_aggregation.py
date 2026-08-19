@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 from tests.unit_services_helpers import (
     initialize_native_test_repo,
@@ -13,7 +14,8 @@ from tests.unit_services_helpers import (
 from lean_constellation.domain.interface import DeclInterface, DeclKind
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
 from lean_constellation.domain.repo import ProofAvailability, RepoCompletionMode
-from lean_constellation.services.decl_graph import DeclState
+from lean_constellation.domain.refs import DeclRef
+from lean_constellation.services.decl_graph import DeclReadinessReport, DeclState
 from lean_constellation.services.external_clients import ExternalCommandResult
 from lean_constellation.services.foundation import FoundationContext, GateReport, ServiceResult, WriteMode
 from lean_constellation.services.runtime import LeanRuntimeServices
@@ -387,6 +389,406 @@ def test_repo_ready_gate_uses_target_proof_availability_for_main_public_exports(
     assert proved_view.value.target_proof_availability == ProofAvailability.PROVED
     assert proved_view.value.ready_to_submit is False
     assert "repo_public_decl_proof_policy_unsatisfied" in proved_view.value.blocking_issue_kinds
+
+
+def test_repo_public_boundary_batches_all_main_exports(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime = _runtime()
+    _write_preparation_input(runtime, tmp_path)
+    gate = ReadinessGateComponent(runtime)
+    refs = [
+        DeclRef(repo=None, node=MAIN_CONTENT_NODE_PATH, name="first", revision=1),
+        DeclRef(repo=None, node=MAIN_CONTENT_NODE_PATH, name="second", revision=1),
+    ]
+    monkeypatch.setattr(
+        gate.node.export,
+        "list_scope_exports",
+        lambda *_args, **_kwargs: runtime.foundation.ok(
+            [SimpleNamespace(ref=ref) for ref in refs]
+        ),
+    )
+    batches: list[list[tuple[str, str, ProofAvailability]]] = []
+
+    def check_batch(_repo_root: Path, *, roots, **_kwargs):
+        selected = list(roots)
+        batches.append(selected)
+        return runtime.foundation.ok(
+            [
+                DeclReadinessReport(
+                    node_path=node_path,
+                    decl_name=decl_name,
+                    revision=1,
+                    required_availability=target,
+                    ready=True,
+                    summary=f"{node_path}:{decl_name} is ready.",
+                )
+                for node_path, decl_name, target in selected
+            ]
+        )
+
+    monkeypatch.setattr(
+        runtime.decl_graph,
+        "check_decl_proof_policy_batch",
+        check_batch,
+    )
+    monkeypatch.setattr(
+        runtime.decl_graph,
+        "check_decl_proof_policy_satisfied",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Main export collection must not use the single wrapper")
+        ),
+    )
+
+    checked = gate._check_repo_public_boundary_proof_policy(tmp_path)
+
+    assert checked.ok and checked.value is not None
+    assert checked.value.passed is True
+    assert batches == [
+        [
+            (MAIN_CONTENT_NODE_PATH, "first", ProofAvailability.PROVED),
+            (MAIN_CONTENT_NODE_PATH, "second", ProofAvailability.PROVED),
+        ]
+    ]
+
+
+def test_decl_ref_readiness_groups_by_repo_and_target_and_preserves_input_order(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    consumer = tmp_path / "Consumer"
+    provider_a = tmp_path / "ProviderA"
+    provider_b = tmp_path / "ProviderB"
+    runtime = _runtime()
+    for repo in (consumer, provider_a, provider_b):
+        assert runtime.repo_workspace.metadata.ensure_repo_model(repo).ok
+    assert runtime.repo_workspace.metadata.update_repo_config(
+        provider_a,
+        completion_mode=RepoCompletionMode.INTERFACE_DECLARED,
+    ).ok
+    assert runtime.repo_workspace.metadata.update_repo_config(
+        provider_b,
+        completion_mode=RepoCompletionMode.GRAPH_PROVED,
+    ).ok
+    gate = ReadinessGateComponent(runtime)
+    refs = [
+        DeclRef(repo=None, node="Main.Local", name="local", revision=1),
+        DeclRef(repo="ProviderA", node="Main.A", name="a_first", revision=1),
+        DeclRef(repo="ProviderB", node="Main.B", name="b", revision=1),
+        DeclRef(repo="ProviderA", node="Main.A", name="a_second", revision=1),
+    ]
+    batches: list[tuple[Path, list[tuple[str, str, ProofAvailability]]]] = []
+
+    def check_batch(repo_root: Path, *, roots, **_kwargs):
+        selected = list(roots)
+        batches.append((Path(repo_root), selected))
+        return runtime.foundation.ok(
+            [
+                DeclReadinessReport(
+                    node_path=node_path,
+                    decl_name=decl_name,
+                    revision=1,
+                    required_availability=target,
+                    ready=True,
+                    summary=f"{node_path}:{decl_name} is ready.",
+                )
+                for node_path, decl_name, target in selected
+            ]
+        )
+
+    monkeypatch.setattr(
+        runtime.decl_graph,
+        "check_decl_proof_policy_batch",
+        check_batch,
+    )
+
+    checked = gate._check_decl_refs_proof_policy_batch(
+        consumer,
+        refs=refs,
+        fallback_node_path="Main.Consumer",
+        local_target=ProofAvailability.PROVED,
+    )
+
+    assert checked.ok and checked.value is not None
+    assert [report.decl_name for report in checked.value] == [
+        "local",
+        "a_first",
+        "b",
+        "a_second",
+    ]
+    assert batches == [
+        (consumer, [("Main.Local", "local", ProofAvailability.PROVED)]),
+        (
+            provider_a,
+            [
+                ("Main.A", "a_first", ProofAvailability.DECLARED),
+                ("Main.A", "a_second", ProofAvailability.DECLARED),
+            ],
+        ),
+        (provider_b, [("Main.B", "b", ProofAvailability.PROVED)]),
+    ]
+    assert runtime.repo_workspace.metadata.update_repo_config(
+        provider_a,
+        completion_mode=RepoCompletionMode.GRAPH_PROVED,
+    ).ok
+    batches.clear()
+
+    refreshed = gate._check_decl_refs_proof_policy_batch(
+        consumer,
+        refs=refs,
+        fallback_node_path="Main.Consumer",
+        local_target=ProofAvailability.PROVED,
+    )
+
+    assert refreshed.ok and refreshed.value is not None
+    assert batches[1] == (
+        provider_a,
+        [
+            ("Main.A", "a_first", ProofAvailability.PROVED),
+            ("Main.A", "a_second", ProofAvailability.PROVED),
+        ],
+    )
+
+
+def test_decl_ref_readiness_replay_preserves_local_failure_before_later_config_failure(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    consumer = tmp_path / "Consumer"
+    provider = tmp_path / "Provider"
+    runtime = _runtime()
+    assert runtime.repo_workspace.metadata.ensure_repo_model(consumer).ok
+    gate = ReadinessGateComponent(runtime)
+    refs = [
+        DeclRef(repo=None, node="Main.Local", name="local", revision=1),
+        DeclRef(repo="Provider", node="Main", name="external", revision=1),
+    ]
+    original_config = runtime.repo_workspace.metadata.get_repo_config
+    config_reads = 0
+
+    def get_config(repo_root: Path):
+        nonlocal config_reads
+        if Path(repo_root) == provider:
+            config_reads += 1
+            return runtime.foundation.fail(
+                runtime.foundation.issue(
+                    "synthetic_external_config_failure",
+                    "External config is unavailable.",
+                    object_ref=str(provider),
+                    field="completion_mode",
+                    details={"source": "external"},
+                )
+            )
+        return original_config(repo_root)
+
+    batches: list[list[tuple[str, str, ProofAvailability]]] = []
+
+    def check_batch(_repo_root: Path, *, roots, **_kwargs):
+        selected = list(roots)
+        batches.append(selected)
+        return runtime.foundation.fail(
+            runtime.foundation.issue(
+                "synthetic_local_readiness_failure",
+                "The first local declaration failed.",
+                object_ref="Main.Local:local",
+                field="statement",
+                details={"source": "local"},
+            )
+        )
+
+    monkeypatch.setattr(
+        runtime.repo_workspace.metadata,
+        "get_repo_config",
+        get_config,
+    )
+    monkeypatch.setattr(
+        runtime.decl_graph,
+        "check_decl_proof_policy_batch",
+        check_batch,
+    )
+    monkeypatch.setattr(
+        runtime.decl_graph,
+        "check_decl_proof_policy_satisfied",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("failure replay must use batch-of-one")
+        ),
+    )
+
+    checked = gate._check_decl_refs_proof_policy_batch(
+        consumer,
+        refs=refs,
+        fallback_node_path="Main.Consumer",
+        local_target=ProofAvailability.PROVED,
+    )
+
+    assert not checked.ok
+    assert checked.issues[0].kind == "synthetic_local_readiness_failure"
+    assert checked.issues[0].object_ref == "Main.Local:local"
+    assert checked.issues[0].field == "statement"
+    assert checked.issues[0].details == {"source": "local"}
+    assert batches == [[("Main.Local", "local", ProofAvailability.PROVED)]]
+    assert config_reads == 1
+
+
+def test_decl_ref_readiness_replay_preserves_local_failure_before_later_unsafe_repo(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    consumer = tmp_path / "Consumer"
+    runtime = _runtime()
+    assert runtime.repo_workspace.metadata.ensure_repo_model(consumer).ok
+    gate = ReadinessGateComponent(runtime)
+    local_ref = DeclRef(
+        repo=None,
+        node="Main.Local",
+        name="local",
+        revision=1,
+    )
+    unsafe_ref = DeclRef(
+        repo="../Unsafe",
+        node="Main",
+        name="external",
+        revision=1,
+    )
+    batches: list[list[tuple[str, str, ProofAvailability]]] = []
+
+    def fail_local(_repo_root: Path, *, roots, **_kwargs):
+        selected = list(roots)
+        batches.append(selected)
+        return runtime.foundation.fail(
+            runtime.foundation.issue(
+                "synthetic_local_readiness_failure",
+                "The first local declaration failed.",
+                object_ref="Main.Local:local",
+                field="statement",
+                details={"source": "local"},
+            )
+        )
+
+    monkeypatch.setattr(
+        runtime.decl_graph,
+        "check_decl_proof_policy_batch",
+        fail_local,
+    )
+    monkeypatch.setattr(
+        runtime.decl_graph,
+        "check_decl_proof_policy_satisfied",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("failure replay must use batch-of-one")
+        ),
+    )
+
+    checked = gate._check_decl_refs_proof_policy_batch(
+        consumer,
+        refs=[local_ref, unsafe_ref],
+        fallback_node_path="Main.Consumer",
+        local_target=ProofAvailability.PROVED,
+    )
+
+    assert not checked.ok
+    assert checked.issues[0].kind == "synthetic_local_readiness_failure"
+    assert checked.issues[0].object_ref == "Main.Local:local"
+    assert checked.issues[0].field == "statement"
+    assert checked.issues[0].details == {"source": "local"}
+    assert batches == [[("Main.Local", "local", ProofAvailability.PROVED)]]
+
+    unsafe_first = gate._check_decl_refs_proof_policy_batch(
+        consumer,
+        refs=[unsafe_ref],
+        fallback_node_path="Main.Consumer",
+        local_target=ProofAvailability.PROVED,
+    )
+
+    assert not unsafe_first.ok
+    assert unsafe_first.issues[0].kind == "dependency_provider_invalid"
+    assert unsafe_first.issues[0].message == "unsafe key: ../Unsafe"
+    assert unsafe_first.issues[0].object_ref == "../Unsafe"
+    assert batches == [[("Main.Local", "local", ProofAvailability.PROVED)]]
+
+
+def test_decl_ref_readiness_replay_preserves_interleaved_provider_failure_order(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    consumer = tmp_path / "Consumer"
+    provider_a = tmp_path / "ProviderA"
+    provider_b = tmp_path / "ProviderB"
+    runtime = _runtime()
+    for repo in (consumer, provider_a, provider_b):
+        assert runtime.repo_workspace.metadata.ensure_repo_model(repo).ok
+    gate = ReadinessGateComponent(runtime)
+    refs = [
+        DeclRef(repo="ProviderA", node="Main", name="a_first", revision=1),
+        DeclRef(repo="ProviderB", node="Main", name="b", revision=1),
+        DeclRef(repo="ProviderA", node="Main", name="a_second", revision=1),
+    ]
+    batches: list[tuple[Path, list[tuple[str, str, ProofAvailability]]]] = []
+
+    def check_batch(repo_root: Path, *, roots, **_kwargs):
+        selected = list(roots)
+        batches.append((Path(repo_root), selected))
+        if len(selected) > 1:
+            return runtime.foundation.fail(
+                runtime.foundation.issue(
+                    "synthetic_provider_a_group_failure",
+                    "Provider A grouped evaluation failed.",
+                )
+            )
+        node_path, decl_name, target = selected[0]
+        if Path(repo_root) == provider_b:
+            return runtime.foundation.fail(
+                runtime.foundation.issue(
+                    "synthetic_provider_b_failure",
+                    "Provider B is the first positional failure.",
+                    object_ref="ProviderB:Main:b",
+                    field="proof",
+                    details={"source": "provider_b"},
+                )
+            )
+        return runtime.foundation.ok(
+            [
+                DeclReadinessReport(
+                    node_path=node_path,
+                    decl_name=decl_name,
+                    revision=1,
+                    required_availability=target,
+                    ready=True,
+                    summary=f"{node_path}:{decl_name} is ready.",
+                )
+            ]
+        )
+
+    monkeypatch.setattr(
+        runtime.decl_graph,
+        "check_decl_proof_policy_batch",
+        check_batch,
+    )
+    monkeypatch.setattr(
+        runtime.decl_graph,
+        "check_decl_proof_policy_satisfied",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("failure replay must use batch-of-one")
+        ),
+    )
+
+    checked = gate._check_decl_refs_proof_policy_batch(
+        consumer,
+        refs=refs,
+        fallback_node_path="Main.Consumer",
+        local_target=ProofAvailability.PROVED,
+    )
+
+    assert not checked.ok
+    assert checked.issues[0].kind == "synthetic_provider_b_failure"
+    assert checked.issues[0].object_ref == "ProviderB:Main:b"
+    assert checked.issues[0].field == "proof"
+    assert checked.issues[0].details == {"source": "provider_b"}
+    assert [(repo.name, len(roots)) for repo, roots in batches] == [
+        ("ProviderA", 2),
+        ("ProviderA", 1),
+        ("ProviderB", 1),
+    ]
 
 
 def test_repo_ready_gate_rechecks_exact_root_interface_statement_contract(tmp_path: Path) -> None:

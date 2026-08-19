@@ -7,7 +7,7 @@ from typing import Any
 
 from tests.unit_services_helpers import initialize_native_test_repo, make_runtime, publish_native_provider_release
 
-from lean_constellation.domain.interface import DeclKind
+from lean_constellation.domain.interface import DeclInterface, DeclKind
 from lean_constellation.domain.refs import DeclRef
 from lean_constellation.domain.repo import ProofAvailability, RepoCompletionMode
 from lean_constellation.domain.repo_release import DeclAvailabilityEntry
@@ -425,6 +425,74 @@ def test_content_completion_accepts_declared_theorem_under_declared_target(tmp_p
     assert "+TestProject.Main.Topic.Core.Interfaces" in lake.build_targets
 
 
+def test_content_completion_forwards_one_dependency_resolution_context(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime = _runtime()
+    _seed_declared_public_theorem(
+        runtime,
+        tmp_path,
+        completion_mode=RepoCompletionMode.INTERFACE_DECLARED,
+    )
+    target = runtime.node.contract.set_task_completion_mode_receipt(
+        tmp_path,
+        node_path=NODE_PATH,
+        task_completion_mode=RepoCompletionMode.INTERFACE_DECLARED,
+    )
+    assert target.ok, target.issues
+    original_create = (
+        runtime.lean_projection.create_decl_dependency_resolution_context
+    )
+    original_check = runtime.lean_projection.check_decl_dependency_identity
+    created_contexts: list[object] = []
+    identity_contexts: list[object | None] = []
+
+    def create_context(
+        repo_root: Path,
+        *,
+        node_path: str,
+        node_dependency_context=None,
+    ):
+        context = original_create(
+            repo_root,
+            node_path=node_path,
+            node_dependency_context=node_dependency_context,
+        )
+        created_contexts.append(context)
+        return context
+
+    def check_identity(*args, operation_context=None, **kwargs):  # noqa: ANN002, ANN003
+        identity_contexts.append(operation_context)
+        return original_check(
+            *args,
+            operation_context=operation_context,
+            **kwargs,
+        )
+
+    monkeypatch.setattr(
+        runtime.lean_projection,
+        "create_decl_dependency_resolution_context",
+        create_context,
+    )
+    monkeypatch.setattr(
+        runtime.lean_projection,
+        "check_decl_dependency_identity",
+        check_identity,
+    )
+    gate = ReadinessGateComponent(
+        runtime,
+        consistency=ProjectionPassConsistency(runtime),
+        content_readiness_provider=runtime.decl_graph,
+    )
+
+    completion = gate.check_content_node_completion(tmp_path, node_path=NODE_PATH)
+
+    assert completion.ok and completion.value is not None
+    assert len(created_contexts) == 1
+    assert identity_contexts == [created_contexts[0]]
+
+
 def test_content_completion_accepts_partial_declared_task_but_reports_repo_gap(
     tmp_path: Path,
 ) -> None:
@@ -642,6 +710,280 @@ def test_content_completion_accepts_stable_declared_provider_dependency(tmp_path
     assert completion.ok and completion.value is not None
     assert completion.value.ready_to_submit is True
     assert completion.value.target_proof_availability == ProofAvailability.PROVED
+
+
+def test_content_completion_shares_node_dependency_context_with_decl_identity(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime, consumer, _provider = _setup_stable_declared_provider_consumer(tmp_path)
+    original_create_node_context = runtime.node.dependency.create_evaluation_context
+    original_validate_node_deps = runtime.node.dependency.validate_node_deps
+    original_create_decl_context = (
+        runtime.lean_projection.create_decl_dependency_resolution_context
+    )
+    original_list_from_context = runtime.node.dependency.list_node_deps_from_context
+    original_list_node_deps = runtime.node.dependency.list_node_deps
+    node_contexts: list[object] = []
+    validated_contexts: list[object | None] = []
+    decl_node_contexts: list[object | None] = []
+    decl_contexts: list[object] = []
+    boundary_contexts: list[object] = []
+    standalone_boundary_reads = 0
+
+    def create_node_context(repo_root: Path):
+        created = original_create_node_context(repo_root)
+        assert created.ok and created.value is not None
+        node_contexts.append(created.value)
+        return created
+
+    def validate_node_deps(
+        repo_root: Path,
+        *,
+        node_path: str,
+        operation_context=None,
+    ):
+        validated_contexts.append(operation_context)
+        return original_validate_node_deps(
+            repo_root,
+            node_path=node_path,
+            operation_context=operation_context,
+        )
+
+    def create_decl_context(
+        repo_root: Path,
+        *,
+        node_path: str,
+        node_dependency_context=None,
+    ):
+        decl_node_contexts.append(node_dependency_context)
+        context = original_create_decl_context(
+            repo_root,
+            node_path=node_path,
+            node_dependency_context=node_dependency_context,
+        )
+        decl_contexts.append(context)
+        return context
+
+    def list_from_context(
+        repo_root: Path,
+        *,
+        node_path: str,
+        operation_context,
+    ):
+        boundary_contexts.append(operation_context)
+        return original_list_from_context(
+            repo_root,
+            node_path=node_path,
+            operation_context=operation_context,
+        )
+
+    def list_node_deps(repo_root: Path, *, node_path: str):
+        nonlocal standalone_boundary_reads
+        standalone_boundary_reads += 1
+        return original_list_node_deps(repo_root, node_path=node_path)
+
+    monkeypatch.setattr(
+        runtime.node.dependency,
+        "create_evaluation_context",
+        create_node_context,
+    )
+    monkeypatch.setattr(
+        runtime.node.dependency,
+        "validate_node_deps",
+        validate_node_deps,
+    )
+    monkeypatch.setattr(
+        runtime.lean_projection,
+        "create_decl_dependency_resolution_context",
+        create_decl_context,
+    )
+    monkeypatch.setattr(
+        runtime.node.dependency,
+        "list_node_deps_from_context",
+        list_from_context,
+    )
+    monkeypatch.setattr(
+        runtime.node.dependency,
+        "list_node_deps",
+        list_node_deps,
+    )
+    gate = ReadinessGateComponent(
+        runtime,
+        consistency=ProjectionPassConsistency(runtime),
+        content_readiness_provider=runtime.decl_graph,
+    )
+
+    completion = gate.check_content_node_completion(consumer, node_path=NODE_PATH)
+
+    assert completion.ok and completion.value is not None
+    assert completion.value.ready_to_submit is True
+    assert len(node_contexts) == 1
+    assert validated_contexts == [node_contexts[0]]
+    assert decl_node_contexts == [node_contexts[0]]
+    assert len(decl_contexts) == 1
+    assert decl_contexts[0].decl_ref_context is node_contexts[0].decl_ref_context
+    assert boundary_contexts == [node_contexts[0]]
+    assert standalone_boundary_reads == 0
+
+
+def test_content_completion_batches_cross_node_interfaces_by_provider(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime, consumer, provider = _setup_stable_declared_provider_consumer(tmp_path)
+    current = runtime.node.contract.get_edit_contract(consumer, node_path=NODE_PATH)
+    assert current.ok and current.value is not None
+    current.value.contract.interfaces = [
+        DeclInterface(
+            name="provider_main_result",
+            kind=DeclKind.THEOREM,
+            summary="Bound stable provider theorem.",
+            bound_decl=DeclRef(
+                repo="Provider",
+                node=NODE_PATH,
+                name="main_result",
+                revision=1,
+            ),
+        ),
+        DeclInterface(
+            name="provider_missing_result",
+            kind=DeclKind.THEOREM,
+            summary="Second provider position remains a typed blocker.",
+            bound_decl=DeclRef(
+                repo="Provider",
+                node=NODE_PATH,
+                name="missing_result",
+                revision=1,
+            ),
+        ),
+    ]
+    contract_path = runtime.node.node_tree.node_store.contract_path(
+        consumer,
+        node_id=current.value.node_id,
+        version=current.value.contract.version,
+    )
+    assert runtime.foundation.store.write_json_atomic(
+        contract_path,
+        current.value.contract,
+        mode=WriteMode.UPDATE_EXISTING,
+    ).ok
+    original = runtime.decl_graph.check_decl_proof_policy_batch
+    provider_batches: list[list[tuple[str, str, ProofAvailability]]] = []
+
+    def counted_batch(repo_root: Path, *, roots, **kwargs):
+        selected = list(roots)
+        if Path(repo_root).resolve() == provider.resolve():
+            provider_batches.append(selected)
+        return original(repo_root, roots=selected, **kwargs)
+
+    monkeypatch.setattr(
+        runtime.decl_graph,
+        "check_decl_proof_policy_batch",
+        counted_batch,
+    )
+    gate = ReadinessGateComponent(
+        runtime,
+        consistency=ProjectionPassConsistency(runtime),
+        content_readiness_provider=runtime.decl_graph,
+    )
+
+    completion = gate.check_content_node_completion(consumer, node_path=NODE_PATH)
+
+    assert completion.ok and completion.value is not None
+    assert completion.value.ready_to_submit is False
+    assert "content_decl_proof_policy_unsatisfied" in completion.value.blocking_issue_kinds
+    assert provider_batches == [
+        [
+            (NODE_PATH, "main_result", ProofAvailability.DECLARED),
+            (NODE_PATH, "missing_result", ProofAvailability.DECLARED),
+        ]
+    ]
+
+
+def test_content_completion_preserves_duplicate_external_interface_positions(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime, consumer, provider = _setup_stable_declared_provider_consumer(tmp_path)
+    duplicate_ref = DeclRef(
+        repo="Provider",
+        node=NODE_PATH,
+        name="missing_result",
+        revision=1,
+    )
+    current = runtime.node.contract.get_edit_contract(consumer, node_path=NODE_PATH)
+    assert current.ok and current.value is not None
+    current.value.contract.interfaces = [
+        DeclInterface(
+            name="first_position",
+            kind=DeclKind.THEOREM,
+            summary="First contract position.",
+            bound_decl=duplicate_ref,
+        ),
+        DeclInterface(
+            name="second_position",
+            kind=DeclKind.THEOREM,
+            summary="Second contract position.",
+            bound_decl=duplicate_ref,
+        ),
+    ]
+    contract_path = runtime.node.node_tree.node_store.contract_path(
+        consumer,
+        node_id=current.value.node_id,
+        version=current.value.contract.version,
+    )
+    assert runtime.foundation.store.write_json_atomic(
+        contract_path,
+        current.value.contract,
+        mode=WriteMode.UPDATE_EXISTING,
+    ).ok
+    before = contract_path.read_bytes()
+    original = runtime.decl_graph.check_decl_proof_policy_batch
+    provider_batches: list[list[tuple[str, str, ProofAvailability]]] = []
+
+    def counted_batch(repo_root: Path, *, roots, **kwargs):
+        selected = list(roots)
+        if Path(repo_root).resolve() == provider.resolve():
+            provider_batches.append(selected)
+        return original(repo_root, roots=selected, **kwargs)
+
+    monkeypatch.setattr(
+        runtime.decl_graph,
+        "check_decl_proof_policy_batch",
+        counted_batch,
+    )
+    gate = ReadinessGateComponent(
+        runtime,
+        consistency=ProjectionPassConsistency(runtime),
+        content_readiness_provider=runtime.decl_graph,
+    )
+
+    completion = gate.check_content_node_completion(consumer, node_path=NODE_PATH)
+
+    assert completion.ok and completion.value is not None
+    position_issues = [
+        issue
+        for issue in completion.value.gate.issues
+        if issue.kind == "content_decl_proof_policy_unsatisfied"
+        and issue.object_ref == "Provider:Main.Topic.Core:missing_result"
+    ]
+    assert [issue.field for issue in position_issues] == [
+        "interfaces.first_position.bound_decl",
+        "interfaces.second_position.bound_decl",
+    ]
+    assert [issue.details for issue in position_issues] == [
+        position_issues[0].details,
+        position_issues[0].details,
+    ]
+    assert provider_batches == [
+        [
+            (NODE_PATH, "missing_result", ProofAvailability.DECLARED),
+            (NODE_PATH, "missing_result", ProofAvailability.DECLARED),
+        ]
+    ]
+    assert completion.value.checked_decl_count == 2
+    assert contract_path.read_bytes() == before
 
 
 def test_external_readiness_stops_at_sufficient_release_availability_entry(

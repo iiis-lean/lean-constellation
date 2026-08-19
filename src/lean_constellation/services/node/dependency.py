@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
@@ -91,6 +92,26 @@ class InterfaceIdentityGateProvider(Protocol):
         contract: object | None = None,
     ) -> ServiceResult[GateReport]:
         ...
+
+
+@dataclass
+class NodeDependencyEvaluationContext:
+    """Caller-owned reads shared by one node-dependency operation."""
+
+    repo_root: Path
+    node_results: dict[str, ServiceResult[Any]] = field(default_factory=dict)
+    current_contract_results: dict[str, ServiceResult[Any]] = field(
+        default_factory=dict
+    )
+    visible_contract_results: dict[str, ServiceResult[Any]] = field(
+        default_factory=dict
+    )
+    content_public_results: dict[str, ServiceResult[Any]] = field(
+        default_factory=dict
+    )
+    local_graph: dict[str, set[str]] = field(default_factory=dict)
+    external_boundaries: ServiceResult[list[VisibleNodeBoundaryItem]] | None = None
+    decl_ref_context: object | None = None
 
 
 class DependencyComponent:
@@ -189,7 +210,31 @@ class DependencyComponent:
         current = self.contract.get_current_contract(repo_root, node_path=node_path)
         if not current.ok or current.value is None:
             return self.runtime.foundation.fail(current.issues)
-        deps = self._normalize_deps(current.value.contract.deps)
+        return self._node_deps_view(node_path=node_path, contract=current.value.contract)
+
+    def list_node_deps_from_context(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        operation_context: NodeDependencyEvaluationContext,
+    ) -> ServiceResult[NodeDepsView]:
+        """Render NodeDeps from an operation's already-captured current contract."""
+
+        context = self._evaluation_context(repo_root, operation_context)
+        if not context.ok or context.value is None:
+            return self.runtime.foundation.fail(context.issues)
+        current = self._current_contract_from_context(
+            repo_root,
+            node_path=node_path,
+            context=context.value,
+        )
+        if not current.ok or current.value is None:
+            return self.runtime.foundation.fail(current.issues)
+        return self._node_deps_view(node_path=node_path, contract=current.value.contract)
+
+    def _node_deps_view(self, *, node_path: str, contract: Any) -> ServiceResult[NodeDepsView]:
+        deps = self._normalize_deps(contract.deps)
         if not deps.ok or deps.value is None:
             return self.runtime.foundation.fail(deps.issues)
         views = [self._dep_view(index, dep) for index, dep in enumerate(deps.value)]
@@ -346,8 +391,56 @@ class DependencyComponent:
             warnings=persisted.issues,
         )
 
-    def validate_node_deps(self, repo_root: Path, *, node_path: str) -> ServiceResult[GateReport]:
-        current = self.contract.get_current_contract(repo_root, node_path=node_path)
+    def create_evaluation_context(
+        self,
+        repo_root: Path,
+    ) -> ServiceResult[NodeDependencyEvaluationContext]:
+        """Snapshot invariant dependency reads for one caller-owned operation."""
+
+        canonical_root = Path(repo_root).resolve(strict=False)
+        context = NodeDependencyEvaluationContext(
+            repo_root=canonical_root,
+            decl_ref_context=(
+                self.runtime.decl_graph.ref_compatibility.create_operation_context()
+            ),
+        )
+        tree = self.node_tree.get_node_tree(repo_root)
+        if not tree.ok or tree.value is None:
+            return self.runtime.foundation.ok(context, warnings=tree.issues)
+        for node in tree.value.nodes:
+            context.node_results[node.path] = self.runtime.foundation.ok(node)
+            current = self.contract.get_current_contract(
+                repo_root,
+                node_path=node.path,
+            )
+            context.current_contract_results[node.path] = current
+            if not current.ok or current.value is None:
+                continue
+            deps = self._normalize_deps(current.value.contract.deps)
+            if not deps.ok or deps.value is None:
+                continue
+            context.local_graph[node.path] = {
+                dep.target.node
+                for dep in deps.value
+                if dep.target.repo is None
+            }
+        return self.runtime.foundation.ok(context, warnings=tree.issues)
+
+    def validate_node_deps(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        operation_context: NodeDependencyEvaluationContext | None = None,
+    ) -> ServiceResult[GateReport]:
+        context = self._evaluation_context(repo_root, operation_context)
+        if not context.ok or context.value is None:
+            return self.runtime.foundation.fail(context.issues)
+        current = self._current_contract_from_context(
+            repo_root,
+            node_path=node_path,
+            context=context.value,
+        )
         if not current.ok or current.value is None:
             return self.runtime.foundation.fail(current.issues)
         deps = self._normalize_deps(current.value.contract.deps)
@@ -358,7 +451,10 @@ class DependencyComponent:
         warnings: list[ServiceIssue] = []
         external_boundaries: list[VisibleNodeBoundaryItem] = []
         if any(dep.target.repo is not None for dep in deps.value):
-            external = self._external_lake_boundaries(repo_root)
+            external = self._external_boundaries_from_context(
+                repo_root,
+                context=context.value,
+            )
             if not external.ok or external.value is None:
                 issues.extend(external.issues)
             else:
@@ -394,6 +490,36 @@ class DependencyComponent:
                         )
                     )
                     continue
+                resolvable_refs = [
+                    ref
+                    for ref in dep.expected_decl_refs
+                    if ref.repo == dep.target.repo
+                ]
+                resolved_refs = (
+                    self.runtime.decl_graph.ref_compatibility.resolve_public_decl_refs_batch(
+                        repo_root,
+                        refs=resolvable_refs,
+                        required_availability=ProofAvailability.DECLARED,
+                        operation_context=context.value.decl_ref_context,
+                    )
+                    if resolvable_refs
+                    else self.runtime.foundation.ok([])
+                )
+                replayed_refs = None
+                if not resolved_refs.ok or resolved_refs.value is None:
+                    replayed_refs = [
+                        self.runtime.decl_graph.ref_compatibility.resolve_public_decl_refs_batch(
+                            repo_root,
+                            refs=[ref],
+                            required_availability=ProofAvailability.DECLARED,
+                            operation_context=context.value.decl_ref_context,
+                        )
+                        for ref in resolvable_refs
+                    ]
+                    resolved_iter = iter(())
+                else:
+                    resolved_iter = iter(resolved_refs.value)
+                replayed_iter = iter(replayed_refs or [])
                 for ref in dep.expected_decl_refs:
                     if ref.repo != dep.target.repo:
                         issues.append(
@@ -407,22 +533,22 @@ class DependencyComponent:
                             )
                         )
                         continue
-                    resolved = self.runtime.decl_graph.ref_compatibility.resolve_public_decl_ref(
-                        repo_root,
-                        ref=ref,
-                        required_availability=ProofAvailability.DECLARED,
-                    )
-                    if not resolved.ok or resolved.value is None:
-                        issues.extend(resolved.issues)
-                        continue
-                    if not resolved.value.compatible:
+                    if replayed_refs is not None:
+                        replayed = next(replayed_iter)
+                        if not replayed.ok or replayed.value is None:
+                            issues.extend(replayed.issues)
+                            continue
+                        resolved = replayed.value[0]
+                    else:
+                        resolved = next(resolved_iter)
+                    if not resolved.compatible:
                         issues.append(
                             self.runtime.foundation.issue(
                                 "node_dep_external_expected_decl_incompatible",
                                 "Expected declaration is no longer compatible on the provider public boundary.",
                                 object_ref=f"{ref.repo}:{ref.node}:{ref.name}@{ref.revision}",
                                 field=dep_field,
-                                current=resolved.value.reason,
+                                current=resolved.reason,
                                 expected="compatible public declaration",
                             )
                         )
@@ -430,7 +556,11 @@ class DependencyComponent:
             if dep.target.node == node_path:
                 issues.append(self.runtime.foundation.issue("node_dep_self_dependency", "A node cannot depend on itself.", object_ref=node_path, field=dep_field))
                 continue
-            target_node = self.node_tree.get_node(repo_root, path=dep.target.node)
+            target_node = self._node_from_context(
+                repo_root,
+                node_path=dep.target.node,
+                context=context.value,
+            )
             if not target_node.ok or target_node.value is None:
                 issues.append(
                     self.runtime.foundation.issue(
@@ -441,7 +571,11 @@ class DependencyComponent:
                     )
                 )
                 continue
-            target_contract = self.contract.get_visible_contract(repo_root, node_path=dep.target.node)
+            target_contract = self._visible_contract_from_context(
+                repo_root,
+                node_path=dep.target.node,
+                context=context.value,
+            )
             if not target_contract.ok or target_contract.value is None:
                 issues.append(
                     self.runtime.foundation.issue(
@@ -467,9 +601,10 @@ class DependencyComponent:
                 continue
             target_public_refs = self._public_decl_refs(target_contract.value.contract)
             if target_node.value.kind == NodeKind.CONTENT and self.public_decl_provider is not None:
-                public = self.runtime.node.export.list_committed_content_public_decls(
+                public = self._content_public_from_context(
                     repo_root,
                     node_path=dep.target.node,
+                    context=context.value,
                 )
                 if not public.ok or public.value is None:
                     issues.extend(public.issues)
@@ -489,7 +624,11 @@ class DependencyComponent:
                             field=dep_field,
                         )
                     )
-            if self._has_local_dep_path(repo_root, start=dep.target.node, target=node_path):
+            if self._has_local_dep_path(
+                context.value.local_graph,
+                start=dep.target.node,
+                target=node_path,
+            ):
                 issues.append(
                     self.runtime.foundation.issue(
                         "node_dep_cycle",
@@ -513,13 +652,20 @@ class DependencyComponent:
         normalized_paths = [path.strip() for path in node_paths if path and path.strip()]
         if not normalized_paths:
             return self.runtime.foundation.fail(self.runtime.foundation.issue("content_batch_empty", "node_paths must be non-empty.", field="node_paths"))
+        context = self._evaluation_context(repo_root, None)
+        if not context.ok or context.value is None:
+            return self.runtime.foundation.fail(context.issues)
         issues: list[ServiceIssue] = []
         duplicates = sorted({path for path in normalized_paths if normalized_paths.count(path) > 1})
         for duplicate in duplicates:
             issues.append(self.runtime.foundation.issue("content_batch_duplicate", f"Duplicate content node in batch: {duplicate}", field="node_paths"))
         batch = set(normalized_paths)
         for path in normalized_paths:
-            node = self.node_tree.get_node(repo_root, path=path)
+            node = self._node_from_context(
+                repo_root,
+                node_path=path,
+                context=context.value,
+            )
             if not node.ok or node.value is None:
                 issues.append(self.runtime.foundation.issue("content_batch_node_missing", f"Content node is missing: {path}", object_ref=path))
                 continue
@@ -535,7 +681,11 @@ class DependencyComponent:
                 )
                 continue
             for target in sorted(batch - {path}):
-                if self._has_local_dep_path(repo_root, start=path, target=target):
+                if self._has_local_dep_path(
+                    context.value.local_graph,
+                    start=path,
+                    target=target,
+                ):
                     issues.append(
                         self.runtime.foundation.issue(
                             "content_batch_dependency_present",
@@ -880,8 +1030,104 @@ class DependencyComponent:
             warnings=warnings or [],
         )
 
-    def _has_local_dep_path(self, repo_root: Path, *, start: str, target: str) -> bool:
-        graph = self._local_dep_graph(repo_root)
+    def _evaluation_context(
+        self,
+        repo_root: Path,
+        operation_context: NodeDependencyEvaluationContext | None,
+    ) -> ServiceResult[NodeDependencyEvaluationContext]:
+        canonical_root = Path(repo_root).resolve(strict=False)
+        if operation_context is None:
+            return self.create_evaluation_context(repo_root)
+        if operation_context.repo_root != canonical_root:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "node_dependency_evaluation_context_mismatch",
+                    "Node dependency context belongs to another repository operation.",
+                    object_ref=str(canonical_root),
+                    current=str(operation_context.repo_root),
+                    expected=str(canonical_root),
+                )
+            )
+        return self.runtime.foundation.ok(operation_context)
+
+    def _node_from_context(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        context: NodeDependencyEvaluationContext,
+    ) -> ServiceResult[Any]:
+        cached = context.node_results.get(node_path)
+        if cached is None:
+            cached = self.node_tree.get_node(repo_root, path=node_path)
+            context.node_results[node_path] = cached
+        return cached
+
+    def _current_contract_from_context(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        context: NodeDependencyEvaluationContext,
+    ) -> ServiceResult[Any]:
+        cached = context.current_contract_results.get(node_path)
+        if cached is None:
+            cached = self.contract.get_current_contract(
+                repo_root,
+                node_path=node_path,
+            )
+            context.current_contract_results[node_path] = cached
+        return cached
+
+    def _visible_contract_from_context(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        context: NodeDependencyEvaluationContext,
+    ) -> ServiceResult[Any]:
+        cached = context.visible_contract_results.get(node_path)
+        if cached is None:
+            cached = self.contract.get_visible_contract(
+                repo_root,
+                node_path=node_path,
+            )
+            context.visible_contract_results[node_path] = cached
+        return cached
+
+    def _content_public_from_context(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        context: NodeDependencyEvaluationContext,
+    ) -> ServiceResult[Any]:
+        cached = context.content_public_results.get(node_path)
+        if cached is None:
+            cached = self.runtime.node.export.list_committed_content_public_decls(
+                repo_root,
+                node_path=node_path,
+            )
+            context.content_public_results[node_path] = cached
+        return cached
+
+    def _external_boundaries_from_context(
+        self,
+        repo_root: Path,
+        *,
+        context: NodeDependencyEvaluationContext,
+    ) -> ServiceResult[list[VisibleNodeBoundaryItem]]:
+        if context.external_boundaries is None:
+            context.external_boundaries = self._external_lake_boundaries(repo_root)
+        return context.external_boundaries
+
+    def _has_local_dep_path(
+        self,
+        graph: dict[str, set[str]],
+        *,
+        start: str,
+        target: str,
+    ) -> bool:
         stack = list(graph.get(start, set()))
         seen: set[str] = set()
         while stack:
@@ -893,21 +1139,6 @@ class DependencyComponent:
             seen.add(node)
             stack.extend(graph.get(node, set()) - seen)
         return False
-
-    def _local_dep_graph(self, repo_root: Path) -> dict[str, set[str]]:
-        tree = self.node_tree.get_node_tree(repo_root)
-        if not tree.ok or tree.value is None:
-            return {}
-        graph: dict[str, set[str]] = {}
-        for node in tree.value.nodes:
-            current = self.contract.get_current_contract(repo_root, node_path=node.path)
-            if not current.ok or current.value is None:
-                continue
-            deps = self._normalize_deps(current.value.contract.deps)
-            if not deps.ok or deps.value is None:
-                continue
-            graph[node.path] = {dep.target.node for dep in deps.value if dep.target.repo is None}
-        return graph
 
     def _check_remove_permission(self, node_path: str, target_actor: NodeDepActor, actor: NodeDepActor) -> ServiceResult[None]:
         return self._check_mutation_permission(node_path, target_actor, actor)

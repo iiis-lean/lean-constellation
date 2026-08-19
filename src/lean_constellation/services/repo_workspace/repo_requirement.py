@@ -640,11 +640,12 @@ class RepoRequirementComponent:
                     )
                 ]
             )
-        issues = []
-        for interface in requirement.interfaces:
+        issue_slots = [[] for _interface in requirement.interfaces]
+        proof_candidates = []
+        for index, interface in enumerate(requirement.interfaces):
             bound_ref = bindings.value.get(interface.name)
             if bound_ref is None:
-                issues.append(
+                issue_slots[index].append(
                     self.runtime.foundation.issue(
                         "provider_interface_missing",
                         "Provider repo is missing a bound requested requirement interface.",
@@ -670,7 +671,7 @@ class RepoRequirementComponent:
                 )
             ]
             if not matches:
-                issues.append(
+                issue_slots[index].append(
                     self.runtime.foundation.issue(
                         "provider_interface_not_exported",
                         "Provider interface binding is not present in the public Main exports.",
@@ -685,7 +686,7 @@ class RepoRequirementComponent:
                 None,
             )
             if valid_match is None:
-                issues.append(
+                issue_slots[index].append(
                     self.runtime.foundation.issue(
                         "provider_interface_invalid",
                         "Provider repo public interface exists but is not currently valid.",
@@ -703,7 +704,7 @@ class RepoRequirementComponent:
             if not decl.ok or decl.value is None:
                 return self.runtime.foundation.fail(decl.issues)
             if not decl_kind_compatible(interface.kind, decl.value.kind):
-                issues.append(
+                issue_slots[index].append(
                     self.runtime.foundation.issue(
                         "provider_interface_kind_mismatch",
                         "Provider repo public interface has a different declaration kind than requested.",
@@ -723,30 +724,40 @@ class RepoRequirementComponent:
                 revision=valid_match[1],
             )
             if not statement_contract.ok:
-                issues.extend(statement_contract.issues)
+                issue_slots[index].extend(statement_contract.issues)
                 continue
-            satisfied = self.runtime.decl_graph.check_decl_proof_policy_satisfied(
+            proof_candidates.append((index, interface, valid_match[0]))
+        if proof_candidates:
+            satisfied = self.runtime.decl_graph.check_decl_proof_policy_batch(
                 provider_root,
-                node_path=valid_match[0].node,
-                decl_name=valid_match[0].name,
-                target_proof_availability=target,
+                roots=[
+                    (ref.node, ref.name, target)
+                    for _index, _interface, ref in proof_candidates
+                ],
             )
             if not satisfied.ok or satisfied.value is None:
                 return self.runtime.foundation.fail(satisfied.issues)
-            if not satisfied.value.ready:
-                blocker = satisfied.value.blocker
-                issues.append(
+            for (index, interface, ref), report in zip(
+                proof_candidates,
+                satisfied.value,
+                strict=True,
+            ):
+                if report.ready:
+                    continue
+                blocker = report.blocker
+                issue_slots[index].append(
                     self.runtime.foundation.issue(
                         "provider_interface_proof_policy_unsatisfied",
                         "Provider public interface does not satisfy the provider proof availability policy.",
-                        object_ref=f"{provider_key}:{valid_match[0].node}:{valid_match[0].name}",
+                        object_ref=f"{provider_key}:{ref.node}:{ref.name}",
                         field=interface.name,
                         details={
                             "reason": blocker.reason.value if blocker is not None else "unknown",
-                            "message": blocker.message if blocker is not None else satisfied.value.summary,
+                            "message": blocker.message if blocker is not None else report.summary,
                         },
                     )
                 )
+        issues = [issue for slot in issue_slots for issue in slot]
         if issues:
             return self.runtime.foundation.fail(issues)
         return self.runtime.foundation.ok(None)

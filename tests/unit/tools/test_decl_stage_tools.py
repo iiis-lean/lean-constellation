@@ -62,6 +62,7 @@ from lean_constellation.tools.internal.decl_stage import (
     _add_proof_repo_dependencies,
     _assert_proof_decl_dep_visible,
     _resolve_proof_decl_deps_batch,
+    _resolve_statement_decl_deps_batch,
     _add_proof_resource_origin,
     _add_proof_source_origin,
     _add_statement_mathlib_dependencies,
@@ -211,6 +212,114 @@ def test_proof_dependency_batch_reads_each_provider_public_list_once() -> None:
         for item in dependencies
     ]
     assert [ref.name for ref in legacy_refs] == [dep.ref.name for dep in resolved]
+    assert public_access.repo_calls == 2
+
+
+def test_statement_repo_dependency_batch_reads_each_provider_public_list_once(
+    monkeypatch,
+) -> None:
+    class _Result:
+        def __init__(self, *, ok: bool, value=None, issues=None) -> None:  # noqa: ANN001
+            self.ok = ok
+            self.value = value
+            self.issues = list(issues or [])
+
+    class _Foundation:
+        class _Layout:
+            @staticmethod
+            def ensure_safe_key(value: str) -> str:
+                return value
+
+        layout = _Layout()
+
+        @staticmethod
+        def ok(value=None, **_kwargs):  # noqa: ANN001
+            return _Result(ok=True, value=value)
+
+        @staticmethod
+        def fail(issues):  # noqa: ANN001
+            return _Result(ok=False, issues=[issues] if not isinstance(issues, list) else issues)
+
+        @staticmethod
+        def issue(kind, message, **kwargs):  # noqa: ANN001
+            return SimpleNamespace(kind=kind, message=message, **kwargs)
+
+    class _PublicAccess:
+        def __init__(self) -> None:
+            self.repo_calls = 0
+
+        def list_repo_public_decls(self, *_args, **_kwargs):  # noqa: ANN002, ANN003
+            self.repo_calls += 1
+            return _Result(
+                ok=True,
+                value=[
+                    SimpleNamespace(
+                        ref=DeclRef(
+                            repo="Provider",
+                            node="Main",
+                            name=name,
+                            revision=1,
+                        )
+                    )
+                    for name in ("HelperA", "HelperB")
+                ],
+            )
+
+    public_access = _PublicAccess()
+    runtime = SimpleNamespace(
+        foundation=_Foundation(),
+        node=SimpleNamespace(public_decl_access=public_access),
+    )
+    ctx = SimpleNamespace(
+        repo_root=Path("/tmp/repo"),
+        node=SimpleNamespace(node_path="Main.Topic"),
+        actor=SimpleNamespace(role="worker"),
+    )
+    dependencies = [
+        RepoDeclDependencyInput(repository="Provider", name="HelperA"),
+        RepoDeclDependencyInput(repository="Provider", name="HelperB"),
+    ]
+
+    resolved = _resolve_statement_decl_deps_batch(
+        runtime,
+        ctx,
+        dependencies,
+        decl_name="Target",
+        round_id="round_1",
+    )
+
+    assert resolved.ok and resolved.value is not None
+    assert [dep.ref.name for dep in resolved.value] == ["HelperA", "HelperB"]
+    assert public_access.repo_calls == 1
+
+    import lean_constellation.tools.internal.decl_stage as decl_stage_module
+
+    monkeypatch.setattr(
+        decl_stage_module,
+        "_dependency_mutation_round",
+        lambda *_args, **_kwargs: runtime.foundation.ok("round_1"),
+    )
+    monkeypatch.setattr(
+        decl_stage_module,
+        "_apply_dependency_capture_policy",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("failed visibility must not reach mutation")
+        ),
+    )
+    failed = _add_statement_repo_dependencies(
+        runtime,
+        ctx,
+        RepoDeclDependenciesAddArgs(
+            decl_name="Target",
+            dependencies=[
+                RepoDeclDependencyInput(repository="Provider", name="HelperA"),
+                RepoDeclDependencyInput(repository="Provider", name="Missing"),
+            ],
+        ),
+    )
+
+    assert not failed.ok
+    assert failed.issues[0].kind == "statement_dep_not_visible"
     assert public_access.repo_calls == 2
 
 
