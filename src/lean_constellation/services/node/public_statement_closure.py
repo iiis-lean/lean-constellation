@@ -594,6 +594,9 @@ class PublicStatementClosureComponent:
         roots: list[DeclRef],
         options: _InspectionOptions,
     ) -> ServiceResult[PublicStatementClosureReport]:
+        operation_context = (
+            self.runtime.decl_graph.ref_compatibility.create_operation_context()
+        )
         queue: deque[tuple[DeclRef, DeclRef | None]] = deque(
             (root, None) for root in roots
         )
@@ -608,7 +611,11 @@ class PublicStatementClosureComponent:
                 key = (ref.repo, ref.node, ref.name)
                 if key in external:
                     continue
-                provider_public = self._external_public(repo_root, ref)
+                provider_public = self._external_public(
+                    repo_root,
+                    ref,
+                    operation_context=operation_context,
+                )
                 external[key] = PublicStatementExternalCheck(
                     ref=ref,
                     provider_public=provider_public,
@@ -647,6 +654,7 @@ class PublicStatementClosureComponent:
                         options.visible_contracts
                         or stable_intermediate
                     ),
+                    operation_context=operation_context,
                 )
                 if not exported.ok or exported.value is None:
                     if not (
@@ -1483,23 +1491,30 @@ class PublicStatementClosureComponent:
             )
         )
 
-    def _external_public(self, repo_root: Path, ref: DeclRef) -> bool:
+    def _external_public(
+        self,
+        repo_root: Path,
+        ref: DeclRef,
+        *,
+        operation_context,
+    ) -> bool:
         if ref.repo is None:
             return False
         config = self.runtime.repo_workspace.metadata.get_repo_config(repo_root)
         if not config.ok or config.value is None:
             return False
-        resolved = self.runtime.decl_graph.ref_compatibility.resolve_public_decl_ref(
+        resolved = self.runtime.decl_graph.ref_compatibility.resolve_public_decl_refs_batch(
             repo_root,
-            ref=ref,
+            refs=[ref],
             required_availability=proof_availability_for_completion_mode(
                 config.value.config.completion_mode
             ),
+            operation_context=operation_context,
         )
         return bool(
             resolved.ok
             and resolved.value is not None
-            and resolved.value.compatible
+            and resolved.value[0].compatible
         )
 
     def _required_export_scopes(
@@ -1526,6 +1541,7 @@ class PublicStatementClosureComponent:
         scope_path: str,
         ref: DeclRef,
         visible: bool,
+        operation_context=None,
     ) -> ServiceResult[bool]:
         contract = (
             self.runtime.node.contract.get_visible_contract(repo_root, node_path=scope_path)
@@ -1539,8 +1555,19 @@ class PublicStatementClosureComponent:
                 continue
             if exported.revision == ref.revision:
                 return self.runtime.foundation.ok(True)
-            expected = self._resolve_semantic_ref(repo_root, ref)
-            candidate = self._resolve_semantic_ref(repo_root, exported)
+            context = operation_context or (
+                self.runtime.decl_graph.ref_compatibility.create_operation_context()
+            )
+            expected = self._resolve_semantic_ref(
+                repo_root,
+                ref,
+                operation_context=context,
+            )
+            candidate = self._resolve_semantic_ref(
+                repo_root,
+                exported,
+                operation_context=context,
+            )
             if not expected.ok or expected.value is None:
                 return self.runtime.foundation.fail(expected.issues)
             if not candidate.ok or candidate.value is None:
@@ -1558,17 +1585,23 @@ class PublicStatementClosureComponent:
         self,
         repo_root: Path,
         ref: DeclRef,
+        *,
+        operation_context,
     ):
         config = self.runtime.repo_workspace.metadata.get_repo_config(repo_root)
         if not config.ok or config.value is None:
             return self.runtime.foundation.fail(config.issues)
-        return self.runtime.decl_graph.ref_compatibility.resolve_decl_ref(
+        resolved = self.runtime.decl_graph.ref_compatibility.resolve_decl_refs_batch(
             repo_root,
-            ref=ref,
+            refs=[ref],
             required_availability=proof_availability_for_completion_mode(
                 config.value.config.completion_mode
             ),
+            operation_context=operation_context,
         )
+        if not resolved.ok or resolved.value is None:
+            return self.runtime.foundation.fail(resolved.issues)
+        return self.runtime.foundation.ok(resolved.value[0], warnings=resolved.issues)
 
     def _current_ref(self, repo_root: Path, ref: DeclRef) -> DeclRef:
         if ref.repo is not None:

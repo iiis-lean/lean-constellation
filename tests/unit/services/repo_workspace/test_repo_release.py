@@ -767,6 +767,52 @@ def _prepare_native_provider(workspace: Path, *, exported: bool = True):
     return runtime, provider_root
 
 
+def _prepare_native_provider_with_two_exports(workspace: Path):
+    runtime, provider_root = _prepare_native_provider(workspace)
+    _write_decl(
+        provider_root,
+        node_path="Main.Results",
+        name="PublicSecond",
+    )
+    results = runtime.node.contract.get_visible_contract(
+        provider_root,
+        node_path="Main.Results",
+    )
+    assert results.ok and results.value is not None
+    results.value.contract.decl_graph_head["PublicSecond"] = 1
+    assert runtime.foundation.store.write_json_atomic(
+        runtime.node.node_tree.node_store.contract_path(
+            provider_root,
+            node_id=results.value.node_id,
+            version=results.value.version,
+        ),
+        results.value.contract,
+        mode=WriteMode.UPDATE_EXISTING,
+    ).ok
+    refs = [
+        DeclRef(
+            repo="Provider",
+            node="Main.Results",
+            name="PublicResult",
+            revision=1,
+        ),
+        DeclRef(
+            repo="Provider",
+            node="Main.Results",
+            name="PublicSecond",
+            revision=1,
+        ),
+    ]
+    _set_contract_exports(
+        runtime,
+        provider_root,
+        node_path="Main",
+        exports=[ref.model_copy(update={"repo": None}) for ref in refs],
+    )
+    publish_native_provider_release(runtime, provider_root, release_id="provider_r2")
+    return runtime, provider_root, refs
+
+
 def test_release_baseline_requires_exact_intermediate_scope_export_chain(tmp_path: Path) -> None:
     runtime, versions = _prepare_release_repo(tmp_path)
     support = DeclRef(node="Main.Foundation.Defs", name="Support", revision=1)
@@ -938,6 +984,258 @@ def test_release_external_statement_dep_requires_native_main_public_export(tmp_p
     )
 
     assert result.ok
+
+
+def test_native_release_external_closure_batches_shared_provider_boundary(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _provider_runtime, _provider_root, refs = (
+        _prepare_native_provider_with_two_exports(tmp_path)
+    )
+    consumer_root = tmp_path / "Consumer"
+    runtime, versions = _prepare_release_repo(consumer_root)
+    for ref in refs:
+        _add_external_statement_dep(runtime, consumer_root, ref)
+    assert runtime.repo_workspace.release.create_release(
+        consumer_root,
+        release=_release("consumer_r1", versions),
+    ).ok
+    resolver = runtime.decl_graph.ref_compatibility
+    original_batch = resolver.resolve_public_decl_refs_batch
+    original_boundary = resolver._load_public_boundary_context
+    batch_sizes: list[int] = []
+    context_ids: list[int] = []
+    boundary_reads = 0
+
+    def record_batch(*args, **kwargs):  # noqa: ANN001, ANN202
+        batch_sizes.append(len(kwargs["refs"]))
+        context_ids.append(id(kwargs["operation_context"]))
+        return original_batch(*args, **kwargs)
+
+    def count_boundary(*args, **kwargs):  # noqa: ANN001, ANN202
+        nonlocal boundary_reads
+        boundary_reads += 1
+        return original_boundary(*args, **kwargs)
+
+    monkeypatch.setattr(resolver, "resolve_public_decl_refs_batch", record_batch)
+    monkeypatch.setattr(resolver, "_load_public_boundary_context", count_boundary)
+    monkeypatch.setattr(
+        resolver,
+        "resolve_public_decl_ref",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("release closure must not call the public single wrapper")
+        ),
+    )
+
+    result = runtime.repo_workspace.release.resolve_release_baseline(
+        consumer_root,
+        release_id="consumer_r1",
+    )
+
+    assert result.ok
+    assert batch_sizes == [2]
+    assert len(set(context_ids)) == 1
+    assert boundary_reads == 1
+
+
+def test_native_release_external_closure_hard_batch_failure_replays_in_order(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _provider_runtime, _provider_root, refs = (
+        _prepare_native_provider_with_two_exports(tmp_path)
+    )
+    consumer_root = tmp_path / "Consumer"
+    runtime, versions = _prepare_release_repo(consumer_root)
+    for ref in refs:
+        _add_external_statement_dep(runtime, consumer_root, ref)
+    assert runtime.repo_workspace.release.create_release(
+        consumer_root,
+        release=_release("consumer_r1", versions),
+    ).ok
+    resolver = runtime.decl_graph.ref_compatibility
+    original_batch = resolver.resolve_public_decl_refs_batch
+    batch_sizes: list[int] = []
+    context_ids: list[int] = []
+    failed_multi = False
+
+    def fail_first_multi(*args, **kwargs):  # noqa: ANN001, ANN202
+        nonlocal failed_multi
+        size = len(kwargs["refs"])
+        batch_sizes.append(size)
+        context_ids.append(id(kwargs["operation_context"]))
+        if size > 1 and not failed_multi:
+            failed_multi = True
+            return runtime.foundation.fail(
+                runtime.foundation.issue(
+                    "public_decl_batch_fixture_failure",
+                    "Exercise same-context public fallback.",
+                )
+            )
+        return original_batch(*args, **kwargs)
+
+    monkeypatch.setattr(resolver, "resolve_public_decl_refs_batch", fail_first_multi)
+    monkeypatch.setattr(
+        resolver,
+        "resolve_public_decl_ref",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("hard-batch fallback must use the batch-of-one core")
+        ),
+    )
+
+    result = runtime.repo_workspace.release.resolve_release_baseline(
+        consumer_root,
+        release_id="consumer_r1",
+    )
+
+    assert result.ok
+    assert batch_sizes == [2, 1, 1]
+    assert len(set(context_ids)) == 1
+
+
+def test_adapter_release_external_closure_batches_shared_provider_boundary(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _provider_runtime, _provider_root, refs = (
+        _prepare_native_provider_with_two_exports(tmp_path)
+    )
+    consumer_root = tmp_path / "AdapterConsumer"
+    runtime, versions = _prepare_adapter_release_repo(consumer_root)
+    revision = runtime.decl_graph.get_decl_revision(
+        consumer_root,
+        node_path="Main",
+        name="PublicResult",
+        revision=1,
+    )
+    assert revision.ok and revision.value is not None
+    revision.value.statement.deps.extend(RepoDeclDep(ref=ref) for ref in refs)
+    assert runtime.foundation.store.write_json_atomic(
+        runtime.decl_graph.graph_store.revision_path(
+            consumer_root,
+            node_path="Main",
+            decl_name="PublicResult",
+            revision=1,
+        ),
+        revision.value,
+        mode=WriteMode.UPDATE_EXISTING,
+    ).ok
+    assert runtime.repo_workspace.release.create_release(
+        consumer_root,
+        release=_release("consumer_r1", versions),
+    ).ok
+    resolver = runtime.decl_graph.ref_compatibility
+    original_batch = resolver.resolve_public_decl_refs_batch
+    batch_sizes: list[int] = []
+    context_ids: list[int] = []
+
+    def record_batch(*args, **kwargs):  # noqa: ANN001, ANN202
+        batch_sizes.append(len(kwargs["refs"]))
+        context_ids.append(id(kwargs["operation_context"]))
+        return original_batch(*args, **kwargs)
+
+    monkeypatch.setattr(resolver, "resolve_public_decl_refs_batch", record_batch)
+    monkeypatch.setattr(
+        resolver,
+        "resolve_public_decl_ref",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("adapter closure must not call the public single wrapper")
+        ),
+    )
+
+    result = runtime.repo_workspace.release.resolve_release_baseline(
+        consumer_root,
+        release_id="consumer_r1",
+    )
+
+    assert result.ok
+    assert batch_sizes == [2]
+    assert len(set(context_ids)) == 1
+
+
+def test_adapter_release_external_closure_hard_batch_failure_replays_first_issue(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _provider_runtime, _provider_root, refs = (
+        _prepare_native_provider_with_two_exports(tmp_path)
+    )
+    consumer_root = tmp_path / "AdapterConsumer"
+    runtime, versions = _prepare_adapter_release_repo(consumer_root)
+    revision = runtime.decl_graph.get_decl_revision(
+        consumer_root,
+        node_path="Main",
+        name="PublicResult",
+        revision=1,
+    )
+    assert revision.ok and revision.value is not None
+    revision.value.statement.deps.extend(RepoDeclDep(ref=ref) for ref in refs)
+    assert runtime.foundation.store.write_json_atomic(
+        runtime.decl_graph.graph_store.revision_path(
+            consumer_root,
+            node_path="Main",
+            decl_name="PublicResult",
+            revision=1,
+        ),
+        revision.value,
+        mode=WriteMode.UPDATE_EXISTING,
+    ).ok
+    assert runtime.repo_workspace.release.create_release(
+        consumer_root,
+        release=_release("consumer_r1", versions),
+    ).ok
+    resolver = runtime.decl_graph.ref_compatibility
+    batch_sizes: list[int] = []
+    context_ids: list[int] = []
+
+    def fail_multi_then_first_ref(*args, **kwargs):  # noqa: ANN001, ANN202
+        batch_refs = kwargs["refs"]
+        batch_sizes.append(len(batch_refs))
+        context_ids.append(id(kwargs["operation_context"]))
+        if len(batch_refs) > 1:
+            return runtime.foundation.fail(
+                runtime.foundation.issue(
+                    "public_decl_batch_fixture_failure",
+                    "Exercise Adapter same-context public fallback.",
+                )
+            )
+        assert batch_refs == [refs[0]]
+        return runtime.foundation.fail(
+            runtime.foundation.issue(
+                "adapter_public_decl_fixture_failure",
+                "Preserve the first Adapter dependency failure.",
+                object_ref="fixture:first",
+                current="fixture-current",
+            )
+        )
+
+    monkeypatch.setattr(
+        resolver,
+        "resolve_public_decl_refs_batch",
+        fail_multi_then_first_ref,
+    )
+    monkeypatch.setattr(
+        resolver,
+        "resolve_public_decl_ref",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("adapter hard fallback must not call the public single wrapper")
+        ),
+    )
+
+    result = runtime.repo_workspace.release.resolve_release_baseline(
+        consumer_root,
+        release_id="consumer_r1",
+    )
+
+    assert not result.ok
+    assert batch_sizes == [2, 1]
+    assert len(set(context_ids)) == 1
+    assert result.issues[0].kind == "release_external_ref_unavailable"
+    assert result.issues[0].object_ref == (
+        f"{refs[0].repo}:{refs[0].node}:{refs[0].name}@{refs[0].revision}"
+    )
+    assert result.issues[0].current == "adapter_public_decl_fixture_failure"
 
 
 def test_release_external_statement_dep_rejects_missing_or_unexported_provider(tmp_path: Path) -> None:

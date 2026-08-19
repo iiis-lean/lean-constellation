@@ -73,6 +73,7 @@ class RepoReleaseAuditContext:
     release_contracts: dict[tuple[str, str], NodeContract] = field(
         default_factory=dict
     )
+    decl_ref_context: object | None = None
 
 
 class RepoReleaseComponent:
@@ -385,12 +386,19 @@ class RepoReleaseComponent:
         """Freeze current latest release truth for one caller-owned operation."""
 
         repo_root = Path(repo_root).resolve()
+        resolution_context = (
+            self.runtime.decl_graph.ref_compatibility.create_operation_context()
+        )
         latest = self.get_latest_release(repo_root)
         if not latest.ok:
             return self.runtime.foundation.fail(latest.issues)
         if latest.value is None:
             return self.runtime.foundation.ok(
-                RepoReleaseAuditContext(repo_root=repo_root, release_id=None)
+                RepoReleaseAuditContext(
+                    repo_root=repo_root,
+                    release_id=None,
+                    decl_ref_context=resolution_context,
+                )
             )
         release_id = latest.value.release.release_id
         lineage = self.resolve_release_lineage(repo_root, release_id=release_id)
@@ -402,9 +410,6 @@ class RepoReleaseComponent:
             return self.runtime.foundation.fail(node_index.issues)
         release_nodes_by_id: dict[str, list[tuple[NodeMetadata, NodeContract]]] = {}
         node_ids_by_path = dict(node_index.value.active_path_to_node_id)
-        resolution_context = (
-            self.runtime.decl_graph.ref_compatibility.create_operation_context()
-        )
         for release in lineage.value:
             loaded = self._release_nodes(repo_root, release)
             if not loaded.ok or loaded.value is None:
@@ -467,6 +472,7 @@ class RepoReleaseComponent:
                 latest_private_states=latest_private_states,
                 released_head_revisions=released_head_revisions,
                 release_contracts=release_contracts,
+                decl_ref_context=resolution_context,
             )
         )
 
@@ -487,6 +493,10 @@ class RepoReleaseComponent:
                     current=str(audit_context.repo_root),
                     expected=str(canonical_root),
                 )
+            )
+        if audit_context.decl_ref_context is None:
+            audit_context.decl_ref_context = (
+                self.runtime.decl_graph.ref_compatibility.create_operation_context()
             )
         return self.runtime.foundation.ok(audit_context)
 
@@ -839,10 +849,11 @@ class RepoReleaseComponent:
                 available = (
                     self.runtime.foundation.ok(cached)
                     if cached is not None
-                    else self.runtime.decl_graph.ref_compatibility.resolve_public_decl_ref(
+                    else self._resolve_public_release_ref_with_context(
                         repo_root,
                         ref=ref,
                         required_availability=ProofAvailability.DECLARED,
+                        operation_context=resolution_context,
                     )
                 )
                 if (
@@ -989,13 +1000,49 @@ class RepoReleaseComponent:
             )
         queue = list(contract.exports)
         seen: set[tuple[str, str, int]] = set()
+        resolved_external: dict[
+            tuple[str | None, str, str, int], ResolvedDeclRefView
+        ] = {}
+
+        def ref_key(ref: DeclRef) -> tuple[str | None, str, str, int]:
+            return (ref.repo, ref.node, ref.name, ref.revision)
+
+        def prime_external(refs: list[DeclRef]) -> None:
+            pending = [
+                ref
+                for ref in refs
+                if ref.repo is not None and ref_key(ref) not in resolved_external
+            ]
+            if not pending:
+                return
+            resolved = (
+                self.runtime.decl_graph.ref_compatibility.resolve_public_decl_refs_batch(
+                    repo_root,
+                    refs=pending,
+                    required_availability=ProofAvailability.DECLARED,
+                    operation_context=resolution_context,
+                )
+            )
+            if resolved.ok and resolved.value is not None:
+                resolved_external.update(
+                    (ref_key(ref), value)
+                    for ref, value in zip(pending, resolved.value, strict=True)
+                )
+
+        prime_external(queue)
         while queue:
             ref = queue.pop(0)
             if ref.repo is not None:
-                available = self.runtime.decl_graph.ref_compatibility.resolve_public_decl_ref(
-                    repo_root,
-                    ref=ref,
-                    required_availability=ProofAvailability.DECLARED,
+                cached = resolved_external.get(ref_key(ref))
+                available = (
+                    self.runtime.foundation.ok(cached)
+                    if cached is not None
+                    else self._resolve_public_release_ref_with_context(
+                        repo_root,
+                        ref=ref,
+                        required_availability=ProofAvailability.DECLARED,
+                        operation_context=resolution_context,
+                    )
                 )
                 if (
                     not available.ok
@@ -1092,9 +1139,13 @@ class RepoReleaseComponent:
             )
             protected_node_ids.add(main.node_id)
             protected_scope_paths.add("Main")
-            for dep in revision.value.statement.deps:
-                if isinstance(dep, RepoDeclDep):
-                    queue.append(dep.ref)
+            statement_refs = [
+                dep.ref
+                for dep in revision.value.statement.deps
+                if isinstance(dep, RepoDeclDep)
+            ]
+            prime_external(statement_refs)
+            queue.extend(statement_refs)
         return self.runtime.foundation.ok(None)
 
     def _validate_release_scope_chain(
@@ -1186,6 +1237,28 @@ class RepoReleaseComponent:
             required_availability=ProofAvailability.DECLARED,
             target=RepoReleaseHeads(release_id=release_id),
             operation_context=operation_context,
+        )
+        if not resolved.ok or resolved.value is None:
+            return self.runtime.foundation.fail(resolved.issues)
+        return self.runtime.foundation.ok(resolved.value[0], warnings=resolved.issues)
+
+    def _resolve_public_release_ref_with_context(
+        self,
+        repo_root: Path,
+        *,
+        ref: DeclRef,
+        required_availability: ProofAvailability,
+        operation_context,
+    ) -> ServiceResult[ResolvedDeclRefView]:
+        """Resolve one public release ref through the shared batch core."""
+
+        resolved = (
+            self.runtime.decl_graph.ref_compatibility.resolve_public_decl_refs_batch(
+                repo_root,
+                refs=[ref],
+                required_availability=required_availability,
+                operation_context=operation_context,
+            )
         )
         if not resolved.ok or resolved.value is None:
             return self.runtime.foundation.fail(resolved.issues)

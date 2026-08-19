@@ -6,11 +6,17 @@ from pathlib import Path
 from lean_constellation.domain.interface import DeclInterface, DeclKind
 from lean_constellation.domain.refs import DeclRef
 from lean_constellation.domain.repo import RepoPublicationState, RepoPublicationStatus
-from lean_constellation.services.decl_graph.models import DeclLifecycle, DeclState
+from lean_constellation.services.decl_graph.models import (
+    DeclLifecycle,
+    DeclState,
+    RepoDeclDep,
+)
 from lean_constellation.services.foundation import WriteMode
 from lean_constellation.services.node import NodeContractStatus
 from tests.unit.services.repo_workspace.test_repo_release import (
+    _add_external_statement_dep,
     _prepare_adapter_release_repo,
+    _prepare_native_provider_with_two_exports,
     _prepare_release_repo,
     _release,
     _write_decl,
@@ -348,6 +354,141 @@ def test_wrong_repo_audit_context_is_typed_and_does_not_mutate(
         if path.is_file()
     }
     assert after == before
+
+
+def test_content_head_external_dependencies_share_audit_decl_ref_context(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _provider_runtime, _provider_root, refs = (
+        _prepare_native_provider_with_two_exports(tmp_path)
+    )
+    consumer_root = tmp_path / "Consumer"
+    runtime, _versions = _prepare_release_repo(consumer_root)
+    _add_external_statement_dep(runtime, consumer_root, refs[0])
+    revision = runtime.decl_graph.get_decl_revision(
+        consumer_root,
+        node_path="Main.Results",
+        name="PublicResult",
+        revision=1,
+    )
+    assert revision.ok and revision.value is not None
+    assert revision.value.proof is not None
+    revision.value.proof.deps.append(RepoDeclDep(ref=refs[1]))
+    assert runtime.foundation.store.write_json_atomic(
+        runtime.decl_graph.graph_store.revision_path(
+            consumer_root,
+            node_path="Main.Results",
+            decl_name="PublicResult",
+            revision=1,
+        ),
+        revision.value,
+        mode=WriteMode.UPDATE_EXISTING,
+    ).ok
+    resolver = runtime.decl_graph.ref_compatibility
+    original_batch = resolver.resolve_public_decl_refs_batch
+    original_boundary = resolver._load_public_boundary_context
+    context_ids: list[int] = []
+    boundary_reads = 0
+
+    def record_batch(*args, **kwargs):  # noqa: ANN001, ANN202
+        context_ids.append(id(kwargs["operation_context"]))
+        return original_batch(*args, **kwargs)
+
+    def count_boundary(*args, **kwargs):  # noqa: ANN001, ANN202
+        nonlocal boundary_reads
+        boundary_reads += 1
+        return original_boundary(*args, **kwargs)
+
+    monkeypatch.setattr(resolver, "resolve_public_decl_refs_batch", record_batch)
+    monkeypatch.setattr(resolver, "_load_public_boundary_context", count_boundary)
+    monkeypatch.setattr(
+        resolver,
+        "resolve_public_decl_ref",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Content head must not call the public single wrapper")
+        ),
+    )
+    monkeypatch.setattr(
+        runtime.lean_projection,
+        "check_decl_file_snapshot_sync",
+        lambda *_args, **_kwargs: runtime.foundation.ok(
+            runtime.foundation.gate_passed(
+                "decl_file_snapshot_sync",
+                summary="Audit-context fixture is synchronized.",
+            )
+        ),
+    )
+
+    captured = runtime.node.release_guard.capture_content_contract_head(
+        consumer_root,
+        node_path="Main.Results",
+    )
+
+    assert captured.ok and captured.value is not None
+    assert len(context_ids) == 2
+    assert len(set(context_ids)) == 1
+    assert boundary_reads == 1
+
+
+def test_scope_historical_export_and_interface_share_audit_decl_ref_context(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime, versions = _prepare_release_repo(tmp_path)
+    current = runtime.node.contract.get_visible_contract(tmp_path, node_path="Main")
+    assert current.ok and current.value is not None
+    historical = deepcopy(current.value.contract)
+    historical.interfaces = [
+        DeclInterface(
+            name="PublicResult",
+            kind=DeclKind.THEOREM,
+            summary="Released public result.",
+            bound_decl=historical.exports[0],
+        )
+    ]
+    assert runtime.foundation.store.write_json_atomic(
+        runtime.node.node_tree.node_store.contract_path(
+            tmp_path,
+            node_id=current.value.node_id,
+            version=current.value.version,
+        ),
+        historical,
+        mode=WriteMode.UPDATE_EXISTING,
+    ).ok
+    _publish_latest(runtime, tmp_path, versions)
+    audit = runtime.repo_workspace.release.create_release_audit_context(tmp_path)
+    assert audit.ok and audit.value is not None
+    resolver = runtime.decl_graph.ref_compatibility
+    original_batch = resolver.resolve_decl_refs_batch
+    context_ids: list[int] = []
+    batch_sizes: list[int] = []
+
+    def record_batch(*args, **kwargs):  # noqa: ANN001, ANN202
+        context_ids.append(id(kwargs["operation_context"]))
+        batch_sizes.append(len(kwargs["refs"]))
+        return original_batch(*args, **kwargs)
+
+    monkeypatch.setattr(resolver, "resolve_decl_refs_batch", record_batch)
+    monkeypatch.setattr(
+        resolver,
+        "resolve_decl_ref",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Scope guard must not call the public single wrapper")
+        ),
+    )
+
+    guarded = runtime.node.release_guard.check_scope_contract_candidate(
+        tmp_path,
+        scope_path="Main",
+        candidate=deepcopy(historical),
+        release_audit_context=audit.value,
+    )
+
+    assert guarded.ok
+    assert batch_sizes == [2, 2]
+    assert len(set(context_ids)) == 1
+    assert context_ids[0] == id(audit.value.decl_ref_context)
 
 
 def test_released_adapter_main_public_boundary_cannot_shrink_or_rebind(

@@ -41,6 +41,13 @@ class NodeReleaseGuard:
         node_path: str,
         release_audit_context: RepoReleaseAuditContext | None = None,
     ) -> ServiceResult[dict[str, int]]:
+        audit = self.runtime.repo_workspace.release._audit_context_for_repo(
+            repo_root,
+            release_audit_context,
+        )
+        if not audit.ok or audit.value is None:
+            return self.runtime.foundation.fail(audit.issues)
+        release_audit_context = audit.value
         rounds = self.runtime.decl_graph.list_rounds(repo_root, node_path=node_path)
         if not rounds.ok or rounds.value is None:
             return self.runtime.foundation.fail(rounds.issues)
@@ -137,6 +144,7 @@ class NodeReleaseGuard:
                         section=section,
                         dep=dep,
                         required_availability=availability,
+                        operation_context=release_audit_context.decl_ref_context,
                     )
                     if not valid.ok:
                         return self.runtime.foundation.fail(valid.issues)
@@ -152,22 +160,29 @@ class NodeReleaseGuard:
         section: str,
         dep: RepoDeclDep,
         required_availability: ProofAvailability,
+        operation_context,
     ) -> ServiceResult[None]:
         object_ref = f"{owner_node}:{owner_decl}:{section}->{dep.ref.repo or ''}:{dep.ref.node}:{dep.ref.name}@{dep.ref.revision}"
         issue_kind = f"content_head_{section}_dependency_invalid"
         if dep.ref.repo is not None:
-            resolved = self.runtime.decl_graph.ref_compatibility.resolve_public_decl_ref(
-                repo_root, ref=dep.ref, required_availability=required_availability
+            resolved_batch = (
+                self.runtime.decl_graph.ref_compatibility.resolve_public_decl_refs_batch(
+                    repo_root,
+                    refs=[dep.ref],
+                    required_availability=required_availability,
+                    operation_context=operation_context,
+                )
             )
-            if not resolved.ok or resolved.value is None:
-                return self.runtime.foundation.fail(resolved.issues)
-            if not resolved.value.compatible:
+            if not resolved_batch.ok or resolved_batch.value is None:
+                return self.runtime.foundation.fail(resolved_batch.issues)
+            resolved = resolved_batch.value[0]
+            if not resolved.compatible:
                 return self.runtime.foundation.fail(
                     self.runtime.foundation.issue(
                         issue_kind,
                         f"External {section} dependency is unavailable or incompatible.",
                         object_ref=object_ref,
-                        current=resolved.value.reason,
+                        current=resolved.reason,
                     )
                 )
             return self.runtime.foundation.ok(None)
@@ -264,7 +279,12 @@ class NodeReleaseGuard:
             for ref in historical.exports:
                 replacements = candidate_exports.get(self._ref_identity(ref), [])
                 compatible = any(
-                    self._refs_semantically_compatible(repo_root, historical=ref, candidate=replacement)
+                    self._refs_semantically_compatible(
+                        repo_root,
+                        historical=ref,
+                        candidate=replacement,
+                        operation_context=context.value.decl_ref_context,
+                    )
                     for replacement in replacements
                 )
                 if not compatible:
@@ -285,7 +305,10 @@ class NodeReleaseGuard:
                 else:
                     replacement = candidate_interfaces[interface.name]
                     compatible = replacement is not None and self._refs_semantically_compatible(
-                        repo_root, historical=interface.bound_decl, candidate=replacement
+                        repo_root,
+                        historical=interface.bound_decl,
+                        candidate=replacement,
+                        operation_context=context.value.decl_ref_context,
                     )
                 if not compatible:
                     return self.runtime.foundation.fail(
@@ -464,32 +487,38 @@ class NodeReleaseGuard:
     def _ref_identity(ref):
         return (ref.repo, ref.node, ref.name)
 
-    def _refs_semantically_compatible(self, repo_root: Path, *, historical, candidate) -> bool:
+    def _refs_semantically_compatible(
+        self,
+        repo_root: Path,
+        *,
+        historical,
+        candidate,
+        operation_context,
+    ) -> bool:
         if self._ref_identity(historical) != self._ref_identity(candidate):
             return False
         resolver = self.runtime.decl_graph.ref_compatibility
         if historical.repo is not None:
-            old = resolver.resolve_public_decl_ref(
-                repo_root, ref=historical, required_availability=ProofAvailability.DECLARED
-            )
-            new = resolver.resolve_public_decl_ref(
-                repo_root, ref=candidate, required_availability=ProofAvailability.DECLARED
+            resolved = resolver.resolve_public_decl_refs_batch(
+                repo_root,
+                refs=[historical, candidate],
+                required_availability=ProofAvailability.DECLARED,
+                operation_context=operation_context,
             )
         else:
-            old = resolver.resolve_decl_ref(
-                repo_root, ref=historical, required_availability=ProofAvailability.DECLARED
+            resolved = resolver.resolve_decl_refs_batch(
+                repo_root,
+                refs=[historical, candidate],
+                required_availability=ProofAvailability.DECLARED,
+                operation_context=operation_context,
             )
-            new = resolver.resolve_decl_ref(
-                repo_root, ref=candidate, required_availability=ProofAvailability.DECLARED
-            )
+        if not resolved.ok or resolved.value is None:
+            return False
+        old, new = resolved.value
         return bool(
-            old.ok
-            and old.value is not None
-            and old.value.compatible
-            and new.ok
-            and new.value is not None
-            and new.value.compatible
-            and old.value.resolved_revision == new.value.resolved_revision
+            old.compatible
+            and new.compatible
+            and old.resolved_revision == new.resolved_revision
         )
 
 __all__ = ["NodeReleaseGuard"]

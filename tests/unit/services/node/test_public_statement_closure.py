@@ -4,9 +4,11 @@ from tests.unit_services_helpers import (
     initialize_native_test_repo,
     lean_check_payload,
     make_runtime,
+    publish_native_provider_release,
 )
 
 from lean_constellation.domain.lean_check import LeanCheck
+from lean_constellation.domain.repo import RepoPublicationState, RepoPublicationStatus
 from lean_constellation.domain.refs import DeclRef, NodeRef
 from lean_constellation.services.decl_graph import DeclState
 from lean_constellation.services.decl_graph.models import (
@@ -252,6 +254,46 @@ def _path_file_bytes(root: Path) -> dict[str, bytes]:
     }
 
 
+def _prepare_external_provider_with_two_exports(
+    workspace: Path,
+) -> tuple[Path, list[DeclRef]]:
+    provider_root = workspace / "Provider"
+    round_id = _prepare_repo(provider_root)
+    names = ["ExternalOne", "ExternalTwo"]
+    for name in names:
+        _seed_definition(
+            provider_root,
+            round_id=round_id,
+            name=name,
+            public=True,
+        )
+    _commit_content_head(provider_root, *names)
+    local_refs = [
+        DeclRef(node=NODE_PATH, name=name, revision=1)
+        for name in names
+    ]
+    _set_open_scope_exports(
+        provider_root,
+        scope_path="Main.Topic",
+        refs=local_refs,
+    )
+    _set_open_scope_exports(
+        provider_root,
+        scope_path="Main",
+        refs=local_refs,
+    )
+    runtime = make_runtime()
+    publish_native_provider_release(
+        runtime,
+        provider_root,
+        release_id="provider_r1",
+    )
+    return provider_root, [
+        ref.model_copy(update={"repo": "Provider"})
+        for ref in local_refs
+    ]
+
+
 def _public_result_node_dep() -> NodeDep:
     return NodeDep(
         dep_id="fixture-public-result",
@@ -261,6 +303,107 @@ def _public_result_node_dep() -> NodeDep:
         ],
         reason="Consume the provider boundary.",
     )
+
+
+def test_external_public_statement_refs_share_fresh_operation_context(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    provider_root, external_refs = _prepare_external_provider_with_two_exports(
+        tmp_path
+    )
+    consumer_root = tmp_path / "Consumer"
+    round_id = _prepare_repo(consumer_root)
+    _seed_definition(
+        consumer_root,
+        round_id=round_id,
+        name="PublicResult",
+        public=True,
+    )
+    runtime = make_runtime()
+    revision = runtime.decl_graph.get_decl_revision(
+        consumer_root,
+        node_path=NODE_PATH,
+        name="PublicResult",
+        revision=1,
+    )
+    assert revision.ok and revision.value is not None
+    revision.value.statement.deps = [
+        RepoDeclDep(ref=ref, reason="Required external public statement dependency.")
+        for ref in external_refs
+    ]
+    assert runtime.foundation.store.write_json_atomic(
+        runtime.decl_graph.graph_store.revision_path(
+            consumer_root,
+            node_path=NODE_PATH,
+            decl_name="PublicResult",
+            revision=1,
+        ),
+        revision.value,
+        mode=WriteMode.UPDATE_EXISTING,
+    ).ok
+    _commit_content_head(consumer_root, "PublicResult")
+
+    resolver = runtime.decl_graph.ref_compatibility
+    original_batch = resolver.resolve_public_decl_refs_batch
+    original_boundary = resolver._load_public_boundary_context
+    batch_sizes: list[int] = []
+    context_ids: list[int] = []
+    boundary_reads = 0
+
+    def record_batch(*args, **kwargs):  # noqa: ANN001, ANN202
+        batch_sizes.append(len(kwargs["refs"]))
+        context_ids.append(id(kwargs["operation_context"]))
+        return original_batch(*args, **kwargs)
+
+    def count_boundary(*args, **kwargs):  # noqa: ANN001, ANN202
+        nonlocal boundary_reads
+        boundary_reads += 1
+        return original_boundary(*args, **kwargs)
+
+    monkeypatch.setattr(resolver, "resolve_public_decl_refs_batch", record_batch)
+    monkeypatch.setattr(resolver, "_load_public_boundary_context", count_boundary)
+    monkeypatch.setattr(
+        resolver,
+        "resolve_public_decl_ref",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("closure inspection must not call the public single wrapper")
+        ),
+    )
+
+    first = runtime.node.public_statement_closure.inspect_content(
+        consumer_root,
+        node_path=NODE_PATH,
+        root_decl_names=["PublicResult"],
+    )
+
+    assert first.ok and first.value is not None
+    assert first.value.closure_complete
+    assert batch_sizes == [1, 1]
+    assert len(set(context_ids)) == 1
+    assert boundary_reads == 1
+
+    assert runtime.foundation.store.write_json_atomic(
+        runtime.repo_workspace.metadata._repo_publication_path(provider_root),
+        RepoPublicationState(status=RepoPublicationStatus.DEVELOPING),
+        mode=WriteMode.UPDATE_EXISTING,
+    ).ok
+    second = runtime.node.public_statement_closure.inspect_content(
+        consumer_root,
+        node_path=NODE_PATH,
+        root_decl_names=["PublicResult"],
+    )
+
+    assert second.ok and second.value is not None
+    assert not second.value.closure_complete
+    assert {issue.kind for issue in second.value.issues} == {
+        "public_statement_external_provider_not_public"
+    }
+    assert batch_sizes == [1, 1, 1, 1]
+    assert context_ids[0] == context_ids[1]
+    assert context_ids[2] == context_ids[3]
+    assert context_ids[0] != context_ids[2]
+    assert boundary_reads == 1
 
 
 def test_node_closure_reports_and_promotes_private_statement_dependency(
@@ -557,52 +700,124 @@ def test_visible_scope_closure_uses_active_exports_while_candidate_uses_open(
 
 def test_visible_scope_closure_traverses_exact_exported_decl_revision(
     tmp_path: Path,
+    monkeypatch,
 ) -> None:
-    round_id = _prepare_repo(tmp_path)
-    _seed_definition(tmp_path, round_id=round_id, name="NewHelper", public=False)
-    _seed_definition(tmp_path, round_id=round_id, name="MainResult", public=True)
-    _commit_content_head(tmp_path, "NewHelper", "MainResult")
+    _provider_root, external_refs = _prepare_external_provider_with_two_exports(
+        tmp_path
+    )
+    consumer_root = tmp_path / "Consumer"
+    round_id = _prepare_repo(consumer_root)
+    _seed_definition(
+        consumer_root,
+        round_id=round_id,
+        name="NewHelper",
+        public=False,
+    )
+    _seed_definition(
+        consumer_root,
+        round_id=round_id,
+        name="MainResult",
+        public=True,
+    )
+    _commit_content_head(consumer_root, "NewHelper", "MainResult")
     runtime = make_runtime()
     assert runtime.node.export.add_scope_export(
-        tmp_path,
+        consumer_root,
         scope_path="Main.Topic",
         decl_node=NODE_PATH,
         decl_name="MainResult",
     ).ok
     assert runtime.node.contract._commit_scope_contract_after_guard(
-        tmp_path,
+        consumer_root,
         scope_path="Main.Topic",
         summary="Commit Topic at MainResult revision 1.",
     ).ok
     assert runtime.node.export.add_scope_export(
-        tmp_path,
+        consumer_root,
         scope_path="Main",
         decl_node=NODE_PATH,
         decl_name="MainResult",
     ).ok
     assert runtime.node.contract._commit_scope_contract_after_guard(
-        tmp_path,
+        consumer_root,
         scope_path="Main",
         summary="Commit Main at MainResult revision 1.",
     ).ok
     _advance_decl_in_open_content_candidate(
-        tmp_path,
+        consumer_root,
         name="MainResult",
         statement_deps=["NewHelper"],
     )
+    revision = runtime.decl_graph.get_decl_revision(
+        consumer_root,
+        node_path=NODE_PATH,
+        name="MainResult",
+        revision=2,
+    )
+    assert revision.ok and revision.value is not None
+    revision.value.statement.deps.append(
+        RepoDeclDep(
+            ref=external_refs[0],
+            reason="Exercise shared public/local closure resolution.",
+        )
+    )
+    assert runtime.foundation.store.write_json_atomic(
+        runtime.decl_graph.graph_store.revision_path(
+            consumer_root,
+            node_path=NODE_PATH,
+            decl_name="MainResult",
+            revision=2,
+        ),
+        revision.value,
+        mode=WriteMode.UPDATE_EXISTING,
+    ).ok
     _set_open_scope_exports(
-        tmp_path,
+        consumer_root,
         scope_path="Main",
         refs=[DeclRef(node=NODE_PATH, name="MainResult", revision=2)],
     )
 
+    resolver = runtime.decl_graph.ref_compatibility
+    original_local_batch = resolver.resolve_decl_refs_batch
+    original_public_batch = resolver.resolve_public_decl_refs_batch
+    local_sizes: list[int] = []
+    public_sizes: list[int] = []
+    context_ids: list[int] = []
+
+    def record_local(*args, **kwargs):  # noqa: ANN001, ANN202
+        local_sizes.append(len(kwargs["refs"]))
+        context_ids.append(id(kwargs["operation_context"]))
+        return original_local_batch(*args, **kwargs)
+
+    def record_public(*args, **kwargs):  # noqa: ANN001, ANN202
+        public_sizes.append(len(kwargs["refs"]))
+        context_ids.append(id(kwargs["operation_context"]))
+        return original_public_batch(*args, **kwargs)
+
+    monkeypatch.setattr(resolver, "resolve_decl_refs_batch", record_local)
+    monkeypatch.setattr(resolver, "resolve_public_decl_refs_batch", record_public)
+    monkeypatch.setattr(
+        resolver,
+        "resolve_decl_ref",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("closure inspection must not call the local single wrapper")
+        ),
+    )
+    monkeypatch.setattr(
+        resolver,
+        "resolve_public_decl_ref",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("closure inspection must not call the public single wrapper")
+        ),
+    )
+
     stable = runtime.node.public_statement_closure.inspect_scope(
-        tmp_path,
+        consumer_root,
         scope_path="Main",
         visible=True,
     )
     candidate = runtime.node.public_statement_closure.inspect_scope(
-        tmp_path,
+        consumer_root,
         scope_path="Main",
         visible=False,
     )
@@ -621,6 +836,9 @@ def test_visible_scope_closure_traverses_exact_exported_decl_revision(
         "MainResult",
         "NewHelper",
     }
+    assert local_sizes == [1, 1]
+    assert public_sizes == [1]
+    assert len(set(context_ids)) == 1
 
 
 def test_scope_explicit_root_adds_existing_boundary_and_stops_at_target_scope(
