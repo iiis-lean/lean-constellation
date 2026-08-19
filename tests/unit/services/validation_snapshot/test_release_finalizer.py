@@ -185,6 +185,49 @@ def test_candidate_preview_restores_configured_cache_before_lake_build(
     assert (tmp_path / "lake-manifest.json").read_bytes() == target_bytes
 
 
+def test_candidate_preview_full_validation_reaches_fake_build_gateway_once(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime, _ = _prepare_release_repo(tmp_path)
+    assert runtime.repo_workspace.preparation.write_preparation_input(
+        tmp_path,
+        input=RepoPreparationInput(
+            goal="Validate the complete release candidate path.",
+            source_corpus_mode=SourceCorpusMode.NONE,
+            source_corpus_relpath=None,
+            interface_inputs=[],
+        ),
+    ).ok
+    build_calls: list[tuple[Path, str | None]] = []
+
+    def build(repo_root: Path, *, target: str | None = None, **_kwargs):
+        build_calls.append((Path(repo_root).resolve(), target))
+        return ToolchainCommandView(
+            ok=True,
+            command=["lake", "build"],
+            exit_code=0,
+            summary="Full-validation fake build passed.",
+        )
+
+    monkeypatch.setattr(
+        runtime.external.lean_toolchain,
+        "run_lake_build",
+        build,
+    )
+
+    preview = runtime.validation_snapshot.release_finalizer.preview_candidate_release(
+        tmp_path,
+        base_release_id=None,
+        summary="Full pre-build validation reaches the configured gateway.",
+    )
+
+    assert preview.ok and preview.value is not None
+    assert build_calls == [(tmp_path.resolve(), None)]
+    assert preview.value.build.ok is True
+    assert preview.value.build.summary == "Full-validation fake build passed."
+
+
 def test_prepare_candidate_release_rejects_legacy_operational_paths_from_audited_gate(
     tmp_path: Path,
 ) -> None:
