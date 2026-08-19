@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from lean_constellation.services.adapter import AdapterService
     from lean_constellation.services.lean_projection import LeanProjectionService
     from lean_constellation.services.material import MaterialService
+    from lean_constellation.services.node.export import ScopeExportOperationContext
     from lean_constellation.services.repo_workspace import RepoWorkspaceService
     from lean_constellation.services.runtime import LeanRuntimeServices
 
@@ -555,7 +556,21 @@ class ReadinessGateComponent:
             return self.runtime.foundation.ok(self.runtime.foundation.gate_failed("content_node_blocked_submit", issues, summary="Blocked submit is invalid."))
         return self.runtime.foundation.ok(self.runtime.foundation.gate_passed("content_node_blocked_submit", summary="Blocked submit is acceptable."))
 
-    def check_scope_commit(self, repo_root: Path, *, scope_path: str, summary: str) -> ServiceResult[GateReport]:
+    def check_scope_commit(
+        self,
+        repo_root: Path,
+        *,
+        scope_path: str,
+        summary: str,
+        scope_export_context: "ScopeExportOperationContext | None" = None,
+    ) -> ServiceResult[GateReport]:
+        export_context = self.node.export._scope_export_operation_context(
+            repo_root,
+            scope_path=scope_path,
+            operation_context=scope_export_context,
+        )
+        if not export_context.ok or export_context.value is None:
+            return self.runtime.foundation.fail(export_context.issues)
         reports: list[GateReport] = []
         issues = []
         if not summary or not summary.strip():
@@ -592,7 +607,11 @@ class ReadinessGateComponent:
             else self.runtime.foundation.gate_passed("scope_commit_base", summary="Scope commit base checks passed.")
         )
 
-        exports = self.node.export.validate_scope_exports(Path(repo_root), scope_path=scope_path)
+        exports = self.node.export.validate_scope_exports(
+            Path(repo_root),
+            scope_path=scope_path,
+            operation_context=export_context.value,
+        )
         if not exports.ok or exports.value is None:
             return self.runtime.foundation.fail(exports.issues)
         reports.append(exports.value)
@@ -605,17 +624,26 @@ class ReadinessGateComponent:
         public_closure = self.node.public_statement_closure.check_scope(
             Path(repo_root),
             scope_path=scope_path,
+            scope_export_context=export_context.value,
         )
         if not public_closure.ok or public_closure.value is None:
             return self.runtime.foundation.fail(public_closure.issues)
         reports.append(public_closure.value)
 
-        refreshed_boundary, interfaces_ready = self._refresh_node_boundary(Path(repo_root), node_path=scope_path)
+        refreshed_boundary, interfaces_ready = self._refresh_node_boundary(
+            Path(repo_root),
+            node_path=scope_path,
+            scope_export_context=export_context.value,
+        )
         reports.extend(refreshed_boundary)
         if interfaces_ready:
             reports.append(self._build_node_interfaces_gate(Path(repo_root), node_path=scope_path))
 
-        projection = self.lean_projection.node_projection.check_interfaces_sync(Path(repo_root), node_path=scope_path)
+        projection = self.lean_projection.node_projection.check_interfaces_sync(
+            Path(repo_root),
+            node_path=scope_path,
+            scope_export_context=export_context.value,
+        )
         if not projection.ok or projection.value is None:
             return self.runtime.foundation.fail(projection.issues)
         reports.append(projection.value)
@@ -766,16 +794,31 @@ class ReadinessGateComponent:
         *,
         node_path: str,
         include_interfaces: bool = True,
+        scope_export_context: "ScopeExportOperationContext | None" = None,
     ) -> tuple[list[GateReport], bool]:
         reports: list[GateReport] = []
         interfaces_ready = include_interfaces
-        refreshes = [("prelude", self.lean_projection.node_projection.refresh_prelude)]
+        refreshes = [
+            (
+                "prelude",
+                self.lean_projection.node_projection.refresh_prelude(
+                    Path(repo_root),
+                    node_path=node_path,
+                ),
+            )
+        ]
         if include_interfaces:
             refreshes.append(
-                ("interfaces", self.lean_projection.node_projection.refresh_interfaces)
+                (
+                    "interfaces",
+                    self.lean_projection.node_projection.refresh_interfaces(
+                        Path(repo_root),
+                        node_path=node_path,
+                        scope_export_context=scope_export_context,
+                    ),
+                )
             )
-        for projection_kind, refresh in refreshes:
-            refreshed = refresh(Path(repo_root), node_path=node_path)
+        for projection_kind, refreshed in refreshes:
             if not refreshed.ok or refreshed.value is None:
                 reports.append(
                     self.runtime.foundation.gate_failed(

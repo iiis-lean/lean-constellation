@@ -456,6 +456,50 @@ def test_default_public_decl_provider_uses_decl_graph(tmp_path: Path) -> None:
     assert public.value[0].ready is True
 
 
+def test_default_public_decl_provider_batches_release_status_lookup(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _create_content_node(tmp_path)
+    round_id = _create_round_draft(tmp_path)
+    for name, public in (
+        ("first_public", True),
+        ("second_public", True),
+        ("private_result", False),
+    ):
+        _create_decl(tmp_path, round_id=round_id, name=name, public=public)
+    _start_round(tmp_path, round_id)
+    for name in ("first_public", "second_public", "private_result"):
+        _prove_theorem(tmp_path, round_id=round_id, name=name)
+
+    runtime = make_runtime()
+    calls = 0
+    original = runtime.repo_workspace.release.create_release_audit_context
+
+    def count_audit(*args, **kwargs):  # noqa: ANN001, ANN202
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(
+        runtime.repo_workspace.release,
+        "create_release_audit_context",
+        count_audit,
+    )
+
+    public = runtime.node.export.list_content_public_decls(
+        tmp_path,
+        node_path=NODE_PATH,
+    )
+
+    assert public.ok and public.value is not None
+    assert [item.ref.name for item in public.value] == [
+        "first_public",
+        "second_public",
+    ]
+    assert calls == 1
+
+
 def test_decl_graph_is_default_lean_projection_revision_provider(tmp_path: Path) -> None:
     _create_content_node(tmp_path)
     round_id = _create_round_draft(tmp_path)

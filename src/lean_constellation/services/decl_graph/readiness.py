@@ -320,9 +320,20 @@ class DeclReadinessComponent:
         )
         if not batch.ok or batch.value is None:
             return self.runtime.foundation.fail(batch.issues)
+        release_statuses = self.runtime.repo_workspace.release.get_decl_release_status_batch(
+            repo_root,
+            decls=[(node_path, decl.name) for decl in active_public],
+        )
+        if not release_statuses.ok or release_statuses.value is None:
+            return self.runtime.foundation.fail(release_statuses.issues)
         public_decls: list[DeclPublicView] = []
         warnings: list[ServiceIssue] = []
-        for decl, satisfied in zip(active_public, batch.value, strict=True):
+        for decl, satisfied, release_status in zip(
+            active_public,
+            batch.value,
+            release_statuses.value,
+            strict=True,
+        ):
             if not satisfied.ready:
                 warnings.append(
                     self.runtime.foundation.issue(
@@ -333,13 +344,6 @@ class DeclReadinessComponent:
                         details={"reason": satisfied.blocker.reason.value if satisfied.blocker is not None else "unknown"},
                     )
                 )
-            release_status = self.runtime.repo_workspace.release.get_decl_release_status(
-                repo_root,
-                node_path=node_path,
-                decl_name=decl.name,
-            )
-            if not release_status.ok or release_status.value is None:
-                return self.runtime.foundation.fail(release_status.issues)
             public_decls.append(
                 DeclPublicView(
                     ref=DeclRef(repo=None, node=node_path, name=decl.name, revision=decl.current_revision),
@@ -354,8 +358,8 @@ class DeclReadinessComponent:
                         satisfied.blocker.reason if satisfied.blocker is not None else None
                     ),
                     source="decl_graph",
-                    released_state=release_status.value.released_state,
-                    release_protected=release_status.value.release_protected,
+                    released_state=release_status.released_state,
+                    release_protected=release_status.release_protected,
                 )
             )
         return self.runtime.foundation.ok(

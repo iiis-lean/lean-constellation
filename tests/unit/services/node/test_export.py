@@ -283,6 +283,124 @@ def test_list_scope_export_candidates_from_content_and_child_scope(tmp_path: Pat
     assert child_scope_candidate.stale is False
 
 
+def test_scope_export_operation_groups_content_and_scope_boundaries_once(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _create_tree(tmp_path)
+    child_ref = _write_child_scope_export(tmp_path)
+    tree = make_runtime().node.node_tree
+    assert tree.create_content_node(
+        tmp_path,
+        path="Main.Topic.Other",
+        goal="Other goal",
+        boundary="Other boundary",
+        objective="Build another public result.",
+        success_criteria="The other result is ready.",
+    ).ok
+    _commit_content_head(
+        tmp_path,
+        node_path="Main.Topic.Other",
+        head={"other_result": 1},
+    )
+    component = _component_with_public_decls(
+        {
+            "Main.Topic.Core": [
+                DeclPublicView(
+                    ref=DeclRef(
+                        repo=None,
+                        node="Main.Topic.Core",
+                        name="main_result",
+                        revision=1,
+                    ),
+                    kind="theorem",
+                    module="Main.Topic.Core.Theorems.main_result",
+                )
+            ],
+            "Main.Topic.Other": [
+                DeclPublicView(
+                    ref=DeclRef(
+                        repo=None,
+                        node="Main.Topic.Other",
+                        name="other_result",
+                        revision=1,
+                    ),
+                    kind="theorem",
+                    module="Main.Topic.Other.Theorems.other_result",
+                )
+            ],
+        }
+    )
+
+    operation = component.create_scope_export_operation_context(
+        tmp_path,
+        scope_path="Main.Topic",
+    )
+    assert operation.ok and operation.value is not None
+    original_content = component.list_committed_content_public_decls
+    original_visible = component.contract.get_visible_contract
+    content_calls: list[str] = []
+    visible_calls: list[str] = []
+
+    def counted_content(repo_root: Path, *, node_path: str):
+        content_calls.append(node_path)
+        return original_content(repo_root, node_path=node_path)
+
+    def counted_visible(repo_root: Path, *, node_path: str):
+        visible_calls.append(node_path)
+        return original_visible(repo_root, node_path=node_path)
+
+    monkeypatch.setattr(
+        component,
+        "list_committed_content_public_decls",
+        counted_content,
+    )
+    monkeypatch.setattr(
+        component.contract,
+        "get_visible_contract",
+        counted_visible,
+    )
+
+    candidates = component.list_scope_export_candidates(
+        tmp_path,
+        scope_path="Main.Topic",
+        operation_context=operation.value,
+    )
+    assert candidates.ok and candidates.value is not None
+    refs = [candidate.ref for candidate in candidates.value.candidates]
+    current = component.contract.get_current_contract(
+        tmp_path,
+        node_path="Main.Topic",
+    )
+    assert current.ok and current.value is not None
+    candidate_contract = current.value.contract.model_copy(deep=True)
+    candidate_contract.exports = refs
+    views = component._scope_export_views(
+        tmp_path,
+        scope_path="Main.Topic",
+        refs=refs,
+        operation_context=operation.value,
+    )
+    gate = component.validate_scope_exports(
+        tmp_path,
+        scope_path="Main.Topic",
+        contract=candidate_contract,
+        operation_context=operation.value,
+    )
+
+    assert views.ok and views.value is not None
+    assert gate.ok and gate.value is not None and gate.value.passed
+    assert [ref.node for ref in refs] == [
+        "Main.Topic.Core",
+        "Main.Topic.Other",
+        child_ref.node,
+    ]
+    assert content_calls == ["Main.Topic.Core", "Main.Topic.Other"]
+    assert visible_calls.count("Main.Topic.Core") == 1
+    assert visible_calls.count("Main.Topic.Other") == 1
+    assert visible_calls.count("Main.Topic.Sub") == 1
+
+
 def test_parent_scope_rejects_open_only_content_boundary(tmp_path: Path) -> None:
     _create_tree(tmp_path, commit_core=False)
     component = _component_with_provider(tmp_path)
@@ -1185,3 +1303,250 @@ def test_validate_scope_exports_reports_duplicate_and_unready_provider_result(tm
         "scope_export_decl_not_ready",
         "scope_export_decl_not_ready",
     ]
+
+
+def test_scope_export_operation_reuses_one_content_boundary_for_multiple_refs(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _create_tree(tmp_path)
+    _commit_content_head(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        head={"first_result": 1, "second_result": 1},
+    )
+    refs = [
+        DeclRef(
+            repo=None,
+            node="Main.Topic.Core",
+            name=name,
+            revision=1,
+        )
+        for name in ("first_result", "second_result")
+    ]
+    component = _component_with_public_decls(
+        {
+            "Main.Topic.Core": [
+                DeclPublicView(
+                    ref=ref,
+                    kind="theorem",
+                    ready=True,
+                    stale=False,
+                )
+                for ref in refs
+            ]
+        }
+    )
+    current = component.contract.get_current_contract(
+        tmp_path,
+        node_path="Main.Topic",
+    )
+    assert current.ok and current.value is not None
+    candidate_contract = current.value.contract.model_copy(deep=True)
+    candidate_contract.exports = refs
+    operation = component.create_scope_export_operation_context(
+        tmp_path,
+        scope_path="Main.Topic",
+    )
+    assert operation.ok and operation.value is not None
+    original = component.list_committed_content_public_decls
+    calls: list[str] = []
+
+    def counted_boundary(repo_root: Path, *, node_path: str):
+        calls.append(node_path)
+        return original(repo_root, node_path=node_path)
+
+    monkeypatch.setattr(
+        component,
+        "list_committed_content_public_decls",
+        counted_boundary,
+    )
+
+    gate = component.validate_scope_exports(
+        tmp_path,
+        scope_path="Main.Topic",
+        contract=candidate_contract,
+        operation_context=operation.value,
+    )
+    views = component._scope_export_views(
+        tmp_path,
+        scope_path="Main.Topic",
+        refs=refs,
+        operation_context=operation.value,
+    )
+
+    assert gate.ok and gate.value is not None and gate.value.passed
+    assert views.ok and views.value is not None
+    assert [view.name for view in views.value] == [
+        "first_result",
+        "second_result",
+    ]
+    assert calls == ["Main.Topic.Core"]
+
+
+def test_scope_export_standalone_collections_share_one_local_context(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _create_tree(tmp_path)
+    refs = [
+        DeclRef(
+            repo=None,
+            node="Main.Topic.Core",
+            name=name,
+            revision=1,
+        )
+        for name in ("first_result", "second_result")
+    ]
+    _commit_content_head(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        head={ref.name: ref.revision for ref in refs},
+    )
+    component = _component_with_public_decls(
+        {
+            "Main.Topic.Core": [
+                DeclPublicView(
+                    ref=ref,
+                    kind="theorem",
+                    ready=True,
+                    stale=False,
+                )
+                for ref in refs
+            ]
+        }
+    )
+    foundation = make_runtime().foundation
+    path = foundation.node_contract_path(
+        FoundationContext(repo_root=tmp_path),
+        "Main.Topic",
+        1,
+    )
+    loaded = foundation.read_json(path, NodeContractSnapshot)
+    assert loaded.ok and loaded.value is not None
+    loaded.value.exports = refs
+    assert foundation.write_json_atomic(
+        path,
+        loaded.value,
+        mode=WriteMode.UPDATE_EXISTING,
+    ).ok
+    original = component.list_committed_content_public_decls
+    calls: list[str] = []
+
+    def counted_boundary(repo_root: Path, *, node_path: str):
+        calls.append(node_path)
+        return original(repo_root, node_path=node_path)
+
+    monkeypatch.setattr(
+        component,
+        "list_committed_content_public_decls",
+        counted_boundary,
+    )
+
+    listed = component.list_scope_exports(tmp_path, scope_path="Main.Topic")
+    assert listed.ok and listed.value is not None
+    assert [view.name for view in listed.value] == ["first_result", "second_result"]
+    assert calls == ["Main.Topic.Core"]
+
+    calls.clear()
+    gate = component.validate_scope_exports(tmp_path, scope_path="Main.Topic")
+    assert gate.ok and gate.value is not None and gate.value.passed
+    assert calls == ["Main.Topic.Core"]
+
+
+def test_empty_scope_export_collections_reject_wrong_context_before_reads(
+    tmp_path: Path,
+) -> None:
+    repo_a = tmp_path / "repo-a"
+    repo_b = tmp_path / "repo-b"
+    _create_tree(repo_a)
+    _create_tree(repo_b)
+    component = _component_with_provider(repo_a)
+    operation = component.create_scope_export_operation_context(
+        repo_a,
+        scope_path="Main.Topic",
+    )
+    assert operation.ok and operation.value is not None
+    before_a = {
+        path.relative_to(repo_a).as_posix(): path.read_bytes()
+        for path in repo_a.rglob("*")
+        if path.is_file()
+    }
+    before_b = {
+        path.relative_to(repo_b).as_posix(): path.read_bytes()
+        for path in repo_b.rglob("*")
+        if path.is_file()
+    }
+
+    rejected = [
+        component.list_scope_exports(
+            repo_b,
+            scope_path="Main.Topic",
+            operation_context=operation.value,
+        ),
+        component.validate_scope_exports(
+            repo_b,
+            scope_path="Main.Topic",
+            operation_context=operation.value,
+        ),
+        component.list_scope_exports(
+            repo_a,
+            scope_path="Main.Topic.Sub",
+            operation_context=operation.value,
+        ),
+        component.validate_scope_exports(
+            repo_a,
+            scope_path="Main.Topic.Sub",
+            operation_context=operation.value,
+        ),
+    ]
+
+    assert all(not result.ok for result in rejected)
+    assert [result.issues[0].kind for result in rejected] == [
+        "scope_export_operation_context_mismatch",
+    ] * 4
+    assert {
+        path.relative_to(repo_a).as_posix(): path.read_bytes()
+        for path in repo_a.rglob("*")
+        if path.is_file()
+    } == before_a
+    assert {
+        path.relative_to(repo_b).as_posix(): path.read_bytes()
+        for path in repo_b.rglob("*")
+        if path.is_file()
+    } == before_b
+
+
+def test_scope_export_operation_rejects_wrong_repo_context_without_writes(
+    tmp_path: Path,
+) -> None:
+    repo_a = tmp_path / "repo-a"
+    repo_b = tmp_path / "repo-b"
+    _create_tree(repo_a)
+    _create_tree(repo_b)
+    component = _component_with_provider(repo_a)
+    operation = component.create_scope_export_operation_context(
+        repo_a,
+        scope_path="Main.Topic",
+    )
+    assert operation.ok and operation.value is not None
+    before = {
+        path.relative_to(repo_b).as_posix(): path.read_bytes()
+        for path in repo_b.rglob("*")
+        if path.is_file()
+    }
+
+    rejected = component.list_scope_export_candidates(
+        repo_b,
+        scope_path="Main.Topic",
+        operation_context=operation.value,
+    )
+
+    after = {
+        path.relative_to(repo_b).as_posix(): path.read_bytes()
+        for path in repo_b.rglob("*")
+        if path.is_file()
+    }
+    assert not rejected.ok
+    assert rejected.issues[0].kind == "scope_export_operation_context_mismatch"
+    assert after == before

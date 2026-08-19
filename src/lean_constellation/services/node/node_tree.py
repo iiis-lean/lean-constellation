@@ -249,10 +249,21 @@ class NodeTreeComponent:
         node = self._load_node(repo_root, path)
         if not node.ok or node.value is None:
             return self.runtime.foundation.fail(node.issues)
-        nodes = self._load_all_nodes(repo_root)
-        if not nodes.ok or nodes.value is None:
-            return self.runtime.foundation.fail(nodes.issues)
-        return self.runtime.foundation.ok(self._node_view(repo_root, node.value, nodes.value))
+        index = self.node_store.read_index(repo_root)
+        if not index.ok or index.value is None:
+            return self.runtime.foundation.fail(index.issues)
+        child_count = sum(
+            1
+            for entry in index.value.entries
+            if entry.active and self._parent_path(entry.path) == node.value.path
+        )
+        return self.runtime.foundation.ok(
+            self._node_view_with_child_count(
+                repo_root,
+                node.value,
+                child_count=child_count,
+            )
+        )
 
     def get_node_tree(self, repo_root: Path) -> ServiceResult[NodeTreeView]:
         nodes = self._load_all_nodes(repo_root)
@@ -452,9 +463,22 @@ class NodeTreeComponent:
         return None
 
     def _node_view(self, repo_root: Path, node: NodeMetadata, nodes: list[NodeMetadata]) -> NodeView:
+        child_count = sum(1 for item in nodes if item.lifecycle == NodeLifecycle.ACTIVE and self._parent_path(item.path) == node.path)
+        return self._node_view_with_child_count(
+            repo_root,
+            node,
+            child_count=child_count,
+        )
+
+    def _node_view_with_child_count(
+        self,
+        repo_root: Path,
+        node: NodeMetadata,
+        *,
+        child_count: int,
+    ) -> NodeView:
         contract = self._load_current_contract(repo_root, node)
         status = contract.value.status if contract.ok and contract.value is not None else None
-        child_count = sum(1 for item in nodes if item.lifecycle == NodeLifecycle.ACTIVE and self._parent_path(item.path) == node.path)
         return NodeView(
             path=node.path,
             node_id=node.node_id,

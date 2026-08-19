@@ -22,7 +22,11 @@ from lean_constellation.domain.repo import ProofAvailability, RepoFormat
 from lean_constellation.services.foundation import FoundationContext, GateReport, ServiceResult
 from lean_constellation.services.decl_graph.models import DeclRevisionStatus
 from lean_constellation.services.node.contract import ContractComponent, NodeContractView
-from lean_constellation.services.node.export import DeclPublicView, ExportComponent
+from lean_constellation.services.node.export import (
+    DeclPublicView,
+    ExportComponent,
+    ScopeExportOperationContext,
+)
 from lean_constellation.services.node.node_tree import NodeContract, NodeKind
 from lean_constellation.services.node.projection_transaction import persist_contract_with_projection
 
@@ -416,9 +420,18 @@ class InterfaceComponent:
         *,
         node_path: str,
         contract: NodeContract | None = None,
+        scope_export_context: ScopeExportOperationContext | None = None,
     ) -> ServiceResult[GateReport]:
         """Revalidate exact Lean identities for all qualified bound interfaces."""
 
+        if scope_export_context is not None:
+            checked_context = self.export._scope_export_operation_context(
+                repo_root,
+                scope_path=node_path,
+                operation_context=scope_export_context,
+            )
+            if not checked_context.ok:
+                return self.runtime.foundation.fail(checked_context.issues)
         candidate = contract
         if candidate is None:
             current = self.contract.get_current_contract(repo_root, node_path=node_path)

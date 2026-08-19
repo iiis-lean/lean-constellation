@@ -8,6 +8,7 @@ from lean_constellation.domain.refs import DeclRef
 from lean_constellation.domain.repo import RepoPublicationState, RepoPublicationStatus
 from lean_constellation.services.decl_graph.models import DeclLifecycle, DeclState
 from lean_constellation.services.foundation import WriteMode
+from lean_constellation.services.node import NodeContractStatus
 from tests.unit.services.repo_workspace.test_repo_release import (
     _prepare_adapter_release_repo,
     _prepare_release_repo,
@@ -223,6 +224,130 @@ def test_released_scope_rejects_removing_historical_unbound_interface(tmp_path: 
 
     assert not guarded.ok
     assert guarded.issues[0].kind == "released_scope_interface_changed"
+
+
+def test_recreated_path_does_not_inherit_historical_scope_contract(
+    tmp_path: Path,
+) -> None:
+    runtime, versions = _prepare_release_repo(tmp_path)
+    created = runtime.node.create_scope_node(
+        tmp_path,
+        path="Main.Experimental",
+        goal="Historical private scope.",
+        boundary="Private experimental branch.",
+    )
+    assert created.ok and created.value is not None
+    old_node_id = created.value.node_id
+    current = runtime.node.contract.get_current_contract(
+        tmp_path,
+        node_path="Main.Experimental",
+    )
+    assert current.ok and current.value is not None
+    historical = deepcopy(current.value.contract)
+    historical.status = NodeContractStatus.COMMITTED
+    historical.committed_at = "2026-08-19T00:00:00Z"
+    historical.interfaces = [
+        DeclInterface(
+            name="HistoricalOnly",
+            kind=DeclKind.THEOREM,
+            summary="An unbound private historical interface.",
+        )
+    ]
+    assert runtime.foundation.store.write_json_atomic(
+        runtime.node.node_tree.node_store.contract_path(
+            tmp_path,
+            node_id=old_node_id,
+            version=historical.version,
+        ),
+        historical,
+        mode=WriteMode.UPDATE_EXISTING,
+    ).ok
+    metadata = runtime.node.node_tree.node_store.load_node_by_id(
+        tmp_path,
+        node_id=old_node_id,
+    ).value
+    metadata.active_contract_version = historical.version
+    metadata.current_contract_version = historical.version
+    metadata.open_contract_version = None
+    assert runtime.node.node_tree.node_store.save_node(
+        tmp_path,
+        metadata,
+        mode=WriteMode.UPDATE_EXISTING,
+    ).ok
+    versions[old_node_id] = historical.version
+    _publish_latest(runtime, tmp_path, versions)
+    assert runtime.node.mark_node_deleted(
+        tmp_path,
+        path="Main.Experimental",
+        reason="Replace the private scope.",
+    ).ok
+    recreated = runtime.node.create_scope_node(
+        tmp_path,
+        path="Main.Experimental",
+        goal="Replacement scope.",
+        boundary="New private branch.",
+    )
+    assert recreated.ok and recreated.value is not None
+    assert recreated.value.node_id != old_node_id
+    replacement = runtime.node.contract.get_current_contract(
+        tmp_path,
+        node_path="Main.Experimental",
+    )
+    assert replacement.ok and replacement.value is not None
+
+    guarded = runtime.node.release_guard.check_scope_contract_candidate(
+        tmp_path,
+        scope_path="Main.Experimental",
+        candidate=replacement.value.contract,
+    )
+
+    assert guarded.ok
+
+
+def test_wrong_repo_audit_context_is_typed_and_does_not_mutate(
+    tmp_path: Path,
+) -> None:
+    repo_a = tmp_path / "RepoA"
+    repo_b = tmp_path / "RepoB"
+    runtime, versions_a = _prepare_release_repo(repo_a)
+    _publish_latest(runtime, repo_a, versions_a)
+    _runtime_b, versions_b = _prepare_release_repo(repo_b)
+    _publish_latest(runtime, repo_b, versions_b)
+    context = runtime.repo_workspace.release.create_release_audit_context(repo_a)
+    assert context.ok and context.value is not None
+    candidate = runtime.node.contract.get_visible_contract(
+        repo_b,
+        node_path="Main",
+    )
+    assert candidate.ok and candidate.value is not None
+    before = {
+        path.relative_to(repo_b).as_posix(): path.read_bytes()
+        for path in sorted(repo_b.rglob("*"))
+        if path.is_file()
+    }
+
+    status = runtime.repo_workspace.release.get_decl_release_status_batch(
+        repo_b,
+        decls=[("Main.Results", "PublicResult")],
+        audit_context=context.value,
+    )
+    guarded = runtime.node.release_guard.check_scope_contract_candidate(
+        repo_b,
+        scope_path="Main",
+        candidate=candidate.value.contract,
+        release_audit_context=context.value,
+    )
+
+    assert not status.ok
+    assert status.issues[0].kind == "release_audit_context_repo_mismatch"
+    assert not guarded.ok
+    assert guarded.issues[0].kind == "release_audit_context_repo_mismatch"
+    after = {
+        path.relative_to(repo_b).as_posix(): path.read_bytes()
+        for path in sorted(repo_b.rglob("*"))
+        if path.is_file()
+    }
+    assert after == before
 
 
 def test_released_adapter_main_public_boundary_cannot_shrink_or_rebind(

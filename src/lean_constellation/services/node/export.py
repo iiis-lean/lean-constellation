@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
@@ -16,7 +17,7 @@ from lean_constellation.services.decl_graph.models import (
     DeclRevisionStatus,
 )
 from lean_constellation.services.foundation import GateReport, IssueSeverity, ServiceIssue, ServiceResult
-from lean_constellation.services.node.contract import ContractComponent
+from lean_constellation.services.node.contract import ContractComponent, NodeContractView
 from lean_constellation.services.node.node_tree import NodeKind, NodeTreeComponent, NodeView
 from lean_constellation.services.node.projection_transaction import persist_contract_with_projection
 
@@ -80,6 +81,24 @@ class ScopeExportView(StrictModel):
     exports: list[DeclRefView] = Field(default_factory=list)
     changed: bool
     summary: str
+
+
+@dataclass
+class ScopeExportOperationContext:
+    """Frozen direct-child public boundaries for one Scope read operation."""
+
+    repo_root: Path
+    scope_path: str
+    child_nodes: dict[str, ServiceResult[NodeView]] = field(default_factory=dict)
+    content_boundaries: dict[str, ServiceResult[list[DeclPublicView]]] = field(
+        default_factory=dict
+    )
+    scope_boundaries: dict[str, ServiceResult[NodeContractView]] = field(
+        default_factory=dict
+    )
+    candidates_by_ref: dict[
+        tuple[str | None, str, str, int], ServiceResult[ScopeExportCandidate]
+    ] = field(default_factory=dict)
 
 
 class ContentPublicDeclProvider(Protocol):
@@ -165,7 +184,36 @@ class ExportComponent:
             return self.runtime.foundation.fail(result.issues)
         return result
 
-    def list_scope_export_candidates(self, repo_root: Path, *, scope_path: str) -> ServiceResult[ScopeExportCandidateView]:
+    def create_scope_export_operation_context(
+        self,
+        repo_root: Path,
+        *,
+        scope_path: str,
+    ) -> ServiceResult[ScopeExportOperationContext]:
+        scope = self._require_scope(repo_root, scope_path)
+        if not scope.ok or scope.value is None:
+            return self.runtime.foundation.fail(scope.issues)
+        return self.runtime.foundation.ok(
+            ScopeExportOperationContext(
+                repo_root=Path(repo_root).resolve(),
+                scope_path=scope_path,
+            )
+        )
+
+    def list_scope_export_candidates(
+        self,
+        repo_root: Path,
+        *,
+        scope_path: str,
+        operation_context: ScopeExportOperationContext | None = None,
+    ) -> ServiceResult[ScopeExportCandidateView]:
+        context = self._scope_export_operation_context(
+            repo_root,
+            scope_path=scope_path,
+            operation_context=operation_context,
+        )
+        if not context.ok or context.value is None:
+            return self.runtime.foundation.fail(context.issues)
         scope = self._require_scope(repo_root, scope_path)
         if not scope.ok or scope.value is None:
             return self.runtime.foundation.fail(scope.issues)
@@ -189,24 +237,32 @@ class ExportComponent:
                 if not decl.public:
                     continue
                 ref = DeclRef(repo=None, node="Main", name=decl.name, revision=1)
-                candidates.append(
-                    ScopeExportCandidate(
-                        ref=ref,
-                        source_child="Main",
-                        source_kind="adapter_catalog",
-                        kind=decl.kind.value,
-                        module=decl.module,
-                        summary=decl.summary,
-                        ready=decl.finalized,
-                        stale=False,
-                        already_exported=self._decl_ref_key(ref) in current_export_keys,
+                candidate = ScopeExportCandidate(
+                    ref=ref,
+                    source_child="Main",
+                    source_kind="adapter_catalog",
+                    kind=decl.kind.value,
+                    module=decl.module,
+                    summary=decl.summary,
+                    ready=decl.finalized,
+                    stale=False,
+                    already_exported=self._decl_ref_key(ref) in current_export_keys,
+                )
+                candidates.append(candidate)
+                context.value.candidates_by_ref[self._decl_ref_key(ref)] = (
+                    self.runtime.foundation.ok(
+                        candidate.model_copy(
+                            update={"index": -1, "already_exported": False}
+                        )
                     )
                 )
         for child in children.value:
+            context.value.child_nodes[child.path] = self.runtime.foundation.ok(child)
             if child.kind == NodeKind.CONTENT:
-                public = self.list_committed_content_public_decls(
+                public = self._content_boundary_from_context(
                     repo_root,
                     node_path=child.path,
+                    operation_context=context.value,
                 )
                 if not public.ok or public.value is None:
                     warnings.extend(
@@ -216,36 +272,54 @@ class ExportComponent:
                     continue
                 warnings.extend(public.issues)
                 for decl in public.value:
-                    candidates.append(
-                        ScopeExportCandidate(
-                            ref=decl.ref,
-                            source_child=child.path,
-                            source_kind=NodeKind.CONTENT.value,
-                            kind=decl.kind,
-                            module=decl.module,
-                            summary=decl.summary,
-                            ready=decl.ready,
-                            stale=decl.stale,
-                            already_exported=self._decl_ref_key(decl.ref) in current_export_keys,
+                    candidate = ScopeExportCandidate(
+                        ref=decl.ref,
+                        source_child=child.path,
+                        source_kind=NodeKind.CONTENT.value,
+                        kind=decl.kind,
+                        module=decl.module,
+                        summary=decl.summary,
+                        ready=decl.ready,
+                        stale=decl.stale,
+                        already_exported=self._decl_ref_key(decl.ref)
+                        in current_export_keys,
+                    )
+                    candidates.append(candidate)
+                    context.value.candidates_by_ref[
+                        self._decl_ref_key(decl.ref)
+                    ] = self.runtime.foundation.ok(
+                        candidate.model_copy(
+                            update={"index": -1, "already_exported": False}
                         )
                     )
             elif child.kind == NodeKind.SCOPE:
-                child_contract = self.contract.get_visible_contract(repo_root, node_path=child.path)
+                child_contract = self._scope_boundary_from_context(
+                    repo_root,
+                    node_path=child.path,
+                    operation_context=context.value,
+                )
                 if not child_contract.ok or child_contract.value is None:
                     continue
                 for ref in child_contract.value.contract.exports:
                     kind = self._exact_decl_kind(repo_root, ref=ref)
                     if not kind.ok or kind.value is None:
                         return self.runtime.foundation.fail(kind.issues)
-                    candidates.append(
-                        ScopeExportCandidate(
-                            ref=ref,
-                            source_child=child.path,
-                            source_kind=NodeKind.SCOPE.value,
-                            kind=kind.value,
-                            ready=True,
-                            stale=False,
-                            already_exported=self._decl_ref_key(ref) in current_export_keys,
+                    candidate = ScopeExportCandidate(
+                        ref=ref,
+                        source_child=child.path,
+                        source_kind=NodeKind.SCOPE.value,
+                        kind=kind.value,
+                        ready=True,
+                        stale=False,
+                        already_exported=self._decl_ref_key(ref)
+                        in current_export_keys,
+                    )
+                    candidates.append(candidate)
+                    context.value.candidates_by_ref[
+                        self._decl_ref_key(ref)
+                    ] = self.runtime.foundation.ok(
+                        candidate.model_copy(
+                            update={"index": -1, "already_exported": False}
                         )
                     )
         candidates.sort(key=lambda item: (item.source_child, item.ref.node, item.ref.name, item.ref.revision))
@@ -389,7 +463,20 @@ class ExportComponent:
             warnings=refreshed.issues,
         )
 
-    def list_scope_exports(self, repo_root: Path, *, scope_path: str) -> ServiceResult[list[DeclRefView]]:
+    def list_scope_exports(
+        self,
+        repo_root: Path,
+        *,
+        scope_path: str,
+        operation_context: ScopeExportOperationContext | None = None,
+    ) -> ServiceResult[list[DeclRefView]]:
+        context = self._scope_export_operation_context(
+            repo_root,
+            scope_path=scope_path,
+            operation_context=operation_context,
+        )
+        if not context.ok or context.value is None:
+            return self.runtime.foundation.fail(context.issues)
         scope = self._require_scope(repo_root, scope_path)
         if not scope.ok or scope.value is None:
             return self.runtime.foundation.fail(scope.issues)
@@ -400,6 +487,7 @@ class ExportComponent:
             repo_root,
             scope_path=scope_path,
             refs=current.value.contract.exports,
+            operation_context=context.value,
         )
 
     def list_committed_scope_exports(
@@ -407,9 +495,17 @@ class ExportComponent:
         repo_root: Path,
         *,
         scope_path: str,
+        operation_context: ScopeExportOperationContext | None = None,
     ) -> ServiceResult[list[DeclRefView]]:
         """Read exports from the active committed Scope boundary."""
 
+        context = self._scope_export_operation_context(
+            repo_root,
+            scope_path=scope_path,
+            operation_context=operation_context,
+        )
+        if not context.ok or context.value is None:
+            return self.runtime.foundation.fail(context.issues)
         scope = self._require_scope(repo_root, scope_path)
         if not scope.ok or scope.value is None:
             return self.runtime.foundation.fail(scope.issues)
@@ -420,6 +516,7 @@ class ExportComponent:
             repo_root,
             scope_path=scope_path,
             refs=visible.value.contract.exports,
+            operation_context=context.value,
         )
 
     def _scope_export_views(
@@ -428,9 +525,23 @@ class ExportComponent:
         *,
         scope_path: str,
         refs: list[DeclRef],
+        operation_context: ScopeExportOperationContext | None = None,
     ) -> ServiceResult[list[DeclRefView]]:
+        context = self._scope_export_operation_context(
+            repo_root,
+            scope_path=scope_path,
+            operation_context=operation_context,
+        )
+        if not context.ok or context.value is None:
+            return self.runtime.foundation.fail(context.issues)
         views = [
-            self._decl_ref_view(repo_root, scope_path, ref, index=-1)
+            self._decl_ref_view(
+                repo_root,
+                scope_path,
+                ref,
+                index=-1,
+                operation_context=context.value,
+            )
             for ref in refs
         ]
         views.sort(key=lambda item: (item.ref.node, item.ref.name, item.ref.revision))
@@ -443,7 +554,15 @@ class ExportComponent:
         *,
         scope_path: str,
         contract: object | None = None,
+        operation_context: ScopeExportOperationContext | None = None,
     ) -> ServiceResult[GateReport]:
+        context = self._scope_export_operation_context(
+            repo_root,
+            scope_path=scope_path,
+            operation_context=operation_context,
+        )
+        if not context.ok or context.value is None:
+            return self.runtime.foundation.fail(context.issues)
         scope = self._require_scope(repo_root, scope_path)
         if not scope.ok or scope.value is None:
             return self.runtime.foundation.fail(scope.issues)
@@ -466,7 +585,12 @@ class ExportComponent:
             )
         candidates_by_key: dict[tuple[str | None, str, str, int], ScopeExportCandidate] = {}
         for ref in candidate_contract.exports:
-            candidate = self._find_visible_candidate(repo_root, scope_path=scope_path, ref=ref)
+            candidate = self._find_visible_candidate(
+                repo_root,
+                scope_path=scope_path,
+                ref=ref,
+                operation_context=context.value,
+            )
             if not candidate.ok:
                 issues.extend(candidate.issues)
                 continue
@@ -527,7 +651,119 @@ class ExportComponent:
             )
         )
 
-    def _find_visible_candidate(self, repo_root: Path, *, scope_path: str, ref: DeclRef) -> ServiceResult[ScopeExportCandidate]:
+    def _scope_export_operation_context(
+        self,
+        repo_root: Path,
+        *,
+        scope_path: str,
+        operation_context: ScopeExportOperationContext | None,
+    ) -> ServiceResult[ScopeExportOperationContext]:
+        canonical_root = Path(repo_root).resolve()
+        if operation_context is None:
+            return self.runtime.foundation.ok(
+                ScopeExportOperationContext(
+                    repo_root=canonical_root,
+                    scope_path=scope_path,
+                )
+            )
+        if (
+            operation_context.repo_root != canonical_root
+            or operation_context.scope_path != scope_path
+        ):
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "scope_export_operation_context_mismatch",
+                    "Scope export operation context belongs to a different repository or Scope.",
+                    object_ref=scope_path,
+                    current=(
+                        f"{operation_context.repo_root}:{operation_context.scope_path}"
+                    ),
+                    expected=f"{canonical_root}:{scope_path}",
+                )
+            )
+        return self.runtime.foundation.ok(operation_context)
+
+    def _child_node_from_context(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        operation_context: ScopeExportOperationContext,
+    ) -> ServiceResult[NodeView]:
+        cached = operation_context.child_nodes.get(node_path)
+        if cached is None:
+            cached = self.node_tree.get_node(repo_root, path=node_path)
+            operation_context.child_nodes[node_path] = cached
+        return cached
+
+    def _content_boundary_from_context(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        operation_context: ScopeExportOperationContext,
+    ) -> ServiceResult[list[DeclPublicView]]:
+        cached = operation_context.content_boundaries.get(node_path)
+        if cached is None:
+            cached = self.list_committed_content_public_decls(
+                repo_root,
+                node_path=node_path,
+            )
+            operation_context.content_boundaries[node_path] = cached
+        return cached
+
+    def _scope_boundary_from_context(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        operation_context: ScopeExportOperationContext,
+    ) -> ServiceResult[NodeContractView]:
+        cached = operation_context.scope_boundaries.get(node_path)
+        if cached is None:
+            cached = self.contract.get_visible_contract(
+                repo_root,
+                node_path=node_path,
+            )
+            operation_context.scope_boundaries[node_path] = cached
+        return cached
+
+    def _find_visible_candidate(
+        self,
+        repo_root: Path,
+        *,
+        scope_path: str,
+        ref: DeclRef,
+        operation_context: ScopeExportOperationContext | None = None,
+    ) -> ServiceResult[ScopeExportCandidate]:
+        context = self._scope_export_operation_context(
+            repo_root,
+            scope_path=scope_path,
+            operation_context=operation_context,
+        )
+        if not context.ok or context.value is None:
+            return self.runtime.foundation.fail(context.issues)
+        key = self._decl_ref_key(ref)
+        cached = context.value.candidates_by_ref.get(key)
+        if cached is not None:
+            return cached
+        candidate = self._find_visible_candidate_uncached(
+            repo_root,
+            scope_path=scope_path,
+            ref=ref,
+            operation_context=context.value,
+        )
+        context.value.candidates_by_ref[key] = candidate
+        return candidate
+
+    def _find_visible_candidate_uncached(
+        self,
+        repo_root: Path,
+        *,
+        scope_path: str,
+        ref: DeclRef,
+        operation_context: ScopeExportOperationContext,
+    ) -> ServiceResult[ScopeExportCandidate]:
         if ref.repo is not None:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue("scope_export_cross_repo_unsupported", "Scope exports must refer to current repo descendants.", object_ref=scope_path)
@@ -574,7 +810,11 @@ class ExportComponent:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue("scope_export_not_child_visible", "Scope cannot export itself as a declaration provider.", object_ref=scope_path)
             )
-        child = self.node_tree.get_node(repo_root, path=direct_child)
+        child = self._child_node_from_context(
+            repo_root,
+            node_path=direct_child,
+            operation_context=operation_context,
+        )
         if not child.ok or child.value is None:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
@@ -584,9 +824,10 @@ class ExportComponent:
                 )
             )
         if child.value.kind == NodeKind.CONTENT:
-            public = self.list_committed_content_public_decls(
+            public = self._content_boundary_from_context(
                 repo_root,
                 node_path=direct_child,
+                operation_context=operation_context,
             )
             if not public.ok or public.value is None:
                 return self.runtime.foundation.fail(public.issues)
@@ -641,7 +882,11 @@ class ExportComponent:
                     object_ref=scope_path,
                 )
             )
-        child_contract = self.contract.get_visible_contract(repo_root, node_path=direct_child)
+        child_contract = self._scope_boundary_from_context(
+            repo_root,
+            node_path=direct_child,
+            operation_context=operation_context,
+        )
         if not child_contract.ok or child_contract.value is None:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
@@ -816,18 +1061,25 @@ class ExportComponent:
         else:
             readiness_by_name = {}
 
+        release_statuses = self.runtime.repo_workspace.release.get_decl_release_status_batch(
+            repo_root,
+            decls=[(node_path, name) for name in sorted(public_names)],
+        )
+        if not release_statuses.ok or release_statuses.value is None:
+            return self.runtime.foundation.fail(release_statuses.issues)
+        release_status_by_name = {
+            name: status
+            for name, status in zip(
+                sorted(public_names),
+                release_statuses.value,
+                strict=True,
+            )
+        }
+
         for name in sorted(public_names):
             decl, revision = exact_entries[name]
             report = readiness_by_name[name]
-            release_status = (
-                self.runtime.repo_workspace.release.get_decl_release_status(
-                    repo_root,
-                    node_path=node_path,
-                    decl_name=name,
-                )
-            )
-            if not release_status.ok or release_status.value is None:
-                return self.runtime.foundation.fail(release_status.issues)
+            release_status = release_status_by_name[name]
             anchored.append(
                 DeclPublicView(
                     ref=DeclRef(
@@ -845,8 +1097,8 @@ class ExportComponent:
                     ready=report.ready,
                     stale=False,
                     source="active_content_contract_head",
-                    released_state=release_status.value.released_state,
-                    release_protected=release_status.value.release_protected,
+                    released_state=release_status.released_state,
+                    release_protected=release_status.release_protected,
                 )
             )
             if not report.ready:
@@ -974,8 +1226,21 @@ class ExportComponent:
             )
         return self.runtime.foundation.ok(kind)
 
-    def _decl_ref_view(self, repo_root: Path, scope_path: str, ref: DeclRef, *, index: int) -> DeclRefView:
-        candidate = self._find_visible_candidate(repo_root, scope_path=scope_path, ref=ref)
+    def _decl_ref_view(
+        self,
+        repo_root: Path,
+        scope_path: str,
+        ref: DeclRef,
+        *,
+        index: int,
+        operation_context: ScopeExportOperationContext | None = None,
+    ) -> DeclRefView:
+        candidate = self._find_visible_candidate(
+            repo_root,
+            scope_path=scope_path,
+            ref=ref,
+            operation_context=operation_context,
+        )
         adapter_candidate = (
             candidate.ok
             and candidate.value is not None

@@ -199,6 +199,7 @@ class RepoReleaseFinalizerComponent:
             ))
         active_nodes = [node for node in nodes.value if node.lifecycle == NodeLifecycle.ACTIVE]
         active_by_path = {node.path: node for node in active_nodes}
+        release_audit_context = None
         tree_issues = []
         if len(active_by_path) != len(active_nodes):
             tree_issues.append(self.runtime.foundation.issue(
@@ -342,8 +343,19 @@ class RepoReleaseFinalizerComponent:
                         "Scope contracts must have an empty DeclGraph head.",
                         object_ref=node.path,
                     ))
+                if release_audit_context is None:
+                    audit = self.runtime.repo_workspace.release.create_release_audit_context(
+                        repo_root
+                    )
+                    if not audit.ok or audit.value is None:
+                        node_issues.extend(audit.issues)
+                        continue
+                    release_audit_context = audit.value
                 guarded = self.runtime.node.release_guard.check_scope_contract_candidate(
-                    repo_root, scope_path=node.path, candidate=contract
+                    repo_root,
+                    scope_path=node.path,
+                    candidate=contract,
+                    release_audit_context=release_audit_context,
                 )
                 if not guarded.ok:
                     node_issues.extend(guarded.issues)
@@ -358,7 +370,30 @@ class RepoReleaseFinalizerComponent:
                         summary=f"Interface projection could not be checked for {node.path}.",
                     ))
                 continue
-            captured = self.runtime.node.release_guard.capture_content_contract_head(repo_root, node_path=node.path)
+            if release_audit_context is None:
+                audit = self.runtime.repo_workspace.release.create_release_audit_context(
+                    repo_root
+                )
+                if not audit.ok or audit.value is None:
+                    node_issues.append(
+                        self.runtime.foundation.issue(
+                            "release_decl_graph_open",
+                            "Content DeclGraph head cannot be recaptured for release.",
+                            object_ref=node.path,
+                            details={
+                                "issues": "; ".join(
+                                    issue.kind for issue in audit.issues
+                                )
+                            },
+                        )
+                    )
+                    continue
+                release_audit_context = audit.value
+            captured = self.runtime.node.release_guard.capture_content_contract_head(
+                repo_root,
+                node_path=node.path,
+                release_audit_context=release_audit_context,
+            )
             if not captured.ok or captured.value is None:
                 node_issues.append(self.runtime.foundation.issue(
                     "release_decl_graph_open",

@@ -13,9 +13,12 @@ from lean_constellation.services.decl_graph.models import (
     MathlibDeclDep,
     RepoDeclDep,
 )
-from lean_constellation.domain.refs import DeclRef, MathlibRef
+from lean_constellation.domain.interface import DeclInterface, DeclKind
+from lean_constellation.domain.refs import DeclRef, MathlibRef, NodeRef
 from lean_constellation.domain.lean_check import LeanCheck
 from lean_constellation.services.foundation import WriteMode
+from lean_constellation.services.node.contract_fields import NodeDep
+from lean_constellation.services.node.node_tree import NodeContract
 
 
 def _create_content_node(tmp_path: Path, *, node_path: str = "Main.Topic.Core") -> None:
@@ -927,7 +930,10 @@ def test_open_decl_update_rejects_open_current_revision(tmp_path: Path) -> None:
     assert update.issues[0].kind == "decl_revision_already_open"
 
 
-def test_delete_decls_requires_and_deletes_exact_current_closure(tmp_path: Path) -> None:
+def test_delete_decls_requires_and_deletes_exact_current_closure(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
     _create_content_node(tmp_path)
     _, round_id = _create_round(tmp_path)
     _seed_committed_decl(tmp_path, round_id=round_id, name="A")
@@ -949,6 +955,84 @@ def test_delete_decls_requires_and_deletes_exact_current_closure(tmp_path: Path)
     assert blocked.issues[0].kind == "decl_delete_closure_mismatch"
     assert blocked.issues[0].expected == "A, B, C"
 
+    node_store = service.runtime.node.node_tree.node_store
+    workspace_catalog = service.runtime.repo_workspace.workspace_catalog
+    release = service.runtime.repo_workspace.release
+    original_list_nodes = node_store.list_nodes
+    original_list_decls = service.decl_catalog.list_decls
+    original_list_rounds = service.list_rounds
+    original_list_workspace_repos = workspace_catalog.list_workspace_repos
+    original_create_release_audit_context = release.create_release_audit_context
+    calls = {
+        "nodes": 0,
+        "decls": 0,
+        "rounds": 0,
+        "workspace": 0,
+        "release_audit": 0,
+    }
+
+    def counted_nodes(repo_root: Path):
+        calls["nodes"] += 1
+        return original_list_nodes(repo_root)
+
+    def counted_decls(repo_root: Path, *, node_path: str):
+        calls["decls"] += 1
+        return original_list_decls(repo_root, node_path=node_path)
+
+    def counted_rounds(repo_root: Path, *, node_path: str):
+        calls["rounds"] += 1
+        return original_list_rounds(repo_root, node_path=node_path)
+
+    def counted_workspace(workspace_root: Path):
+        calls["workspace"] += 1
+        return original_list_workspace_repos(workspace_root)
+
+    def counted_release_audit(repo_root: Path):
+        calls["release_audit"] += 1
+        return original_create_release_audit_context(repo_root)
+
+    monkeypatch.setattr(node_store, "list_nodes", counted_nodes)
+    monkeypatch.setattr(service.decl_catalog, "list_decls", counted_decls)
+    monkeypatch.setattr(service, "list_rounds", counted_rounds)
+    monkeypatch.setattr(
+        workspace_catalog,
+        "list_workspace_repos",
+        counted_workspace,
+    )
+    monkeypatch.setattr(
+        release,
+        "create_release_audit_context",
+        counted_release_audit,
+    )
+
+    single = service.release_guard.current_inbound_refs(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        decl_name="A",
+    )
+    assert single.ok and single.value is not None
+    assert "current:decl:Main.Topic.Core:B:proof" in single.value
+    single_scan_calls = {
+        key: calls[key]
+        for key in ("nodes", "decls", "rounds", "workspace")
+    }
+    assert all(count > 0 for count in single_scan_calls.values())
+    for key in calls:
+        calls[key] = 0
+
+    guard = service.release_guard.check_delete_set(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        decl_names={"A", "B", "C"},
+    )
+
+    assert guard.ok, guard.issues
+    assert {
+        key: calls[key]
+        for key in ("nodes", "decls", "rounds", "workspace")
+    } == single_scan_calls
+    assert calls["release_audit"] == 1
+
     deleted = service.delete_decls(
         tmp_path,
         node_path="Main.Topic.Core",
@@ -969,6 +1053,74 @@ def test_delete_decls_requires_and_deletes_exact_current_closure(tmp_path: Path)
     index = service.get_decl_graph_index(tmp_path, node_path="Main.Topic.Core")
     assert index.ok and index.value is not None
     assert index.value.decl_names == ["A", "B", "C"]
+
+
+def test_current_inbound_refs_indexes_current_round_and_contract_sources(
+    tmp_path: Path,
+) -> None:
+    _create_content_node(tmp_path)
+    _, round_id = _create_round(tmp_path)
+    _seed_committed_decl(tmp_path, round_id=round_id, name="A")
+    _seed_committed_decl(tmp_path, round_id=round_id, name="B", deps=["A"])
+    runtime = make_runtime()
+    assert runtime.decl_graph.start_round(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=round_id,
+    ).ok
+    target = DeclRef(node="Main.Topic.Core", name="A", revision=1)
+
+    nodes = runtime.node.node_tree.node_store.list_nodes(tmp_path)
+    assert nodes.ok and nodes.value is not None
+    content_node = next(node for node in nodes.value if node.path == "Main.Topic.Core")
+    contract_version = content_node.open_contract_version or content_node.active_contract_version
+    assert contract_version is not None
+    contract_path = runtime.node.node_tree.node_store.contract_path(
+        tmp_path,
+        node_id=content_node.node_id,
+        version=contract_version,
+    )
+    contract = runtime.foundation.store.read_json(contract_path, NodeContract)
+    assert contract.ok and contract.value is not None
+    contract.value.exports.append(target)
+    contract.value.interfaces.append(
+        DeclInterface(
+            name="A",
+            kind=DeclKind.THEOREM,
+            summary="Expose A.",
+            bound_decl=target,
+        )
+    )
+    contract.value.deps.append(
+        NodeDep(
+            dep_id="dep-a",
+            target=NodeRef(node="Main.Topic.Core"),
+            expected_decl_refs=[target],
+            reason="Consume A.",
+        )
+    )
+    assert runtime.foundation.store.write_json_atomic(
+        contract_path,
+        contract.value,
+        mode=WriteMode.UPDATE_EXISTING,
+    ).ok
+
+    inbound = runtime.decl_graph.release_guard.current_inbound_refs(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        decl_name="A",
+    )
+
+    assert inbound.ok and inbound.value is not None
+    assert inbound.value == sorted(
+        [
+            f"admitted:round:{round_id}:Main.Topic.Core:B:proof",
+            "current:contract:Main.Topic.Core:deps",
+            "current:contract:Main.Topic.Core:exports",
+            "current:contract:Main.Topic.Core:interfaces",
+            "current:decl:Main.Topic.Core:B:proof",
+        ]
+    )
 
 
 def test_delete_closure_uses_only_exact_same_node_repo_dependencies(tmp_path: Path) -> None:
@@ -1140,6 +1292,35 @@ def test_delete_decls_rejects_cross_repo_current_consumer(tmp_path: Path) -> Non
         revision.value,
         mode=WriteMode.UPDATE_EXISTING,
     ).ok
+    consumer_nodes = runtime.node.node_tree.node_store.list_nodes(consumer)
+    assert consumer_nodes.ok and consumer_nodes.value is not None
+    consumer_node = next(
+        node for node in consumer_nodes.value if node.path == "Main.Topic.Core"
+    )
+    contract_version = (
+        consumer_node.open_contract_version or consumer_node.active_contract_version
+    )
+    assert contract_version is not None
+    contract_path = runtime.node.node_tree.node_store.contract_path(
+        consumer,
+        node_id=consumer_node.node_id,
+        version=contract_version,
+    )
+    contract = runtime.foundation.store.read_json(contract_path, NodeContract)
+    assert contract.ok and contract.value is not None
+    contract.value.exports.append(
+        DeclRef(
+            repo="Provider",
+            node="Main.Topic.Core",
+            name="ProviderResult",
+            revision=1,
+        )
+    )
+    assert runtime.foundation.store.write_json_atomic(
+        contract_path,
+        contract.value,
+        mode=WriteMode.UPDATE_EXISTING,
+    ).ok
 
     deleted = runtime.decl_graph.delete_decls(
         provider,
@@ -1150,6 +1331,9 @@ def test_delete_decls_rejects_cross_repo_current_consumer(tmp_path: Path) -> Non
     assert not deleted.ok
     assert deleted.issues[0].kind == "decl_delete_current_inbound_refs"
     assert "workspace:decl:Consumer" in (deleted.issues[0].current or "")
+    assert "workspace:contract:Consumer:Main.Topic.Core" in (
+        deleted.issues[0].current or ""
+    )
 
 
 def test_round_draft_validation_rejects_internal_update_dependency(tmp_path: Path) -> None:

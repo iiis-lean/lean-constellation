@@ -743,6 +743,90 @@ def test_candidate_gate_aggregates_non_main_contract_tree_and_material_findings(
     }, kinds
 
 
+def test_candidate_preview_shares_one_release_audit_across_content_nodes(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime, _ = _prepare_release_repo(tmp_path)
+    finalizer = runtime.validation_snapshot.release_finalizer
+    context_ids: list[int] = []
+    scope_context_ids: list[int] = []
+    decl_context_ids: list[int] = []
+    original_capture = runtime.node.release_guard.capture_content_contract_head
+    original_scope_guard = runtime.node.release_guard.check_scope_contract_candidate
+    original_decl_guard = runtime.decl_graph.release_guard.check_update_candidate
+
+    def record_capture(*args, **kwargs):  # noqa: ANN001, ANN202
+        context_ids.append(id(kwargs["release_audit_context"]))
+        return original_capture(*args, **kwargs)
+
+    def record_scope_guard(*args, **kwargs):  # noqa: ANN001, ANN202
+        scope_context_ids.append(id(kwargs["release_audit_context"]))
+        return original_scope_guard(*args, **kwargs)
+
+    def record_decl_guard(*args, **kwargs):  # noqa: ANN001, ANN202
+        decl_context_ids.append(id(kwargs["release_audit_context"]))
+        return original_decl_guard(*args, **kwargs)
+
+    monkeypatch.setattr(
+        runtime.node.release_guard,
+        "capture_content_contract_head",
+        record_capture,
+    )
+    monkeypatch.setattr(
+        runtime.node.release_guard,
+        "check_scope_contract_candidate",
+        record_scope_guard,
+    )
+    monkeypatch.setattr(
+        runtime.decl_graph.release_guard,
+        "check_update_candidate",
+        record_decl_guard,
+    )
+    monkeypatch.setattr(
+        runtime.lean_projection,
+        "check_decl_file_snapshot_sync",
+        lambda *_args, **_kwargs: runtime.foundation.ok(
+            runtime.foundation.gate_passed(
+                "decl_file_snapshot_sync",
+                summary="Operation-local audit fixture is synchronized.",
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        runtime.validation_snapshot.readiness_gate,
+        "check_repo_ready",
+        lambda *_args, **_kwargs: runtime.foundation.ok(
+            runtime.foundation.gate_passed(
+                "repo_ready",
+                summary="Operation-local audit fixture is ready.",
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        runtime.external.lean_toolchain,
+        "run_lake_build",
+        lambda *_args, **_kwargs: ToolchainCommandView(
+            ok=True,
+            command=["lake", "build"],
+            exit_code=0,
+            summary="Fake build passed.",
+        ),
+    )
+
+    preview = finalizer.preview_candidate_release(
+        tmp_path,
+        base_release_id=None,
+        summary="Audit-context candidate.",
+    )
+
+    assert preview.ok and preview.value is not None
+    assert len(context_ids) == 2
+    assert len(scope_context_ids) == 2
+    assert len(decl_context_ids) == 3
+    assert len(set([*context_ids, *scope_context_ids, *decl_context_ids])) == 1
+
+
 def test_adapter_candidate_gate_uses_committed_main_and_adapter_ready(
     tmp_path: Path,
     monkeypatch,

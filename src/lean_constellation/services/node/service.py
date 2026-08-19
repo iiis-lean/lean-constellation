@@ -25,6 +25,7 @@ from lean_constellation.services.node.export import (
     DeclRefView,
     ExportComponent,
     ScopeExportCandidateView,
+    ScopeExportOperationContext,
 )
 from lean_constellation.services.node.interface import InterfaceComponent, InterfaceListView
 from lean_constellation.services.node.material_ref import MaterialRefComponent
@@ -386,6 +387,12 @@ class NodeService:
             return self.runtime.foundation.fail(preflight.issues)
         if not preflight.value.passed:
             return self.runtime.foundation.fail(preflight.value.issues)
+        export_context = self.export.create_scope_export_operation_context(
+            repo_root,
+            scope_path=scope_path,
+        )
+        if not export_context.ok or export_context.value is None:
+            return self.runtime.foundation.fail(export_context.issues)
         current = self.contract.get_edit_contract(repo_root, node_path=scope_path)
         if not current.ok or current.value is None:
             return self.runtime.foundation.fail(current.issues)
@@ -393,6 +400,7 @@ class NodeService:
             repo_root,
             scope_path=scope_path,
             contract=current.value.contract,
+            operation_context=export_context.value,
         )
         if not exports.ok or exports.value is None:
             return self.runtime.foundation.fail(exports.issues)
@@ -402,6 +410,7 @@ class NodeService:
             repo_root,
             node_path=scope_path,
             contract=current.value.contract,
+            scope_export_context=export_context.value,
         )
         if not identities.ok or identities.value is None:
             return self.runtime.foundation.fail(identities.issues)
@@ -410,6 +419,7 @@ class NodeService:
         closure = self.public_statement_closure.check_scope(
             repo_root,
             scope_path=scope_path,
+            scope_export_context=export_context.value,
         )
         if not closure.ok or closure.value is None:
             return self.runtime.foundation.fail(closure.issues)
@@ -855,6 +865,12 @@ class NodeService:
         contract = self.contract.get_current_contract(repo_root, node_path=scope_path)
         if not contract.ok or contract.value is None:
             return self.runtime.foundation.fail(contract.issues)
+        export_context = self.export.create_scope_export_operation_context(
+            repo_root,
+            scope_path=scope_path,
+        )
+        if not export_context.ok or export_context.value is None:
+            return self.runtime.foundation.fail(export_context.issues)
         children = self._scope_child_close_views(repo_root, scope_path=scope_path)
         if not children.ok or children.value is None:
             return self.runtime.foundation.fail(children.issues)
@@ -862,11 +878,24 @@ class NodeService:
         interfaces = self.interface.list_interfaces(repo_root, node_path=scope_path)
         if not interfaces.ok or interfaces.value is None:
             return self.runtime.foundation.fail(interfaces.issues)
-        exports = self._scope_export_views_from_contract(repo_root, scope_path=scope_path, contract=contract.value)
-        candidates = self.export.list_scope_export_candidates(repo_root, scope_path=scope_path)
+        exports = self._scope_export_views_from_contract(
+            repo_root,
+            scope_path=scope_path,
+            contract=contract.value,
+            operation_context=export_context.value,
+        )
+        candidates = self.export.list_scope_export_candidates(
+            repo_root,
+            scope_path=scope_path,
+            operation_context=export_context.value,
+        )
         if not candidates.ok or candidates.value is None:
             return self.runtime.foundation.fail(candidates.issues)
-        commit_gate = self._scope_close_commit_gate(repo_root, scope_path=scope_path)
+        commit_gate = self._scope_close_commit_gate(
+            repo_root,
+            scope_path=scope_path,
+            operation_context=export_context.value,
+        )
         if not commit_gate.ok or commit_gate.value is None:
             return self.runtime.foundation.fail(commit_gate.issues)
         ready = child_gate.passed and commit_gate.value.passed
@@ -1109,12 +1138,34 @@ class NodeService:
             return self.runtime.foundation.gate_failed("scope_child_readiness", issues, summary=f"{len(issues)} direct child checks failed.")
         return self.runtime.foundation.gate_passed("scope_child_readiness", summary=f"{len(children)} direct children are ready.")
 
-    def _scope_export_views_from_contract(self, repo_root: Path, *, scope_path: str, contract: NodeContractView) -> list[DeclRefView]:
-        views = [self.export._decl_ref_view(repo_root, scope_path, ref, index=-1) for ref in contract.contract.exports]
+    def _scope_export_views_from_contract(
+        self,
+        repo_root: Path,
+        *,
+        scope_path: str,
+        contract: NodeContractView,
+        operation_context: ScopeExportOperationContext,
+    ) -> list[DeclRefView]:
+        views = [
+            self.export._decl_ref_view(
+                repo_root,
+                scope_path,
+                ref,
+                index=-1,
+                operation_context=operation_context,
+            )
+            for ref in contract.contract.exports
+        ]
         views.sort(key=lambda item: (item.ref.node, item.ref.name, item.ref.revision))
         return [view.model_copy(update={"index": index}) for index, view in enumerate(views)]
 
-    def _scope_close_commit_gate(self, repo_root: Path, *, scope_path: str) -> ServiceResult[GateReport]:
+    def _scope_close_commit_gate(
+        self,
+        repo_root: Path,
+        *,
+        scope_path: str,
+        operation_context: ScopeExportOperationContext,
+    ) -> ServiceResult[GateReport]:
         reports: list[GateReport] = []
         contract_gate = self.contract.check_scope_contract_commit(
             repo_root,
@@ -1128,6 +1179,7 @@ class NodeService:
         identity_gate = self.interface.check_bound_interface_lean_identities(
             repo_root,
             node_path=scope_path,
+            scope_export_context=operation_context,
         )
         if not identity_gate.ok or identity_gate.value is None:
             return self.runtime.foundation.fail(identity_gate.issues)
@@ -1137,6 +1189,7 @@ class NodeService:
             repo_root,
             scope_path=scope_path,
             summary="Scope close preflight.",
+            scope_export_context=operation_context,
         )
         if validation_gate.ok and validation_gate.value is not None:
             reports.append(validation_gate.value)

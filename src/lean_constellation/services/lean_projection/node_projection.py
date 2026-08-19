@@ -12,7 +12,11 @@ from lean_constellation.domain.common import StrictModel
 from lean_constellation.services.foundation import FoundationContext, GateReport, ServiceResult
 from lean_constellation.services.node.contract import ContractComponent
 from lean_constellation.services.node.contract_fields import NodeDep, NodeMathlibDeclUse, NodeMathlibModuleUse
-from lean_constellation.services.node.export import ExportComponent, ScopeExportCandidate
+from lean_constellation.services.node.export import (
+    ExportComponent,
+    ScopeExportCandidate,
+    ScopeExportOperationContext,
+)
 from lean_constellation.services.node.node_tree import NodeKind
 from lean_constellation.services.foundation.module_layout import (
     NativeModuleLayoutError,
@@ -158,7 +162,21 @@ class NodeProjectionComponent:
             )
         )
 
-    def render_interfaces(self, repo_root: Path, *, node_path: str) -> ServiceResult[str]:
+    def render_interfaces(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        scope_export_context: ScopeExportOperationContext | None = None,
+    ) -> ServiceResult[str]:
+        if scope_export_context is not None:
+            checked_context = self.export._scope_export_operation_context(
+                repo_root,
+                scope_path=node_path,
+                operation_context=scope_export_context,
+            )
+            if not checked_context.ok:
+                return self.runtime.foundation.fail(checked_context.issues)
         layout_issue = self._module_layout_issue(repo_root, node_path=node_path)
         if layout_issue is not None:
             return self.runtime.foundation.fail(layout_issue)
@@ -168,7 +186,11 @@ class NodeProjectionComponent:
         if contract.value.node_kind == NodeKind.CONTENT:
             imports_result = self._content_interface_imports(repo_root, node_path=node_path)
         elif contract.value.node_kind == NodeKind.SCOPE:
-            imports_result = self._scope_interface_imports(repo_root, scope_path=node_path)
+            imports_result = self._scope_interface_imports(
+                repo_root,
+                scope_path=node_path,
+                operation_context=scope_export_context,
+            )
         else:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
@@ -194,8 +216,18 @@ class NodeProjectionComponent:
         lines.extend(f"import {module}" for module in imports_result.value)
         return self.runtime.foundation.ok("\n".join(lines).rstrip() + "\n", warnings=imports_result.issues)
 
-    def refresh_interfaces(self, repo_root: Path, *, node_path: str) -> ServiceResult[ProjectionView]:
-        rendered = self.render_interfaces(repo_root, node_path=node_path)
+    def refresh_interfaces(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        scope_export_context: ScopeExportOperationContext | None = None,
+    ) -> ServiceResult[ProjectionView]:
+        rendered = self.render_interfaces(
+            repo_root,
+            node_path=node_path,
+            scope_export_context=scope_export_context,
+        )
         if not rendered.ok or rendered.value is None:
             return self.runtime.foundation.fail(rendered.issues)
         path = self._interfaces_path(repo_root, node_path)
@@ -226,8 +258,18 @@ class NodeProjectionComponent:
             warnings=rendered.issues,
         )
 
-    def check_interfaces_sync(self, repo_root: Path, *, node_path: str) -> ServiceResult[GateReport]:
-        rendered = self.render_interfaces(repo_root, node_path=node_path)
+    def check_interfaces_sync(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        scope_export_context: ScopeExportOperationContext | None = None,
+    ) -> ServiceResult[GateReport]:
+        rendered = self.render_interfaces(
+            repo_root,
+            node_path=node_path,
+            scope_export_context=scope_export_context,
+        )
         if not rendered.ok or rendered.value is None:
             return self.runtime.foundation.fail(rendered.issues)
         path = self._interfaces_path(repo_root, node_path)
@@ -333,8 +375,25 @@ class NodeProjectionComponent:
             imports.add(decl.module)
         return self.runtime.foundation.ok(sorted(imports), warnings=public.issues)
 
-    def _scope_interface_imports(self, repo_root: Path, *, scope_path: str) -> ServiceResult[list[str]]:
-        gate = self.export.validate_scope_exports(repo_root, scope_path=scope_path)
+    def _scope_interface_imports(
+        self,
+        repo_root: Path,
+        *,
+        scope_path: str,
+        operation_context: ScopeExportOperationContext | None = None,
+    ) -> ServiceResult[list[str]]:
+        context = self.export._scope_export_operation_context(
+            repo_root,
+            scope_path=scope_path,
+            operation_context=operation_context,
+        )
+        if not context.ok or context.value is None:
+            return self.runtime.foundation.fail(context.issues)
+        gate = self.export.validate_scope_exports(
+            repo_root,
+            scope_path=scope_path,
+            operation_context=context.value,
+        )
         if not gate.ok or gate.value is None:
             return self.runtime.foundation.fail(gate.issues)
         if not gate.value.passed:
@@ -342,7 +401,11 @@ class NodeProjectionComponent:
         contract = self.contract.get_current_contract(repo_root, node_path=scope_path)
         if not contract.ok or contract.value is None:
             return self.runtime.foundation.fail(contract.issues)
-        candidates = self.export.list_scope_export_candidates(repo_root, scope_path=scope_path)
+        candidates = self.export.list_scope_export_candidates(
+            repo_root,
+            scope_path=scope_path,
+            operation_context=context.value,
+        )
         if not candidates.ok or candidates.value is None:
             return self.runtime.foundation.fail(candidates.issues)
         by_key = {self._decl_ref_key(candidate.ref): candidate for candidate in candidates.value.candidates}

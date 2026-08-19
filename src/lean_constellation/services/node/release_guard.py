@@ -22,6 +22,9 @@ from lean_constellation.services.foundation import ServiceResult
 from lean_constellation.services.node.node_tree import DeleteImpactView, NodeContract, NodeKind, NodeLifecycle
 
 if TYPE_CHECKING:
+    from lean_constellation.services.repo_workspace.repo_release import (
+        RepoReleaseAuditContext,
+    )
     from lean_constellation.services.runtime import LeanRuntimeServices
 
 
@@ -31,7 +34,13 @@ class NodeReleaseGuard:
     def __init__(self, runtime: LeanRuntimeServices) -> None:
         self.runtime = runtime
 
-    def capture_content_contract_head(self, repo_root: Path, *, node_path: str) -> ServiceResult[dict[str, int]]:
+    def capture_content_contract_head(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        release_audit_context: RepoReleaseAuditContext | None = None,
+    ) -> ServiceResult[dict[str, int]]:
         rounds = self.runtime.decl_graph.list_rounds(repo_root, node_path=node_path)
         if not rounds.ok or rounds.value is None:
             return self.runtime.foundation.fail(rounds.issues)
@@ -106,7 +115,11 @@ class NodeReleaseGuard:
             if not sync.value.passed:
                 return self.runtime.foundation.fail(sync.value.issues)
             guarded = self.runtime.decl_graph.release_guard.check_update_candidate(
-                repo_root, node_path=node_path, decl=decl, candidate=revision.value
+                repo_root,
+                node_path=node_path,
+                decl=decl,
+                candidate=revision.value,
+                release_audit_context=release_audit_context,
             )
             if not guarded.ok:
                 return self.runtime.foundation.fail(guarded.issues)
@@ -207,40 +220,48 @@ class NodeReleaseGuard:
                 )
         return self.runtime.foundation.ok(None)
 
-    def check_scope_contract_candidate(self, repo_root: Path, *, scope_path: str, candidate: NodeContract) -> ServiceResult[None]:
+    def check_scope_contract_candidate(
+        self,
+        repo_root: Path,
+        *,
+        scope_path: str,
+        candidate: NodeContract,
+        release_audit_context: RepoReleaseAuditContext | None = None,
+    ) -> ServiceResult[None]:
         if candidate.decl_graph_head:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue("scope_decl_graph_head_not_empty", "Scope contracts must have an empty DeclGraph head.", object_ref=scope_path)
             )
-        latest = self.runtime.repo_workspace.release.get_latest_release(repo_root)
-        if not latest.ok:
-            return self.runtime.foundation.fail(latest.issues)
-        if latest.value is None:
-            return self.runtime.foundation.ok(None)
-        lineage = self.runtime.repo_workspace.release.resolve_release_lineage(
-            repo_root, release_id=latest.value.release.release_id
+        context = self.runtime.repo_workspace.release._audit_context_for_repo(
+            repo_root,
+            release_audit_context,
         )
-        if not lineage.ok or lineage.value is None:
-            return self.runtime.foundation.fail(lineage.issues)
-        nodes = self.runtime.node.node_tree.node_store.list_nodes(repo_root)
-        if not nodes.ok or nodes.value is None:
-            return self.runtime.foundation.fail(nodes.issues)
-        node = next((item for item in nodes.value if item.lifecycle == NodeLifecycle.ACTIVE and item.path == scope_path), None)
-        if node is None:
+        if not context.ok or context.value is None:
+            return self.runtime.foundation.fail(context.issues)
+        if context.value.release_id is None:
+            return self.runtime.foundation.ok(None)
+        node_id = context.value.node_ids_by_path.get(scope_path)
+        if node_id is None:
             return self.runtime.foundation.fail(self.runtime.foundation.issue("node_not_found", "Scope node is missing.", object_ref=scope_path))
         candidate_exports: dict[tuple[str | None, str, str], list[object]] = {}
         for ref in candidate.exports:
             candidate_exports.setdefault(self._ref_identity(ref), []).append(ref)
         candidate_interfaces = {item.name: item.bound_decl for item in candidate.interfaces}
-        for release in lineage.value:
-            version = release.node_contract_versions.get(node.node_id)
-            if version is None:
+        for release in context.value.lineage:
+            if release.node_contract_versions.get(node_id) is None:
                 continue
-            path = self.runtime.node.node_tree.node_store.contract_path(repo_root, node_id=node.node_id, version=version)
-            historical = self.runtime.foundation.store.read_json(path, NodeContract)
-            if not historical.ok or historical.value is None:
-                return self.runtime.foundation.fail(historical.issues)
-            for ref in historical.value.exports:
+            historical = context.value.release_contracts.get(
+                (release.release_id, node_id)
+            )
+            if historical is None:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "release_contract_missing",
+                        "Released Scope contract is missing from the audit lookup.",
+                        object_ref=f"{node_id}@{release.node_contract_versions[node_id]}",
+                    )
+                )
+            for ref in historical.exports:
                 replacements = candidate_exports.get(self._ref_identity(ref), [])
                 compatible = any(
                     self._refs_semantically_compatible(repo_root, historical=ref, candidate=replacement)
@@ -255,7 +276,7 @@ class NodeReleaseGuard:
                             current=str(self._ref_identity(ref)),
                         )
                     )
-            for interface in historical.value.interfaces:
+            for interface in historical.interfaces:
                 if interface.name not in candidate_interfaces:
                     compatible = False
                 elif interface.bound_decl is None:

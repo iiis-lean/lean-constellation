@@ -2,18 +2,23 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, TypeAlias
+from typing import TYPE_CHECKING, Callable, TypeAlias, TypeVar, cast
 
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.domain.refs import DeclRef
 from lean_constellation.domain.repo import ProofAvailability, RepoFormat
-from lean_constellation.domain.repo_release import ResolvedDeclRefView
+from lean_constellation.domain.repo_release import RepoRelease, ResolvedDeclRefView
 from lean_constellation.services.decl_graph.declared_api import DeclaredApiFingerprintComponent
 from lean_constellation.services.decl_graph.availability_policy import required_state_for_availability
 from lean_constellation.services.decl_graph.models import DeclLifecycle, DeclRevisionStatus, DeclState
 from lean_constellation.services.foundation import IssueSeverity, ServiceResult
-from lean_constellation.services.node.node_tree import NodeContract, NodeKind
+from lean_constellation.services.node.node_tree import (
+    NodeContract,
+    NodeKind,
+    NodeMetadata,
+)
 
 if TYPE_CHECKING:
     from lean_constellation.services.runtime import LeanRuntimeServices
@@ -29,6 +34,21 @@ class RepoReleaseHeads(StrictModel):
 
 
 DeclRefTarget: TypeAlias = CurrentContractHeads | RepoReleaseHeads
+
+
+_T = TypeVar("_T")
+
+
+@dataclass
+class _DeclRefResolutionContext:
+    """Operation-local memo shared only by one resolver batch."""
+
+    values: dict[tuple[object, ...], object] = field(default_factory=dict)
+
+    def get(self, key: tuple[object, ...], loader: Callable[[], _T]) -> _T:
+        if key not in self.values:
+            self.values[key] = loader()
+        return cast(_T, self.values[key])
 
 
 _STATE_RANK = {
@@ -59,6 +79,53 @@ class DeclRefCompatibilityComponent:
         required_availability: ProofAvailability,
         target: DeclRefTarget | None = None,
     ) -> ServiceResult[ResolvedDeclRefView]:
+        resolved = self.resolve_decl_refs_batch(
+            repo_root,
+            refs=[ref],
+            required_availability=required_availability,
+            target=target,
+        )
+        if not resolved.ok or resolved.value is None:
+            return self.runtime.foundation.fail(resolved.issues)
+        return self.runtime.foundation.ok(resolved.value[0], warnings=resolved.issues)
+
+    def resolve_decl_refs_batch(
+        self,
+        repo_root: Path,
+        *,
+        refs: list[DeclRef],
+        required_availability: ProofAvailability,
+        target: DeclRefTarget | None = None,
+        operation_context: _DeclRefResolutionContext | None = None,
+    ) -> ServiceResult[list[ResolvedDeclRefView]]:
+        """Resolve refs in order with caches scoped to this call only."""
+
+        context = operation_context or _DeclRefResolutionContext()
+        values: list[ResolvedDeclRefView] = []
+        warnings = []
+        for ref in refs:
+            resolved = self._resolve_decl_ref(
+                context,
+                Path(repo_root),
+                ref=ref,
+                required_availability=required_availability,
+                target=target,
+            )
+            if not resolved.ok or resolved.value is None:
+                return self.runtime.foundation.fail(resolved.issues)
+            values.append(resolved.value)
+            warnings.extend(resolved.issues)
+        return self.runtime.foundation.ok(values, warnings=warnings)
+
+    def _resolve_decl_ref(
+        self,
+        context: _DeclRefResolutionContext,
+        repo_root: Path,
+        *,
+        ref: DeclRef,
+        required_availability: ProofAvailability,
+        target: DeclRefTarget | None = None,
+    ) -> ServiceResult[ResolvedDeclRefView]:
         repo_root = Path(repo_root)
         target = target or CurrentContractHeads()
         target_repo = repo_root
@@ -71,18 +138,18 @@ class DeclRefCompatibilityComponent:
                         "decl_ref_repo_invalid", str(exc), object_ref=ref.repo
                     )
                 )
-            available = self.runtime.repo_workspace.provider_availability.check_provider_available(target_repo)
+            available = self._provider_availability(context, target_repo)
             if not available.ok or available.value is None:
                 return self.runtime.foundation.fail(available.issues)
             if not available.value.passed:
                 return self.runtime.foundation.ok(
                     self._unresolved(ref, "provider_not_stable")
                 )
-            repo_format = self.runtime.repo_workspace.metadata.get_repo_format(target_repo)
+            repo_format = self._repo_format(context, target_repo)
             if not repo_format.ok or repo_format.value is None:
                 return self.runtime.foundation.fail(repo_format.issues)
             if isinstance(target, CurrentContractHeads):
-                publication = self.runtime.repo_workspace.metadata.get_repo_publication(target_repo)
+                publication = self._repo_publication(context, target_repo)
                 if not publication.ok or publication.value is None:
                     return self.runtime.foundation.fail(publication.issues)
                 release_id = publication.value.publication.latest_release_id
@@ -91,34 +158,60 @@ class DeclRefCompatibilityComponent:
                 target = RepoReleaseHeads(release_id=release_id)
 
         try:
-            anchor = self.runtime.decl_graph.decl_catalog.get_decl_revision(
-                target_repo, node_path=ref.node, name=ref.name, revision=ref.revision
+            anchor = self._decl_revision(
+                context,
+                target_repo,
+                node_path=ref.node,
+                name=ref.name,
+                revision=ref.revision,
             )
         except ValueError:
             return self.runtime.foundation.ok(self._unresolved(ref, "anchor_missing"))
         if not anchor.ok or anchor.value is None or anchor.value.status != DeclRevisionStatus.COMMITTED:
             return self.runtime.foundation.ok(self._unresolved(ref, "anchor_missing"))
-        resolved_revision = self._target_revision(target_repo, ref=ref, target=target)
+        resolved_revision = self._target_revision(
+            context,
+            target_repo,
+            ref=ref,
+            target=target,
+        )
         if not resolved_revision.ok:
             return self.runtime.foundation.fail(resolved_revision.issues)
         if resolved_revision.value is None:
             return self.runtime.foundation.ok(self._unresolved(ref, "target_missing"))
-        current = self.runtime.decl_graph.decl_catalog.get_decl(target_repo, node_path=ref.node, name=ref.name)
+        current = self._decl(
+            context,
+            target_repo,
+            node_path=ref.node,
+            name=ref.name,
+        )
         if not current.ok or current.value is None:
             return self.runtime.foundation.ok(self._unresolved(ref, "target_missing"))
         if current.value.lifecycle != DeclLifecycle.ACTIVE:
             return self.runtime.foundation.ok(self._unresolved(ref, "target_deleted"))
-        resolved = self.runtime.decl_graph.decl_catalog.get_decl_revision(
-            target_repo, node_path=ref.node, name=ref.name, revision=resolved_revision.value
+        resolved = self._decl_revision(
+            context,
+            target_repo,
+            node_path=ref.node,
+            name=ref.name,
+            revision=resolved_revision.value,
         )
         if not resolved.ok or resolved.value is None or resolved.value.status != DeclRevisionStatus.COMMITTED:
             return self.runtime.foundation.ok(self._unresolved(ref, "target_missing"))
         if resolved_revision.value != ref.revision:
-            anchor_fp = self.fingerprint.fingerprint(
-                target_repo, node_path=ref.node, decl_name=ref.name, revision=ref.revision
+            anchor_fp = self._fingerprint(
+                context,
+                target_repo,
+                node_path=ref.node,
+                decl_name=ref.name,
+                revision=ref.revision,
             )
-            target_fp = self.fingerprint.fingerprint(
-                target_repo, node_path=ref.node, decl_name=ref.name, revision=resolved_revision.value
+            target_fp = self._fingerprint(
+                context,
+                target_repo,
+                node_path=ref.node,
+                decl_name=ref.name,
+                revision=resolved_revision.value,
             )
             if not anchor_fp.ok or anchor_fp.value is None:
                 return self.runtime.foundation.ok(self._unresolved(ref, "anchor_missing"))
@@ -165,25 +258,108 @@ class DeclRefCompatibilityComponent:
     ) -> ServiceResult[ResolvedDeclRefView]:
         """Resolve an external ref only when it crosses the provider's public Main boundary."""
 
+        resolved = self.resolve_public_decl_refs_batch(
+            consumer_repo_root,
+            refs=[ref],
+            required_availability=required_availability,
+        )
+        if not resolved.ok or resolved.value is None:
+            return self.runtime.foundation.fail(resolved.issues)
+        return self.runtime.foundation.ok(resolved.value[0], warnings=resolved.issues)
+
+    def resolve_public_decl_refs_batch(
+        self,
+        consumer_repo_root: Path,
+        *,
+        refs: list[DeclRef],
+        required_availability: ProofAvailability,
+        operation_context: _DeclRefResolutionContext | None = None,
+    ) -> ServiceResult[list[ResolvedDeclRefView]]:
+        """Resolve external refs in order with one operation-local context."""
+
+        context = operation_context or _DeclRefResolutionContext()
+        values: list[ResolvedDeclRefView] = []
+        warnings = []
+        for ref in refs:
+            resolved = self._resolve_public_decl_ref(
+                context,
+                Path(consumer_repo_root),
+                ref=ref,
+                required_availability=required_availability,
+            )
+            if not resolved.ok or resolved.value is None:
+                return self.runtime.foundation.fail(resolved.issues)
+            values.append(resolved.value)
+            warnings.extend(resolved.issues)
+        return self.runtime.foundation.ok(values, warnings=warnings)
+
+    def create_operation_context(self) -> _DeclRefResolutionContext:
+        """Create an unpersisted context for one trusted service operation."""
+
+        return _DeclRefResolutionContext()
+
+    def prime_release_heads(
+        self,
+        context: _DeclRefResolutionContext,
+        repo_root: Path,
+        *,
+        release: RepoRelease,
+        release_nodes: list[tuple[NodeMetadata, NodeContract]],
+    ) -> None:
+        """Seed exact immutable release heads already loaded by an outer service."""
+
+        repo_root = Path(repo_root)
+        context.values[("release", repo_root, release.release_id)] = (
+            self.runtime.foundation.ok(
+                self.runtime.repo_workspace.release._view(repo_root, release)
+            )
+        )
+        for node, contract in release_nodes:
+            node_id = getattr(node, "node_id")
+            context.values[("release_node", repo_root, node_id)] = (
+                self.runtime.foundation.ok(node)
+            )
+            context.values[
+                (
+                    "release_contract",
+                    repo_root,
+                    node_id,
+                    release.node_contract_versions[node_id],
+                )
+            ] = self.runtime.foundation.ok(contract)
+
+    def _resolve_public_decl_ref(
+        self,
+        context: _DeclRefResolutionContext,
+        consumer_repo_root: Path,
+        *,
+        ref: DeclRef,
+        required_availability: ProofAvailability,
+    ) -> ServiceResult[ResolvedDeclRefView]:
+
         if ref.repo is None:
             return self.runtime.foundation.ok(self._unresolved(ref, "external_repo_missing"))
         try:
             provider_root = Path(consumer_repo_root).parent / self.runtime.foundation.layout.ensure_safe_key(ref.repo)
         except ValueError:
             return self.runtime.foundation.ok(self._unresolved(ref, "external_repo_invalid"))
-        available = self.runtime.repo_workspace.provider_availability.check_provider_available(provider_root)
+        available = self._provider_availability(context, provider_root)
         if not available.ok or available.value is None:
             return self.runtime.foundation.fail(available.issues)
         if not available.value.passed:
             return self.runtime.foundation.ok(self._unresolved(ref, "provider_not_stable"))
-        repo_format = self.runtime.repo_workspace.metadata.get_repo_format(provider_root)
+        repo_format = self._repo_format(context, provider_root)
         if not repo_format.ok or repo_format.value is None:
             return self.runtime.foundation.fail(repo_format.issues)
         local_ref = ref.model_copy(update={"repo": None})
-        context = self._public_boundary_context(provider_root, repo_format=repo_format.value.repo_format)
-        if not context.ok or context.value is None:
-            return self.runtime.foundation.fail(context.issues)
-        boundary_refs, target = context.value
+        boundary_context = self._public_boundary_context(
+            context,
+            provider_root,
+            repo_format=repo_format.value.repo_format,
+        )
+        if not boundary_context.ok or boundary_context.value is None:
+            return self.runtime.foundation.fail(boundary_context.issues)
+        boundary_refs, target = boundary_context.value
         boundary_ref = next(
             (
                 candidate
@@ -195,6 +371,7 @@ class DeclRefCompatibilityComponent:
         if boundary_ref is None:
             return self.runtime.foundation.ok(self._unresolved(ref, "provider_decl_not_exported"))
         boundary = self._resolve_public_local_ref(
+            context,
             provider_root,
             repo_format=repo_format.value.repo_format,
             ref=boundary_ref,
@@ -202,6 +379,7 @@ class DeclRefCompatibilityComponent:
             target=target,
         )
         requested = self._resolve_public_local_ref(
+            context,
             provider_root,
             repo_format=repo_format.value.repo_format,
             ref=local_ref,
@@ -237,7 +415,8 @@ class DeclRefCompatibilityComponent:
         """Enumerate the format-aware Main public boundary of a stable provider."""
 
         provider_repo_root = Path(provider_repo_root)
-        available = self.runtime.repo_workspace.provider_availability.check_provider_available(provider_repo_root)
+        resolution_context = _DeclRefResolutionContext()
+        available = self._provider_availability(resolution_context, provider_repo_root)
         if not available.ok or available.value is None:
             return self.runtime.foundation.fail(available.issues)
         if not available.value.passed:
@@ -248,17 +427,19 @@ class DeclRefCompatibilityComponent:
                     for issue in available.value.issues
                 ],
             )
-        repo_format = self.runtime.repo_workspace.metadata.get_repo_format(provider_repo_root)
+        repo_format = self._repo_format(resolution_context, provider_repo_root)
         if not repo_format.ok or repo_format.value is None:
             return self.runtime.foundation.fail(repo_format.issues)
-        context = self._public_boundary_context(
+        boundary_context = self._public_boundary_context(
+            resolution_context,
             provider_repo_root,
             repo_format=repo_format.value.repo_format,
         )
-        if not context.ok or context.value is None:
-            return self.runtime.foundation.fail(context.issues)
-        refs, target = context.value
+        if not boundary_context.ok or boundary_context.value is None:
+            return self.runtime.foundation.fail(boundary_context.issues)
+        refs, target = boundary_context.value
         return self._resolve_public_boundary_refs(
+            resolution_context,
             provider_repo_root,
             repo_format=repo_format.value.repo_format,
             refs=refs,
@@ -275,17 +456,16 @@ class DeclRefCompatibilityComponent:
         """Enumerate the format-aware Main boundary before stable publication."""
 
         provider_repo_root = Path(provider_repo_root)
-        repo_format = self.runtime.repo_workspace.metadata.get_repo_format(provider_repo_root)
+        context = _DeclRefResolutionContext()
+        repo_format = self._repo_format(context, provider_repo_root)
         if not repo_format.ok or repo_format.value is None:
             return self.runtime.foundation.fail(repo_format.issues)
         if repo_format.value.repo_format == RepoFormat.ADAPTER:
-            current = self.runtime.node.contract.get_current_contract(
-                provider_repo_root,
-                node_path="Main",
-            )
+            current = self._current_contract(context, provider_repo_root, node_path="Main")
             if not current.ok or current.value is None:
                 return self.runtime.foundation.fail(current.issues)
             return self._resolve_public_boundary_refs(
+                context,
                 provider_repo_root,
                 repo_format=repo_format.value.repo_format,
                 refs=list(current.value.contract.exports),
@@ -325,6 +505,7 @@ class DeclRefCompatibilityComponent:
 
     def _resolve_public_boundary_refs(
         self,
+        context: _DeclRefResolutionContext,
         provider_repo_root: Path,
         *,
         repo_format: RepoFormat,
@@ -335,6 +516,7 @@ class DeclRefCompatibilityComponent:
         values: list[ResolvedDeclRefView] = []
         for boundary_ref in refs:
             resolved = self._resolve_public_local_ref(
+                context,
                 provider_repo_root,
                 repo_format=repo_format,
                 ref=boundary_ref,
@@ -355,22 +537,20 @@ class DeclRefCompatibilityComponent:
         """Read Main interface bindings from the same current or released public boundary."""
 
         provider_repo_root = Path(provider_repo_root)
-        repo_format = self.runtime.repo_workspace.metadata.get_repo_format(provider_repo_root)
+        context = _DeclRefResolutionContext()
+        repo_format = self._repo_format(context, provider_repo_root)
         if not repo_format.ok or repo_format.value is None:
             return self.runtime.foundation.fail(repo_format.issues)
         if require_stable and repo_format.value.repo_format in {
             RepoFormat.NATIVE,
             RepoFormat.ADAPTER,
         }:
-            released = self._released_main_contract(provider_repo_root)
+            released = self._released_main_contract(context, provider_repo_root)
             if not released.ok or released.value is None:
                 return self.runtime.foundation.fail(released.issues)
             contract = released.value[0]
         else:
-            current = self.runtime.node.contract.get_current_contract(
-                provider_repo_root,
-                node_path="Main",
-            )
+            current = self._current_contract(context, provider_repo_root, node_path="Main")
             if not current.ok or current.value is None:
                 return self.runtime.foundation.fail(current.issues)
             contract = current.value.contract
@@ -380,6 +560,7 @@ class DeclRefCompatibilityComponent:
 
     def _public_boundary_context(
         self,
+        context: _DeclRefResolutionContext,
         provider_repo_root: Path,
         *,
         repo_format: RepoFormat,
@@ -393,7 +574,28 @@ class DeclRefCompatibilityComponent:
                     current=repo_format.value,
                 )
             )
-        released = self._released_main_contract(provider_repo_root)
+        key = (
+            "public_boundary",
+            provider_repo_root,
+            repo_format.value,
+        )
+        return context.get(
+            key,
+            lambda: self._load_public_boundary_context(
+                context,
+                provider_repo_root,
+                repo_format=repo_format,
+            ),
+        )
+
+    def _load_public_boundary_context(
+        self,
+        context: _DeclRefResolutionContext,
+        provider_repo_root: Path,
+        *,
+        repo_format: RepoFormat,
+    ) -> ServiceResult[tuple[list[DeclRef], RepoReleaseHeads | None]]:
+        released = self._released_main_contract(context, provider_repo_root)
         if not released.ok or released.value is None:
             return self.runtime.foundation.fail(released.issues)
         contract, target = released.value
@@ -401,9 +603,10 @@ class DeclRefCompatibilityComponent:
 
     def _released_main_contract(
         self,
+        context: _DeclRefResolutionContext,
         provider_repo_root: Path,
     ) -> ServiceResult[tuple[NodeContract, RepoReleaseHeads]]:
-        publication = self.runtime.repo_workspace.metadata.get_repo_publication(provider_repo_root)
+        publication = self._repo_publication(context, provider_repo_root)
         if not publication.ok or publication.value is None:
             return self.runtime.foundation.fail(publication.issues)
         release_id = publication.value.publication.latest_release_id
@@ -415,17 +618,20 @@ class DeclRefCompatibilityComponent:
                     object_ref=str(provider_repo_root),
                 )
             )
-        release = self.runtime.repo_workspace.release.get_release(provider_repo_root, release_id=release_id)
+        release = self._release(context, provider_repo_root, release_id=release_id)
         if not release.ok or release.value is None:
             return self.runtime.foundation.fail(release.issues)
         for node_id, version in release.value.release.node_contract_versions.items():
-            node = self.runtime.node.node_tree.node_store.load_node_by_id(provider_repo_root, node_id=node_id)
+            node = self._release_node(context, provider_repo_root, node_id=node_id)
             if not node.ok or node.value is None:
                 return self.runtime.foundation.fail(node.issues)
             if node.value.path != "Main" or node.value.kind != NodeKind.SCOPE:
                 continue
-            loaded = self.runtime.repo_workspace.release._load_contract(
-                provider_repo_root, node_id=node_id, version=version
+            loaded = self._release_contract(
+                context,
+                provider_repo_root,
+                node_id=node_id,
+                version=version,
             )
             if not loaded.ok or loaded.value is None:
                 return self.runtime.foundation.fail(loaded.issues)
@@ -442,6 +648,7 @@ class DeclRefCompatibilityComponent:
 
     def _resolve_public_local_ref(
         self,
+        context: _DeclRefResolutionContext,
         provider_repo_root: Path,
         *,
         repo_format: RepoFormat,
@@ -451,12 +658,14 @@ class DeclRefCompatibilityComponent:
     ) -> ServiceResult[ResolvedDeclRefView]:
         if repo_format == RepoFormat.ADAPTER and target is None:
             return self._resolve_adapter_anchor(
+                context,
                 provider_repo_root,
                 ref=ref,
                 required_availability=required_availability,
             )
         assert target is not None
-        return self.resolve_decl_ref(
+        return self._resolve_decl_ref(
+            context,
             provider_repo_root,
             ref=ref,
             required_availability=required_availability,
@@ -465,20 +674,46 @@ class DeclRefCompatibilityComponent:
 
     def _target_revision(
         self,
+        context: _DeclRefResolutionContext,
         repo_root: Path,
         *,
         ref: DeclRef,
         target: DeclRefTarget,
     ) -> ServiceResult[int | None]:
-        repo_format = self.runtime.repo_workspace.metadata.get_repo_format(repo_root)
+        target_key = (
+            target.kind,
+            target.release_id if isinstance(target, RepoReleaseHeads) else None,
+        )
+        return context.get(
+            (
+                "target_revision",
+                repo_root,
+                target_key,
+                ref.node,
+                ref.name,
+            ),
+            lambda: self._load_target_revision(
+                context,
+                repo_root,
+                ref=ref,
+                target=target,
+            ),
+        )
+
+    def _load_target_revision(
+        self,
+        context: _DeclRefResolutionContext,
+        repo_root: Path,
+        *,
+        ref: DeclRef,
+        target: DeclRefTarget,
+    ) -> ServiceResult[int | None]:
+        repo_format = self._repo_format(context, repo_root)
         if not repo_format.ok or repo_format.value is None:
             return self.runtime.foundation.fail(repo_format.issues)
         if isinstance(target, CurrentContractHeads):
             if repo_format.value.repo_format == RepoFormat.ADAPTER:
-                main = self.runtime.node.contract.get_current_contract(
-                    repo_root,
-                    node_path="Main",
-                )
+                main = self._current_contract(context, repo_root, node_path="Main")
                 if not main.ok or main.value is None:
                     return self.runtime.foundation.fail(main.issues)
                 match = next(
@@ -492,21 +727,26 @@ class DeclRefCompatibilityComponent:
                     None,
                 )
                 return self.runtime.foundation.ok(match)
-            node = self.runtime.node.node_tree.get_node(repo_root, path=ref.node)
+            node = self._node(context, repo_root, node_path=ref.node)
             if not node.ok or node.value is None or node.value.kind != NodeKind.CONTENT:
                 return self.runtime.foundation.ok(None)
-            contract = self.runtime.node.contract.get_visible_contract(repo_root, node_path=ref.node)
+            contract = self._visible_contract(context, repo_root, node_path=ref.node)
             if not contract.ok or contract.value is None:
                 return self.runtime.foundation.ok(None)
             return self.runtime.foundation.ok(contract.value.contract.decl_graph_head.get(ref.name))
-        release = self.runtime.repo_workspace.release.get_release(repo_root, release_id=target.release_id)
+        release = self._release(context, repo_root, release_id=target.release_id)
         if not release.ok or release.value is None:
             return self.runtime.foundation.fail(release.issues)
         for node_id, version in release.value.release.node_contract_versions.items():
-            node = self.runtime.node.node_tree.node_store.load_node_by_id(repo_root, node_id=node_id)
+            node = self._release_node(context, repo_root, node_id=node_id)
             if not node.ok or node.value is None:
                 return self.runtime.foundation.fail(node.issues)
-            contract = self.runtime.repo_workspace.release._load_contract(repo_root, node_id=node_id, version=version)
+            contract = self._release_contract(
+                context,
+                repo_root,
+                node_id=node_id,
+                version=version,
+            )
             if not contract.ok or contract.value is None:
                 return self.runtime.foundation.fail(contract.issues)
             if repo_format.value.repo_format == RepoFormat.ADAPTER:
@@ -531,17 +771,22 @@ class DeclRefCompatibilityComponent:
 
     def _resolve_adapter_anchor(
         self,
+        context: _DeclRefResolutionContext,
         repo_root: Path,
         *,
         ref: DeclRef,
         required_availability: ProofAvailability,
     ) -> ServiceResult[ResolvedDeclRefView]:
-        revision = self.runtime.decl_graph.decl_catalog.get_decl_revision(
-            repo_root, node_path=ref.node, name=ref.name, revision=ref.revision
+        revision = self._decl_revision(
+            context,
+            repo_root,
+            node_path=ref.node,
+            name=ref.name,
+            revision=ref.revision,
         )
         if not revision.ok or revision.value is None:
             return self.runtime.foundation.ok(self._unresolved(ref, "anchor_missing"))
-        decl = self.runtime.decl_graph.decl_catalog.get_decl(repo_root, node_path=ref.node, name=ref.name)
+        decl = self._decl(context, repo_root, node_path=ref.node, name=ref.name)
         if not decl.ok or decl.value is None or decl.value.lifecycle != DeclLifecycle.ACTIVE:
             return self.runtime.foundation.ok(self._unresolved(ref, "target_missing"))
         floor = required_state_for_availability(decl.value.kind, required_availability)
@@ -554,6 +799,180 @@ class DeclRefCompatibilityComponent:
                 current_state=revision.value.state.value,
                 reason="exact_revision" if compatible else "state_too_low",
             )
+        )
+
+    def _provider_availability(
+        self,
+        context: _DeclRefResolutionContext,
+        repo_root: Path,
+    ) -> ServiceResult:
+        return context.get(
+            ("provider_availability", repo_root),
+            lambda: self.runtime.repo_workspace.provider_availability.check_provider_available(repo_root),
+        )
+
+    def _repo_format(
+        self,
+        context: _DeclRefResolutionContext,
+        repo_root: Path,
+    ) -> ServiceResult:
+        return context.get(
+            ("repo_format", repo_root),
+            lambda: self.runtime.repo_workspace.metadata.get_repo_format(repo_root),
+        )
+
+    def _repo_publication(
+        self,
+        context: _DeclRefResolutionContext,
+        repo_root: Path,
+    ) -> ServiceResult:
+        return context.get(
+            ("repo_publication", repo_root),
+            lambda: self.runtime.repo_workspace.metadata.get_repo_publication(repo_root),
+        )
+
+    def _release(
+        self,
+        context: _DeclRefResolutionContext,
+        repo_root: Path,
+        *,
+        release_id: str,
+    ) -> ServiceResult:
+        return context.get(
+            ("release", repo_root, release_id),
+            lambda: self.runtime.repo_workspace.release.get_release(
+                repo_root,
+                release_id=release_id,
+            ),
+        )
+
+    def _release_node(
+        self,
+        context: _DeclRefResolutionContext,
+        repo_root: Path,
+        *,
+        node_id: str,
+    ) -> ServiceResult:
+        return context.get(
+            ("release_node", repo_root, node_id),
+            lambda: self.runtime.node.node_tree.node_store.load_node_by_id(
+                repo_root,
+                node_id=node_id,
+            ),
+        )
+
+    def _release_contract(
+        self,
+        context: _DeclRefResolutionContext,
+        repo_root: Path,
+        *,
+        node_id: str,
+        version: int,
+    ) -> ServiceResult:
+        return context.get(
+            ("release_contract", repo_root, node_id, version),
+            lambda: self.runtime.repo_workspace.release._load_contract(
+                repo_root,
+                node_id=node_id,
+                version=version,
+            ),
+        )
+
+    def _current_contract(
+        self,
+        context: _DeclRefResolutionContext,
+        repo_root: Path,
+        *,
+        node_path: str,
+    ) -> ServiceResult:
+        return context.get(
+            ("current_contract", repo_root, node_path),
+            lambda: self.runtime.node.contract.get_current_contract(
+                repo_root,
+                node_path=node_path,
+            ),
+        )
+
+    def _visible_contract(
+        self,
+        context: _DeclRefResolutionContext,
+        repo_root: Path,
+        *,
+        node_path: str,
+    ) -> ServiceResult:
+        return context.get(
+            ("visible_contract", repo_root, node_path),
+            lambda: self.runtime.node.contract.get_visible_contract(
+                repo_root,
+                node_path=node_path,
+            ),
+        )
+
+    def _node(
+        self,
+        context: _DeclRefResolutionContext,
+        repo_root: Path,
+        *,
+        node_path: str,
+    ) -> ServiceResult:
+        return context.get(
+            ("node", repo_root, node_path),
+            lambda: self.runtime.node.node_tree.get_node(repo_root, path=node_path),
+        )
+
+    def _decl(
+        self,
+        context: _DeclRefResolutionContext,
+        repo_root: Path,
+        *,
+        node_path: str,
+        name: str,
+    ) -> ServiceResult:
+        return context.get(
+            ("decl", repo_root, node_path, name),
+            lambda: self.runtime.decl_graph.decl_catalog.get_decl(
+                repo_root,
+                node_path=node_path,
+                name=name,
+            ),
+        )
+
+    def _decl_revision(
+        self,
+        context: _DeclRefResolutionContext,
+        repo_root: Path,
+        *,
+        node_path: str,
+        name: str,
+        revision: int,
+    ) -> ServiceResult:
+        return context.get(
+            ("decl_revision", repo_root, node_path, name, revision),
+            lambda: self.runtime.decl_graph.decl_catalog.get_decl_revision(
+                repo_root,
+                node_path=node_path,
+                name=name,
+                revision=revision,
+            ),
+        )
+
+    def _fingerprint(
+        self,
+        context: _DeclRefResolutionContext,
+        repo_root: Path,
+        *,
+        node_path: str,
+        decl_name: str,
+        revision: int,
+    ) -> ServiceResult:
+        return context.get(
+            ("declared_api_fingerprint", repo_root, node_path, decl_name, revision),
+            lambda: self.fingerprint.fingerprint(
+                repo_root,
+                node_path=node_path,
+                decl_name=decl_name,
+                revision=revision,
+            ),
         )
 
     def _unresolved(self, ref: DeclRef, reason: str) -> ResolvedDeclRefView:

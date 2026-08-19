@@ -42,6 +42,7 @@ if TYPE_CHECKING:
     from lean_constellation.services.lean_projection import LeanProjectionService
     from lean_constellation.services.material import MaterialService
     from lean_constellation.services.node import NodeService
+    from lean_constellation.services.node.export import ScopeExportOperationContext
     from lean_constellation.services.repo_workspace import RepoWorkspaceService
     from lean_constellation.services.runtime import LeanRuntimeServices
 
@@ -144,8 +145,20 @@ class ValidationSnapshotService:
     def get_content_ready_view(self, repo_root: Path, *, node_path: str) -> ServiceResult[ContentReadyGateView]:
         return self.readiness_gate.get_content_ready_view(repo_root, node_path=node_path)
 
-    def check_scope_commit(self, repo_root: Path, *, scope_path: str, summary: str) -> ServiceResult[GateReport]:
-        return self.readiness_gate.check_scope_commit(repo_root, scope_path=scope_path, summary=summary)
+    def check_scope_commit(
+        self,
+        repo_root: Path,
+        *,
+        scope_path: str,
+        summary: str,
+        scope_export_context: "ScopeExportOperationContext | None" = None,
+    ) -> ServiceResult[GateReport]:
+        return self.readiness_gate.check_scope_commit(
+            repo_root,
+            scope_path=scope_path,
+            summary=summary,
+            scope_export_context=scope_export_context,
+        )
 
     def get_scope_ready_view(self, repo_root: Path, *, scope_path: str) -> ServiceResult[ScopeReadyGateView]:
         return self.readiness_gate.get_scope_ready_view(repo_root, scope_path=scope_path)

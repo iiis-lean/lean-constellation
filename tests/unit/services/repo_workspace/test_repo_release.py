@@ -16,7 +16,7 @@ from lean_constellation.services.decl_graph.models import (
     RepoDeclDep,
 )
 from lean_constellation.services.foundation import FoundationContext, WriteMode
-from lean_constellation.services.node import NodeContractStatus
+from lean_constellation.services.node import NodeContract, NodeContractStatus
 from tests.unit_services_helpers import (
     initialize_native_test_repo,
     lean_check_payload,
@@ -360,6 +360,262 @@ def test_release_baseline_protects_cross_node_statement_closure_but_not_proof_de
     assert private_status.value.released_state == "proved"
 
 
+def test_release_status_batch_freezes_one_lineage_and_rebuilds_after_mutation(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime, versions = _prepare_release_repo(tmp_path)
+    assert runtime.repo_workspace.release.create_release(
+        tmp_path,
+        release=_release("r1", versions),
+    ).ok
+    assert runtime.foundation.store.write_json_atomic(
+        runtime.repo_workspace.metadata._repo_publication_path(tmp_path),
+        RepoPublicationState(
+            status=RepoPublicationStatus.STABLE,
+            latest_release_id="r1",
+        ),
+        mode=WriteMode.OVERWRITE,
+    ).ok
+    component = runtime.repo_workspace.release
+    lineage_calls = 0
+    original_lineage = component.resolve_release_lineage
+
+    def count_lineage(*args, **kwargs):  # noqa: ANN001, ANN202
+        nonlocal lineage_calls
+        lineage_calls += 1
+        return original_lineage(*args, **kwargs)
+
+    monkeypatch.setattr(component, "resolve_release_lineage", count_lineage)
+    requested = [
+        ("Main.Foundation.Defs", "Support"),
+        ("Main.Foundation.Defs", "ProofHelper"),
+        ("Main.Results", "PublicResult"),
+        ("Main.Foundation.Defs", "Support"),
+    ]
+
+    first = component.get_decl_release_status_batch(tmp_path, decls=requested)
+
+    assert first.ok and first.value is not None
+    assert lineage_calls == 1
+    assert [item.model_dump() for item in first.value] == [
+        {
+            "current_state": "proved",
+            "released_state": "proved",
+            "release_protected": True,
+            "summary": "Declaration is release protected.",
+        },
+        {
+            "current_state": "proved",
+            "released_state": "proved",
+            "release_protected": False,
+            "summary": "Declaration is not release protected.",
+        },
+        {
+            "current_state": "proved",
+            "released_state": "proved",
+            "release_protected": True,
+            "summary": "Declaration is release protected.",
+        },
+        {
+            "current_state": "proved",
+            "released_state": "proved",
+            "release_protected": True,
+            "summary": "Declaration is release protected.",
+        },
+    ]
+
+    _write_decl(
+        tmp_path,
+        node_path="Main.Foundation.Defs",
+        name="ProofHelper",
+        revision=2,
+        state=DeclState.DECLARED,
+    )
+    second = component.get_decl_release_status_batch(
+        tmp_path,
+        decls=[("Main.Foundation.Defs", "ProofHelper")],
+    )
+
+    assert second.ok and second.value is not None
+    assert lineage_calls == 2
+    assert second.value[0].current_state == "declared"
+    assert second.value[0].released_state == "proved"
+    assert second.value[0].release_protected is False
+
+
+def test_release_audit_context_uses_current_node_identity_after_recreated_path(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime, versions = _prepare_release_repo(tmp_path)
+    created = runtime.node.create_content_node(
+        tmp_path,
+        path="Main.Experimental",
+        goal="Historical experiment.",
+        boundary="Private historical content.",
+        objective="Record private history.",
+        success_criteria="Private history is recorded.",
+    )
+    assert created.ok and created.value is not None
+    old_node_id = created.value.node_id
+    _write_decl(
+        tmp_path,
+        node_path="Main.Experimental",
+        name="PrivateResult",
+    )
+    current = runtime.node.contract.get_current_contract(
+        tmp_path,
+        node_path="Main.Experimental",
+    )
+    assert current.ok and current.value is not None
+    current.value.contract.status = NodeContractStatus.COMMITTED
+    current.value.contract.committed_at = "2026-08-19T00:00:00Z"
+    current.value.contract.decl_graph_head = {"PrivateResult": 1}
+    assert runtime.foundation.store.write_json_atomic(
+        runtime.node.node_tree.node_store.contract_path(
+            tmp_path,
+            node_id=old_node_id,
+            version=current.value.contract.version,
+        ),
+        current.value.contract,
+        mode=WriteMode.UPDATE_EXISTING,
+    ).ok
+    metadata = runtime.node.node_tree.node_store.load_node_by_id(
+        tmp_path,
+        node_id=old_node_id,
+    ).value
+    metadata.active_contract_version = current.value.contract.version
+    metadata.current_contract_version = current.value.contract.version
+    metadata.open_contract_version = None
+    assert runtime.node.node_tree.node_store.save_node(
+        tmp_path,
+        metadata,
+        mode=WriteMode.UPDATE_EXISTING,
+    ).ok
+    versions[old_node_id] = current.value.contract.version
+    assert runtime.repo_workspace.release.create_release(
+        tmp_path,
+        release=_release("r1", versions),
+    ).ok
+    assert runtime.foundation.store.write_json_atomic(
+        runtime.repo_workspace.metadata._repo_publication_path(tmp_path),
+        RepoPublicationState(
+            status=RepoPublicationStatus.STABLE,
+            latest_release_id="r1",
+        ),
+        mode=WriteMode.OVERWRITE,
+    ).ok
+    assert runtime.node.mark_node_deleted(
+        tmp_path,
+        path="Main.Experimental",
+        reason="Replace the private experiment.",
+    ).ok
+    recreated = runtime.node.create_content_node(
+        tmp_path,
+        path="Main.Experimental",
+        goal="Replacement experiment.",
+        boundary="New private content.",
+        objective="Record replacement work.",
+        success_criteria="Replacement work is recorded.",
+    )
+    assert recreated.ok and recreated.value is not None
+    assert recreated.value.node_id != old_node_id
+    _write_decl(
+        tmp_path,
+        node_path="Main.Experimental",
+        name="PrivateResult",
+        state=DeclState.DECLARED,
+    )
+    node_store = runtime.node.node_tree.node_store
+    monkeypatch.setattr(
+        node_store,
+        "_scan_nodes",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("current index must not rescan node metadata")
+        ),
+    )
+
+    context = runtime.repo_workspace.release.create_release_audit_context(tmp_path)
+    assert context.ok and context.value is not None
+    assert context.value.node_ids_by_path["Main.Experimental"] == recreated.value.node_id
+    status = runtime.repo_workspace.release.get_decl_release_status_batch(
+        tmp_path,
+        decls=[("Main.Experimental", "PrivateResult")],
+        audit_context=context.value,
+    )
+
+    assert status.ok and status.value is not None
+    assert status.value[0].current_state == "declared"
+    assert status.value[0].released_state is None
+    assert status.value[0].release_protected is False
+
+
+def test_release_scope_chain_resolves_matching_exports_as_one_batch(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime, versions = _prepare_release_repo(tmp_path)
+    support = DeclRef(node="Main.Foundation.Defs", name="Support", revision=1)
+    public_result = DeclRef(node="Main.Results", name="PublicResult", revision=1)
+    for path, exports in (
+        ("Main", [support, public_result]),
+        ("Main.Foundation", [support, support]),
+    ):
+        node = runtime.node.node_tree.get_node(tmp_path, path=path).value
+        contract_path = runtime.node.node_tree.node_store.contract_path(
+            tmp_path,
+            node_id=node.node_id,
+            version=versions[node.node_id],
+        )
+        contract = runtime.foundation.store.read_json(
+            contract_path,
+            NodeContract,
+        ).value
+        contract.exports = exports
+        assert runtime.foundation.store.write_json_atomic(
+            contract_path,
+            contract,
+            mode=WriteMode.UPDATE_EXISTING,
+        ).ok
+    batch_sizes: list[int] = []
+    resolver = runtime.decl_graph.ref_compatibility
+    original_batch = resolver.resolve_decl_refs_batch
+
+    def count_batch(*args, **kwargs):  # noqa: ANN001, ANN202
+        batch_sizes.append(len(kwargs["refs"]))
+        return original_batch(*args, **kwargs)
+
+    monkeypatch.setattr(resolver, "resolve_decl_refs_batch", count_batch)
+    assert runtime.repo_workspace.release.create_release(
+        tmp_path,
+        release=_release("r1", versions),
+    ).ok
+    contract_reads = 0
+    component = runtime.repo_workspace.release
+    original_load_contract = component._load_contract
+
+    def count_contract(*args, **kwargs):  # noqa: ANN001, ANN202
+        nonlocal contract_reads
+        contract_reads += 1
+        return original_load_contract(*args, **kwargs)
+
+    monkeypatch.setattr(component, "_load_contract", count_contract)
+
+    baseline = component.resolve_release_baseline(
+        tmp_path,
+        release_id="r1",
+    )
+
+    assert baseline.ok and baseline.value is not None
+    assert [(item.node_path, item.decl_name) for item in baseline.value.protected_decl_views] == [
+        ("Main.Foundation.Defs", "Support"),
+        ("Main.Results", "PublicResult"),
+    ]
+    assert batch_sizes.count(2) >= 2
+    assert contract_reads == len(versions)
+
+
 def test_adapter_release_baseline_uses_flat_main_exports_and_statement_closure(
     tmp_path: Path,
 ) -> None:
@@ -574,6 +830,91 @@ def test_release_baseline_rejects_incompatible_intermediate_scope_anchor(tmp_pat
     assert runtime.repo_workspace.release.create_release(tmp_path, release=_release("r1", versions)).ok
 
     result = runtime.repo_workspace.release.resolve_release_baseline(tmp_path, release_id="r1")
+
+    assert not result.ok
+    assert result.issues[0].kind == "release_scope_chain_broken"
+
+
+def test_release_scope_chain_tolerant_fallback_uses_batch_of_one(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime, versions = _prepare_release_repo(tmp_path)
+    support = DeclRef(node="Main.Foundation.Defs", name="Support", revision=1)
+    malformed = support.model_copy(update={"revision": 999})
+    _set_contract_exports(runtime, tmp_path, node_path="Main", exports=[support])
+    _set_contract_exports(
+        runtime,
+        tmp_path,
+        node_path="Main.Foundation",
+        exports=[malformed, support],
+    )
+    resolver = runtime.decl_graph.ref_compatibility
+    original_batch = resolver.resolve_decl_refs_batch
+    batch_sizes: list[int] = []
+    failed_multi = False
+
+    def fail_scope_multi_batch(*args, **kwargs):  # noqa: ANN001, ANN202
+        nonlocal failed_multi
+        size = len(kwargs["refs"])
+        batch_sizes.append(size)
+        if size > 1 and not failed_multi:
+            failed_multi = True
+            return runtime.foundation.fail(
+                runtime.foundation.issue(
+                    "decl_ref_batch_fixture_failure",
+                    "Exercise the tolerant release scope fallback.",
+                )
+            )
+        return original_batch(*args, **kwargs)
+
+    monkeypatch.setattr(resolver, "resolve_decl_refs_batch", fail_scope_multi_batch)
+    monkeypatch.setattr(
+        resolver,
+        "resolve_decl_ref",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("fallback must use the batch-of-one core")
+        ),
+    )
+
+    created = runtime.repo_workspace.release.create_release(
+        tmp_path,
+        release=_release("r1", versions),
+    )
+    assert created.ok
+    result = runtime.repo_workspace.release.resolve_release_baseline(
+        tmp_path,
+        release_id="r1",
+    )
+
+    assert result.ok
+    multi_index = batch_sizes.index(2)
+    assert batch_sizes[multi_index + 1 : multi_index + 3] == [1, 1]
+
+
+def test_release_scope_chain_all_malformed_scope_alternatives_are_typed(
+    tmp_path: Path,
+) -> None:
+    runtime, versions = _prepare_release_repo(tmp_path)
+    support = DeclRef(node="Main.Foundation.Defs", name="Support", revision=1)
+    malformed = support.model_copy(update={"revision": 999})
+    _set_contract_exports(runtime, tmp_path, node_path="Main", exports=[support])
+    _set_contract_exports(
+        runtime,
+        tmp_path,
+        node_path="Main.Foundation",
+        exports=[malformed],
+    )
+
+    created = runtime.repo_workspace.release.create_release(
+        tmp_path,
+        release=_release("r1", versions),
+    )
+    assert created.ok
+    result = runtime.repo_workspace.release.resolve_release_baseline(
+        tmp_path,
+        release_id="r1",
+    )
 
     assert not result.ok
     assert result.issues[0].kind == "release_scope_chain_broken"

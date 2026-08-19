@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -10,11 +11,13 @@ from lean_constellation.domain.repo_release import (
     DeclAvailabilityEntry,
     DeclAvailabilityIndex,
     DeclReleaseStatusView,
+    ResolvedDeclRefView,
     ReleasedDeclProtectionView,
     RepoRelease,
     RepoReleaseBaselineView,
     RepoReleaseView,
 )
+from lean_constellation.domain.refs import DeclRef
 from lean_constellation.domain.repo import (
     ProofAvailability,
     RepoFormat,
@@ -25,12 +28,18 @@ from lean_constellation.services.decl_graph.availability_policy import (
 )
 from lean_constellation.services.decl_graph.models import (
     DeclLifecycle,
+    DeclRevision,
     DeclRevisionStatus,
     DeclState,
     RepoDeclDep,
 )
 from lean_constellation.services.foundation import FoundationContext, ServiceResult, WriteMode
-from lean_constellation.services.node.node_tree import NodeContract, NodeContractStatus, NodeKind
+from lean_constellation.services.node.node_tree import (
+    NodeContract,
+    NodeContractStatus,
+    NodeKind,
+    NodeMetadata,
+)
 
 if TYPE_CHECKING:
     from lean_constellation.services.runtime import LeanRuntimeServices
@@ -43,6 +52,27 @@ _STATE_RANK = {
     DeclState.PROOF_PLANNED: 3,
     DeclState.PROVED: 4,
 }
+
+
+@dataclass
+class RepoReleaseAuditContext:
+    """Frozen release lookup owned by one outer service operation."""
+
+    repo_root: Path
+    release_id: str | None
+    lineage: list[RepoRelease] = field(default_factory=list)
+    baseline: RepoReleaseBaselineView | None = None
+    node_ids_by_path: dict[str, str] = field(default_factory=dict)
+    protected_by_key: dict[tuple[str, str], ReleasedDeclProtectionView] = field(
+        default_factory=dict
+    )
+    latest_private_states: dict[tuple[str, str], str] = field(default_factory=dict)
+    released_head_revisions: dict[tuple[str, str, str], int] = field(
+        default_factory=dict
+    )
+    release_contracts: dict[tuple[str, str], NodeContract] = field(
+        default_factory=dict
+    )
 
 
 class RepoReleaseComponent:
@@ -301,31 +331,164 @@ class RepoReleaseComponent:
         if not lineage.ok or lineage.value is None:
             return self.runtime.foundation.fail(lineage.issues)
 
+        return self._resolve_release_baseline_from_lineage(
+            repo_root,
+            release_id=release_id,
+            lineage=lineage.value,
+        )
+
+    def _resolve_release_baseline_from_lineage(
+        self,
+        repo_root: Path,
+        *,
+        release_id: str,
+        lineage: list[RepoRelease],
+        release_nodes_by_id: dict[str, list[tuple[NodeMetadata, NodeContract]]] | None = None,
+        resolution_context=None,
+    ) -> ServiceResult[RepoReleaseBaselineView]:
+        resolution_context = (
+            resolution_context
+            or self.runtime.decl_graph.ref_compatibility.create_operation_context()
+        )
         protections: dict[tuple[str, str], ReleasedDeclProtectionView] = {}
         protected_node_ids: set[str] = set()
         protected_scope_paths: set[str] = set()
-        for release in lineage.value:
+        for release in lineage:
             result = self._accumulate_release_closure(
                 repo_root,
                 release=release,
                 protections=protections,
                 protected_node_ids=protected_node_ids,
                 protected_scope_paths=protected_scope_paths,
+                release_nodes=(release_nodes_by_id or {}).get(release.release_id),
+                resolution_context=resolution_context,
             )
             if not result.ok:
                 return self.runtime.foundation.fail(result.issues)
-        latest = lineage.value[-1]
+        latest = lineage[-1]
         return self.runtime.foundation.ok(
             RepoReleaseBaselineView(
                 release_id=release_id,
-                lineage_release_ids=[item.release_id for item in lineage.value],
+                lineage_release_ids=[item.release_id for item in lineage],
                 released_node_contract_versions=dict(latest.node_contract_versions),
                 protected_decl_views=sorted(protections.values(), key=lambda item: (item.node_path, item.decl_name)),
                 protected_node_ids=sorted(protected_node_ids),
                 protected_scope_paths=sorted(protected_scope_paths),
-                summary=f"Resolved {len(protections)} protected declarations across {len(lineage.value)} releases.",
+                summary=f"Resolved {len(protections)} protected declarations across {len(lineage)} releases.",
             )
         )
+
+    def create_release_audit_context(
+        self,
+        repo_root: Path,
+    ) -> ServiceResult[RepoReleaseAuditContext]:
+        """Freeze current latest release truth for one caller-owned operation."""
+
+        repo_root = Path(repo_root).resolve()
+        latest = self.get_latest_release(repo_root)
+        if not latest.ok:
+            return self.runtime.foundation.fail(latest.issues)
+        if latest.value is None:
+            return self.runtime.foundation.ok(
+                RepoReleaseAuditContext(repo_root=repo_root, release_id=None)
+            )
+        release_id = latest.value.release.release_id
+        lineage = self.resolve_release_lineage(repo_root, release_id=release_id)
+        if not lineage.ok or lineage.value is None:
+            return self.runtime.foundation.fail(lineage.issues)
+
+        node_index = self.runtime.node.node_tree.node_store.read_index(repo_root)
+        if not node_index.ok or node_index.value is None:
+            return self.runtime.foundation.fail(node_index.issues)
+        release_nodes_by_id: dict[str, list[tuple[NodeMetadata, NodeContract]]] = {}
+        node_ids_by_path = dict(node_index.value.active_path_to_node_id)
+        resolution_context = (
+            self.runtime.decl_graph.ref_compatibility.create_operation_context()
+        )
+        for release in lineage.value:
+            loaded = self._release_nodes(repo_root, release)
+            if not loaded.ok or loaded.value is None:
+                return self.runtime.foundation.fail(loaded.issues)
+            release_nodes_by_id[release.release_id] = loaded.value
+            self.runtime.decl_graph.ref_compatibility.prime_release_heads(
+                resolution_context,
+                repo_root,
+                release=release,
+                release_nodes=loaded.value,
+            )
+        baseline = self._resolve_release_baseline_from_lineage(
+            repo_root,
+            release_id=release_id,
+            lineage=lineage.value,
+            release_nodes_by_id=release_nodes_by_id,
+            resolution_context=resolution_context,
+        )
+        if not baseline.ok or baseline.value is None:
+            return self.runtime.foundation.fail(baseline.issues)
+
+        latest_private_states: dict[tuple[str, str], str] = {}
+        released_head_revisions: dict[tuple[str, str, str], int] = {}
+        release_contracts: dict[tuple[str, str], NodeContract] = {}
+        for release in lineage.value:
+            for node, contract in release_nodes_by_id[release.release_id]:
+                node_id = getattr(node, "node_id")
+                node_path = getattr(node, "path")
+                release_contracts[(release.release_id, node_id)] = contract
+                for decl_name, revision_number in contract.decl_graph_head.items():
+                    released_head_revisions[(release.release_id, node_id, decl_name)] = (
+                        revision_number
+                    )
+                    revision = self.runtime.decl_graph.decl_catalog.get_decl_revision(
+                        repo_root,
+                        node_path=node_path,
+                        name=decl_name,
+                        revision=revision_number,
+                    )
+                    if not revision.ok or revision.value is None:
+                        continue
+                    key = (node_id, decl_name)
+                    previous = latest_private_states.get(key)
+                    if previous is None or _STATE_RANK[revision.value.state] > _STATE_RANK[
+                        DeclState(previous)
+                    ]:
+                        latest_private_states[key] = revision.value.state.value
+
+        return self.runtime.foundation.ok(
+            RepoReleaseAuditContext(
+                repo_root=repo_root,
+                release_id=release_id,
+                lineage=list(lineage.value),
+                baseline=baseline.value,
+                node_ids_by_path=node_ids_by_path,
+                protected_by_key={
+                    (item.node_id, item.decl_name): item
+                    for item in baseline.value.protected_decl_views
+                },
+                latest_private_states=latest_private_states,
+                released_head_revisions=released_head_revisions,
+                release_contracts=release_contracts,
+            )
+        )
+
+    def _audit_context_for_repo(
+        self,
+        repo_root: Path,
+        audit_context: RepoReleaseAuditContext | None,
+    ) -> ServiceResult[RepoReleaseAuditContext]:
+        canonical_root = Path(repo_root).resolve()
+        if audit_context is None:
+            return self.create_release_audit_context(canonical_root)
+        if audit_context.repo_root != canonical_root:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "release_audit_context_repo_mismatch",
+                    "Release audit context belongs to a different repository.",
+                    object_ref=str(canonical_root),
+                    current=str(audit_context.repo_root),
+                    expected=str(canonical_root),
+                )
+            )
+        return self.runtime.foundation.ok(audit_context)
 
     def get_decl_release_status(
         self,
@@ -334,45 +497,138 @@ class RepoReleaseComponent:
         node_path: str,
         decl_name: str,
     ) -> ServiceResult[DeclReleaseStatusView]:
-        current = self.runtime.decl_graph.decl_catalog.get_decl(repo_root, node_path=node_path, name=decl_name)
-        if not current.ok or current.value is None:
-            return self.runtime.foundation.fail(current.issues)
+        batch = self.get_decl_release_status_batch(
+            repo_root,
+            decls=[(node_path, decl_name)],
+        )
+        if not batch.ok or batch.value is None:
+            return self.runtime.foundation.fail(batch.issues)
+        return self.runtime.foundation.ok(batch.value[0], warnings=batch.issues)
+
+    def get_decl_release_status_batch(
+        self,
+        repo_root: Path,
+        *,
+        decls: list[tuple[str, str]],
+        audit_context: RepoReleaseAuditContext | None = None,
+    ) -> ServiceResult[list[DeclReleaseStatusView]]:
+        """Resolve statuses in order against one operation-local release lookup."""
+
+        repo_root = Path(repo_root)
+        if not decls:
+            return self.runtime.foundation.ok([])
+        context_result = self._audit_context_for_repo(repo_root, audit_context)
+        if not context_result.ok or context_result.value is None:
+            return self.runtime.foundation.fail(context_result.issues)
+        context = context_result.value
+        current_states: list[str] = []
+        for node_path, decl_name in decls:
+            current = self.runtime.decl_graph.decl_catalog.get_decl(
+                repo_root,
+                node_path=node_path,
+                name=decl_name,
+            )
+            if not current.ok or current.value is None:
+                return self.runtime.foundation.fail(current.issues)
+            revision = self.runtime.decl_graph.decl_catalog.get_decl_revision(
+                repo_root,
+                node_path=node_path,
+                name=decl_name,
+                revision=current.value.current_revision,
+            )
+            if not revision.ok or revision.value is None:
+                return self.runtime.foundation.fail(revision.issues)
+            current_states.append(revision.value.state.value)
+
+        if context.release_id is None:
+            return self.runtime.foundation.ok(
+                [
+                    DeclReleaseStatusView(
+                        current_state=current_state,
+                        summary="Declaration has not appeared in a release.",
+                    )
+                    for current_state in current_states
+                ]
+            )
+
+        values: list[DeclReleaseStatusView] = []
+        for (node_path, decl_name), current_state in zip(
+            decls,
+            current_states,
+            strict=True,
+        ):
+            node_id = context.node_ids_by_path.get(node_path)
+            if node_id is None:
+                node = self.runtime.node.node_tree.get_node(repo_root, path=node_path)
+                if not node.ok or node.value is None:
+                    return self.runtime.foundation.fail(node.issues)
+                node_id = node.value.node_id
+            protected = context.protected_by_key.get((node_id, decl_name))
+            released_state = (
+                protected.released_state
+                if protected is not None
+                else context.latest_private_states.get((node_id, decl_name))
+            )
+            values.append(
+                DeclReleaseStatusView(
+                    current_state=current_state,
+                    released_state=released_state,
+                    release_protected=protected is not None,
+                    summary=(
+                        "Declaration is release protected."
+                        if protected is not None
+                        else "Declaration is not release protected."
+                    ),
+                )
+            )
+        return self.runtime.foundation.ok(values)
+
+    def resolve_decl_release_protection(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        decl_name: str,
+        audit_context: RepoReleaseAuditContext | None = None,
+    ) -> ServiceResult[tuple[ReleasedDeclProtectionView, DeclRevision] | None]:
+        """Resolve one protected baseline revision from a caller-owned audit context."""
+
+        repo_root = Path(repo_root)
+        context_result = self._audit_context_for_repo(repo_root, audit_context)
+        if not context_result.ok or context_result.value is None:
+            return self.runtime.foundation.fail(context_result.issues)
+        context = context_result.value
+        if context.release_id is None:
+            return self.runtime.foundation.ok(None)
+        node_id = context.node_ids_by_path.get(node_path)
+        if node_id is None:
+            node = self.runtime.node.node_tree.get_node(repo_root, path=node_path)
+            if not node.ok or node.value is None:
+                return self.runtime.foundation.fail(node.issues)
+            node_id = node.value.node_id
+        entry = context.protected_by_key.get((node_id, decl_name))
+        if entry is None:
+            return self.runtime.foundation.ok(None)
+        revision_number = context.released_head_revisions.get(
+            (entry.last_release_id, entry.node_id, decl_name)
+        )
+        if revision_number is None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "release_decl_head_missing",
+                    "Protected declaration is absent from its released head.",
+                    object_ref=f"{node_path}:{decl_name}",
+                )
+            )
         revision = self.runtime.decl_graph.decl_catalog.get_decl_revision(
             repo_root,
-            node_path=node_path,
+            node_path=entry.node_path,
             name=decl_name,
-            revision=current.value.current_revision,
+            revision=revision_number,
         )
         if not revision.ok or revision.value is None:
             return self.runtime.foundation.fail(revision.issues)
-        latest = self.get_latest_release(repo_root)
-        if not latest.ok:
-            return self.runtime.foundation.fail(latest.issues)
-        if latest.value is None:
-            return self.runtime.foundation.ok(
-                DeclReleaseStatusView(current_state=revision.value.state.value, summary="Declaration has not appeared in a release.")
-            )
-        baseline = self.resolve_release_baseline(repo_root, release_id=latest.value.release.release_id)
-        if not baseline.ok or baseline.value is None:
-            return self.runtime.foundation.fail(baseline.issues)
-        node = self.runtime.node.node_tree.get_node(repo_root, path=node_path)
-        if not node.ok or node.value is None:
-            return self.runtime.foundation.fail(node.issues)
-        protected = next(
-            (item for item in baseline.value.protected_decl_views if item.node_id == node.value.node_id and item.decl_name == decl_name),
-            None,
-        )
-        released_state = protected.released_state if protected is not None else self._latest_released_private_state(
-            repo_root, lineage_release_ids=baseline.value.lineage_release_ids, node_id=node.value.node_id, decl_name=decl_name
-        )
-        return self.runtime.foundation.ok(
-            DeclReleaseStatusView(
-                current_state=revision.value.state.value,
-                released_state=released_state,
-                release_protected=protected is not None,
-                summary=("Declaration is release protected." if protected is not None else "Declaration is not release protected."),
-            )
-        )
+        return self.runtime.foundation.ok((entry, revision.value))
 
     def _validate_release_heads(self, repo_root: Path, release: RepoRelease) -> ServiceResult[None]:
         repo_format = self.runtime.repo_workspace.metadata.get_repo_format(repo_root)
@@ -485,6 +741,8 @@ class RepoReleaseComponent:
         protections: dict[tuple[str, str], ReleasedDeclProtectionView],
         protected_node_ids: set[str],
         protected_scope_paths: set[str],
+        release_nodes: list[tuple[NodeMetadata, NodeContract]] | None = None,
+        resolution_context=None,
     ) -> ServiceResult[None]:
         repo_format = self.runtime.repo_workspace.metadata.get_repo_format(repo_root)
         if not repo_format.ok or repo_format.value is None:
@@ -496,11 +754,25 @@ class RepoReleaseComponent:
                 protections=protections,
                 protected_node_ids=protected_node_ids,
                 protected_scope_paths=protected_scope_paths,
+                release_nodes=release_nodes,
+                resolution_context=resolution_context,
             )
-        nodes = self._release_nodes(repo_root, release)
-        if not nodes.ok or nodes.value is None:
-            return self.runtime.foundation.fail(nodes.issues)
-        by_path = {node.path: (node, contract) for node, contract in nodes.value}
+        if release_nodes is None:
+            nodes = self._release_nodes(repo_root, release)
+            if not nodes.ok or nodes.value is None:
+                return self.runtime.foundation.fail(nodes.issues)
+            release_nodes = nodes.value
+        if resolution_context is None:
+            resolution_context = (
+                self.runtime.decl_graph.ref_compatibility.create_operation_context()
+            )
+        self.runtime.decl_graph.ref_compatibility.prime_release_heads(
+            resolution_context,
+            repo_root,
+            release=release,
+            release_nodes=release_nodes,
+        )
+        by_path = {node.path: (node, contract) for node, contract in release_nodes}
         root = by_path.get("Main")
         if root is None or root[0].kind != NodeKind.SCOPE:
             return self.runtime.foundation.fail(
@@ -508,13 +780,70 @@ class RepoReleaseComponent:
             )
         queue = list(root[1].exports)
         seen: set[tuple[str, str]] = set()
+        resolved_local: dict[
+            tuple[str | None, str, str, int], ResolvedDeclRefView
+        ] = {}
+        resolved_external: dict[
+            tuple[str | None, str, str, int], ResolvedDeclRefView
+        ] = {}
+
+        def ref_key(ref: DeclRef) -> tuple[str | None, str, str, int]:
+            return (ref.repo, ref.node, ref.name, ref.revision)
+
+        def prime_resolution(refs: list[DeclRef]) -> None:
+            from lean_constellation.services.decl_graph.ref_compatibility import (
+                RepoReleaseHeads,
+            )
+
+            local = [
+                ref
+                for ref in refs
+                if ref.repo is None and ref_key(ref) not in resolved_local
+            ]
+            if local:
+                resolved = self.runtime.decl_graph.ref_compatibility.resolve_decl_refs_batch(
+                    repo_root,
+                    refs=local,
+                    required_availability=ProofAvailability.DECLARED,
+                    target=RepoReleaseHeads(release_id=release.release_id),
+                    operation_context=resolution_context,
+                )
+                if resolved.ok and resolved.value is not None:
+                    resolved_local.update(
+                        (ref_key(ref), value)
+                        for ref, value in zip(local, resolved.value, strict=True)
+                    )
+            external = [
+                ref
+                for ref in refs
+                if ref.repo is not None and ref_key(ref) not in resolved_external
+            ]
+            if external:
+                resolved = self.runtime.decl_graph.ref_compatibility.resolve_public_decl_refs_batch(
+                    repo_root,
+                    refs=external,
+                    required_availability=ProofAvailability.DECLARED,
+                    operation_context=resolution_context,
+                )
+                if resolved.ok and resolved.value is not None:
+                    resolved_external.update(
+                        (ref_key(ref), value)
+                        for ref, value in zip(external, resolved.value, strict=True)
+                    )
+
+        prime_resolution(queue)
         while queue:
             ref = queue.pop(0)
             if ref.repo is not None:
-                available = self.runtime.decl_graph.ref_compatibility.resolve_public_decl_ref(
-                    repo_root,
-                    ref=ref,
-                    required_availability=ProofAvailability.DECLARED,
+                cached = resolved_external.get(ref_key(ref))
+                available = (
+                    self.runtime.foundation.ok(cached)
+                    if cached is not None
+                    else self.runtime.decl_graph.ref_compatibility.resolve_public_decl_ref(
+                        repo_root,
+                        ref=ref,
+                        required_availability=ProofAvailability.DECLARED,
+                    )
                 )
                 if (
                     not available.ok
@@ -545,13 +874,16 @@ class RepoReleaseComponent:
             if key in seen:
                 continue
             seen.add(key)
-            from lean_constellation.services.decl_graph.ref_compatibility import RepoReleaseHeads
-
-            compatible = self.runtime.decl_graph.ref_compatibility.resolve_decl_ref(
-                repo_root,
-                ref=ref,
-                required_availability=ProofAvailability.DECLARED,
-                target=RepoReleaseHeads(release_id=release.release_id),
+            cached = resolved_local.get(ref_key(ref))
+            compatible = (
+                self.runtime.foundation.ok(cached)
+                if cached is not None
+                else self._resolve_release_ref_with_context(
+                    repo_root,
+                    ref=ref,
+                    release_id=release.release_id,
+                    operation_context=resolution_context,
+                )
             )
             if not compatible.ok or compatible.value is None:
                 return self.runtime.foundation.fail(compatible.issues)
@@ -572,6 +904,7 @@ class RepoReleaseComponent:
                     by_path=by_path,
                     ref=ref,
                     resolved_revision=revision_number,
+                    resolution_context=resolution_context,
                 )
                 if not scope_chain.ok:
                     return self.runtime.foundation.fail(scope_chain.issues)
@@ -602,9 +935,13 @@ class RepoReleaseComponent:
                 scope_entry = by_path.get(scope)
                 if scope_entry is not None:
                     protected_node_ids.add(scope_entry[0].node_id)
-            for dep in revision.value.statement.deps:
-                if isinstance(dep, RepoDeclDep):
-                    queue.append(dep.ref)
+            statement_refs = [
+                dep.ref
+                for dep in revision.value.statement.deps
+                if isinstance(dep, RepoDeclDep)
+            ]
+            prime_resolution(statement_refs)
+            queue.extend(statement_refs)
         return self.runtime.foundation.ok(None)
 
     def _accumulate_adapter_release_closure(
@@ -615,11 +952,25 @@ class RepoReleaseComponent:
         protections: dict[tuple[str, str], ReleasedDeclProtectionView],
         protected_node_ids: set[str],
         protected_scope_paths: set[str],
+        release_nodes: list[tuple[NodeMetadata, NodeContract]] | None = None,
+        resolution_context=None,
     ) -> ServiceResult[None]:
-        nodes = self._release_nodes(repo_root, release)
-        if not nodes.ok or nodes.value is None:
-            return self.runtime.foundation.fail(nodes.issues)
-        if len(nodes.value) != 1:
+        if release_nodes is None:
+            nodes = self._release_nodes(repo_root, release)
+            if not nodes.ok or nodes.value is None:
+                return self.runtime.foundation.fail(nodes.issues)
+            release_nodes = nodes.value
+        if resolution_context is None:
+            resolution_context = (
+                self.runtime.decl_graph.ref_compatibility.create_operation_context()
+            )
+        self.runtime.decl_graph.ref_compatibility.prime_release_heads(
+            resolution_context,
+            repo_root,
+            release=release,
+            release_nodes=release_nodes,
+        )
+        if len(release_nodes) != 1:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
                     "adapter_release_main_contract_missing",
@@ -627,7 +978,7 @@ class RepoReleaseComponent:
                     object_ref=release.release_id,
                 )
             )
-        main, contract = nodes.value[0]
+        main, contract = release_nodes[0]
         if main.path != "Main" or main.kind != NodeKind.SCOPE:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
@@ -751,9 +1102,10 @@ class RepoReleaseComponent:
         repo_root: Path,
         *,
         release: RepoRelease,
-        by_path: dict[str, tuple[object, NodeContract]],
+        by_path: dict[str, tuple[NodeMetadata, NodeContract]],
         ref,
         resolved_revision: int,
+        resolution_context=None,
     ) -> ServiceResult[None]:
         from lean_constellation.services.decl_graph.ref_compatibility import RepoReleaseHeads
 
@@ -773,21 +1125,37 @@ class RepoReleaseComponent:
                 if candidate.repo is None and candidate.node == ref.node and candidate.name == ref.name
             ]
             valid = False
-            for candidate in matching:
-                resolved = self.runtime.decl_graph.ref_compatibility.resolve_decl_ref(
-                    repo_root,
-                    ref=candidate,
-                    required_availability=ProofAvailability.DECLARED,
-                    target=RepoReleaseHeads(release_id=release.release_id),
+            resolved_batch = self.runtime.decl_graph.ref_compatibility.resolve_decl_refs_batch(
+                repo_root,
+                refs=matching,
+                required_availability=ProofAvailability.DECLARED,
+                target=RepoReleaseHeads(release_id=release.release_id),
+                operation_context=resolution_context,
+            )
+            if resolved_batch.ok and resolved_batch.value is not None:
+                valid = any(
+                    resolved.compatible
+                    and resolved.resolved_revision == resolved_revision
+                    for resolved in resolved_batch.value
                 )
-                if (
-                    resolved.ok
-                    and resolved.value is not None
-                    and resolved.value.compatible
-                    and resolved.value.resolved_revision == resolved_revision
-                ):
-                    valid = True
-                    break
+            else:
+                # Preserve the historical tolerant search semantics on malformed
+                # alternatives; successful current release data takes the batch path.
+                for candidate in matching:
+                    resolved = self._resolve_release_ref_with_context(
+                        repo_root,
+                        ref=candidate,
+                        release_id=release.release_id,
+                        operation_context=resolution_context,
+                    )
+                    if (
+                        resolved.ok
+                        and resolved.value is not None
+                        and resolved.value.compatible
+                        and resolved.value.resolved_revision == resolved_revision
+                    ):
+                        valid = True
+                        break
             if not valid:
                 return self.runtime.foundation.fail(
                     self.runtime.foundation.issue(
@@ -797,6 +1165,31 @@ class RepoReleaseComponent:
                     )
                 )
         return self.runtime.foundation.ok(None)
+
+    def _resolve_release_ref_with_context(
+        self,
+        repo_root: Path,
+        *,
+        ref: DeclRef,
+        release_id: str,
+        operation_context,
+    ) -> ServiceResult[ResolvedDeclRefView]:
+        """Resolve one release ref through the batch core and its owned context."""
+
+        from lean_constellation.services.decl_graph.ref_compatibility import (
+            RepoReleaseHeads,
+        )
+
+        resolved = self.runtime.decl_graph.ref_compatibility.resolve_decl_refs_batch(
+            repo_root,
+            refs=[ref],
+            required_availability=ProofAvailability.DECLARED,
+            target=RepoReleaseHeads(release_id=release_id),
+            operation_context=operation_context,
+        )
+        if not resolved.ok or resolved.value is None:
+            return self.runtime.foundation.fail(resolved.issues)
+        return self.runtime.foundation.ok(resolved.value[0], warnings=resolved.issues)
 
     def _release_nodes(self, repo_root: Path, release: RepoRelease):
         values = []
@@ -813,31 +1206,6 @@ class RepoReleaseComponent:
     def _load_contract(self, repo_root: Path, *, node_id: str, version: int) -> ServiceResult[NodeContract]:
         path = self.runtime.node.node_tree.node_store.contract_path(repo_root, node_id=node_id, version=version)
         return self.runtime.foundation.store.read_json(path, NodeContract)
-
-    def _latest_released_private_state(
-        self, repo_root: Path, *, lineage_release_ids: list[str], node_id: str, decl_name: str
-    ) -> str | None:
-        best: DeclState | None = None
-        for release_id in lineage_release_ids:
-            release = self.get_release(repo_root, release_id=release_id)
-            if not release.ok or release.value is None:
-                continue
-            version = release.value.release.node_contract_versions.get(node_id)
-            if version is None:
-                continue
-            node = self.runtime.node.node_tree.node_store.load_node_by_id(repo_root, node_id=node_id)
-            contract = self._load_contract(repo_root, node_id=node_id, version=version)
-            if not node.ok or node.value is None or not contract.ok or contract.value is None:
-                continue
-            revision_number = contract.value.decl_graph_head.get(decl_name)
-            if revision_number is None:
-                continue
-            revision = self.runtime.decl_graph.decl_catalog.get_decl_revision(
-                repo_root, node_path=node.value.path, name=decl_name, revision=revision_number
-            )
-            if revision.ok and revision.value is not None and (best is None or _STATE_RANK[revision.value.state] > _STATE_RANK[best]):
-                best = revision.value.state
-        return best.value if best is not None else None
 
     def _ancestor_scopes(self, node_path: str) -> list[str]:
         parts = node_path.split(".")

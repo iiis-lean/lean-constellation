@@ -377,7 +377,10 @@ def test_refresh_and_check_interfaces_report_filesystem_errors(tmp_path: Path) -
     assert check.issues[0].kind == "interfaces_projection_read_failed"
 
 
-def test_refresh_and_check_scope_interfaces_from_exports(tmp_path: Path) -> None:
+def test_refresh_and_check_scope_interfaces_from_exports(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
     _create_nodes(tmp_path)
     foundation = make_runtime().foundation
     provider = FakePublicDeclProvider(
@@ -403,13 +406,39 @@ def test_refresh_and_check_scope_interfaces_from_exports(tmp_path: Path) -> None
     assert missing.value.passed is False
     assert missing.value.issues[0].kind == "interfaces_projection_missing"
 
+    committed = runtime.node.contract._commit_content_contract_with_head(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        summary="Commit the projection fixture boundary.",
+        decl_graph_head={"main_result": 1},
+    )
+    assert committed.ok, committed.issues
     added = export.add_scope_export(tmp_path, scope_path="Main.Topic", decl_node="Main.Topic.Core", decl_name="main_result")
     assert added.ok
 
+    original_boundary = export.list_committed_content_public_decls
+    boundary_calls: list[str] = []
+
+    def counted_boundary(repo_root: Path, *, node_path: str):
+        boundary_calls.append(node_path)
+        return original_boundary(repo_root, node_path=node_path)
+
+    monkeypatch.setattr(
+        export,
+        "list_committed_content_public_decls",
+        counted_boundary,
+    )
+
+    rendered = component.render_interfaces(tmp_path, node_path="Main.Topic")
+    assert rendered.ok and rendered.value is not None
+    assert boundary_calls == ["Main.Topic.Core"]
+
+    boundary_calls.clear()
     synced = component.check_interfaces_sync(tmp_path, node_path="Main.Topic")
     assert synced.ok
     assert synced.value is not None
     assert synced.value.passed is True
+    assert boundary_calls == ["Main.Topic.Core"]
     path = tmp_path / "Main" / "Topic" / "Interfaces.lean"
     assert "import Exact.Custom.MainResult" in path.read_text(encoding="utf-8")
 

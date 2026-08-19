@@ -10,8 +10,8 @@ from lean_constellation.services import LeanProviderOverrides
 from lean_constellation.services.decl_graph import DeclRoundResultKind, DeclState
 from lean_constellation.services.decl_graph.models import DeclFormalSection, DeclStatement
 from lean_constellation.services.external_clients import ExternalCommandResult
-from lean_constellation.services.foundation import ServiceResult, WriteMode
-from lean_constellation.services.node import DeclPublicView, NodeService
+from lean_constellation.services.foundation import FoundationContext, ServiceResult, WriteMode
+from lean_constellation.services.node import DeclPublicView, NodeContractSnapshot, NodeService
 
 
 class MutablePublicDeclProvider:
@@ -186,6 +186,211 @@ def test_scope_close_view_all_clear(tmp_path: Path) -> None:
     assert [child.path for child in view.value.children] == ["Main.Topic.Core"]
     assert view.value.exports[0].valid is True
     assert view.value.interfaces.interfaces[0].bound_decl is not None
+
+
+def test_scope_close_view_reuses_content_boundary_across_all_gates(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service, _provider = _prepare_ready_scope(tmp_path)
+    interfaces_path = service.runtime.lean_projection.node_projection._interfaces_path(
+        tmp_path,
+        "Main.Topic",
+    )
+    before_interfaces = interfaces_path.read_bytes()
+    original = service.export.list_committed_content_public_decls
+    original_identity = service.interface.check_bound_interface_lean_identities
+    original_closure = service.public_statement_closure.check_scope
+    original_refresh = (
+        service.runtime.lean_projection.node_projection.refresh_interfaces
+    )
+    original_sync = (
+        service.runtime.lean_projection.node_projection.check_interfaces_sync
+    )
+    calls: list[str] = []
+    gates = {"identity": 0, "closure": 0, "refresh": 0, "sync": 0}
+
+    def counted_boundary(repo_root: Path, *, node_path: str):
+        calls.append(node_path)
+        return original(repo_root, node_path=node_path)
+
+    def counted_identity(*args, **kwargs):
+        gates["identity"] += 1
+        return original_identity(*args, **kwargs)
+
+    def counted_closure(*args, **kwargs):
+        gates["closure"] += 1
+        return original_closure(*args, **kwargs)
+
+    def counted_refresh(*args, **kwargs):
+        gates["refresh"] += 1
+        return original_refresh(*args, **kwargs)
+
+    def counted_sync(*args, **kwargs):
+        gates["sync"] += 1
+        return original_sync(*args, **kwargs)
+
+    monkeypatch.setattr(
+        service.export,
+        "list_committed_content_public_decls",
+        counted_boundary,
+    )
+    monkeypatch.setattr(
+        service.interface,
+        "check_bound_interface_lean_identities",
+        counted_identity,
+    )
+    monkeypatch.setattr(
+        service.public_statement_closure,
+        "check_scope",
+        counted_closure,
+    )
+    monkeypatch.setattr(
+        service.runtime.lean_projection.node_projection,
+        "refresh_interfaces",
+        counted_refresh,
+    )
+    monkeypatch.setattr(
+        service.runtime.lean_projection.node_projection,
+        "check_interfaces_sync",
+        counted_sync,
+    )
+
+    view = service.get_scope_close_view(tmp_path, scope_path="Main.Topic")
+
+    assert view.ok and view.value is not None
+    assert view.value.ready_to_commit is True
+    assert calls == ["Main.Topic.Core"]
+    assert gates == {"identity": 1, "closure": 1, "refresh": 1, "sync": 1}
+    assert interfaces_path.read_bytes() == before_interfaces
+
+
+def test_scope_commit_reuses_one_local_content_boundary(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service, _provider = _prepare_ready_scope(tmp_path)
+    contract_path = service.runtime.foundation.node_contract_path(
+        FoundationContext(repo_root=tmp_path),
+        "Main.Topic",
+        1,
+    )
+    loaded = service.runtime.foundation.read_json(
+        contract_path,
+        NodeContractSnapshot,
+    )
+    assert loaded.ok and loaded.value is not None
+    loaded.value.exports.append(loaded.value.exports[0])
+    assert service.runtime.foundation.write_json_atomic(
+        contract_path,
+        loaded.value,
+        mode=WriteMode.UPDATE_EXISTING,
+    ).ok
+    original = service.export.list_committed_content_public_decls
+    calls: list[str] = []
+
+    def counted_boundary(repo_root: Path, *, node_path: str):
+        calls.append(node_path)
+        return original(repo_root, node_path=node_path)
+
+    monkeypatch.setattr(
+        service.export,
+        "list_committed_content_public_decls",
+        counted_boundary,
+    )
+
+    committed = service.commit_scope_contract(
+        tmp_path,
+        scope_path="Main.Topic",
+        summary="Commit the ready Scope.",
+    )
+
+    assert not committed.ok
+    assert committed.issues[0].kind == "scope_export_duplicate"
+    assert calls == ["Main.Topic.Core"]
+
+
+def test_direct_validation_scope_commit_reuses_one_local_content_boundary(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service, _provider = _prepare_ready_scope(tmp_path)
+    original = service.export.list_committed_content_public_decls
+    calls: list[str] = []
+
+    def counted_boundary(repo_root: Path, *, node_path: str):
+        calls.append(node_path)
+        return original(repo_root, node_path=node_path)
+
+    monkeypatch.setattr(
+        service.export,
+        "list_committed_content_public_decls",
+        counted_boundary,
+    )
+
+    gate = service.runtime.validation_snapshot.check_scope_commit(
+        tmp_path,
+        scope_path="Main.Topic",
+        summary="Check the ready Scope.",
+    )
+
+    assert gate.ok and gate.value is not None and gate.value.passed
+    assert calls == ["Main.Topic.Core"]
+
+
+def test_direct_validation_scope_commit_rejects_wrong_context_before_reads(
+    tmp_path: Path,
+) -> None:
+    repo_a = tmp_path / "repo-a"
+    repo_b = tmp_path / "repo-b"
+    provider = MutablePublicDeclProvider()
+    runtime = _runtime_with_provider(provider)
+    service = runtime.node
+    _create_scope_and_content(service, repo_a)
+    _create_scope_and_content(service, repo_b)
+    operation = service.export.create_scope_export_operation_context(
+        repo_a,
+        scope_path="Main.Topic",
+    )
+    assert operation.ok and operation.value is not None
+    before_a = {
+        path.relative_to(repo_a).as_posix(): path.read_bytes()
+        for path in repo_a.rglob("*")
+        if path.is_file()
+    }
+    before_b = {
+        path.relative_to(repo_b).as_posix(): path.read_bytes()
+        for path in repo_b.rglob("*")
+        if path.is_file()
+    }
+
+    wrong_repo = runtime.validation_snapshot.check_scope_commit(
+        repo_b,
+        scope_path="Main.Topic",
+        summary="Check the Scope.",
+        scope_export_context=operation.value,
+    )
+    wrong_scope = runtime.validation_snapshot.check_scope_commit(
+        repo_a,
+        scope_path="Main.Missing",
+        summary="Check the Scope.",
+        scope_export_context=operation.value,
+    )
+
+    assert not wrong_repo.ok
+    assert wrong_repo.issues[0].kind == "scope_export_operation_context_mismatch"
+    assert not wrong_scope.ok
+    assert wrong_scope.issues[0].kind == "scope_export_operation_context_mismatch"
+    assert {
+        path.relative_to(repo_a).as_posix(): path.read_bytes()
+        for path in repo_a.rglob("*")
+        if path.is_file()
+    } == before_a
+    assert {
+        path.relative_to(repo_b).as_posix(): path.read_bytes()
+        for path in repo_b.rglob("*")
+        if path.is_file()
+    } == before_b
 
 
 def test_scope_close_view_reports_uncommitted_content_child(tmp_path: Path) -> None:

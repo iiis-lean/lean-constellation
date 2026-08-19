@@ -146,6 +146,74 @@ def test_node_tree_children_delete_preview_and_soft_delete(tmp_path: Path) -> No
     assert any(node.path == "Main.Topic.Core" and node.lifecycle == NodeLifecycle.OBSOLETE for node in nodes.value)
 
 
+def test_get_node_uses_current_index_for_exact_direct_child_count(tmp_path: Path, monkeypatch) -> None:
+    component = make_runtime().node.node_tree
+    assert component.ensure_root_scope_node(tmp_path).ok
+    assert component.create_scope_node(tmp_path, path="Main.Topic", goal="Topic goal", boundary="Topic boundary").ok
+    assert component.create_content_node(
+        tmp_path,
+        path="Main.Topic.Core",
+        goal="Core goal",
+        boundary="Core boundary",
+        objective="Build core.",
+        success_criteria="Ready.",
+    ).ok
+    assert component.create_scope_node(
+        tmp_path,
+        path="Main.Topic.Sub",
+        goal="Sub goal",
+        boundary="Sub boundary",
+    ).ok
+    assert component.create_content_node(
+        tmp_path,
+        path="Main.Topic.Sub.Deep",
+        goal="Deep goal",
+        boundary="Deep boundary",
+        objective="Build deep content.",
+        success_criteria="Ready.",
+    ).ok
+    assert component.create_scope_node(
+        tmp_path,
+        path="Main.Topic.Obsolete",
+        goal="Obsolete goal",
+        boundary="Obsolete boundary",
+    ).ok
+    obsolete = component.node_store.resolve_active_node(tmp_path, path="Main.Topic.Obsolete")
+    assert obsolete.ok and obsolete.value is not None
+    assert component.node_store.save_node(
+        tmp_path,
+        obsolete.value.model_copy(update={"lifecycle": NodeLifecycle.OBSOLETE}),
+    ).ok
+
+    tree = component.get_node_tree(tmp_path)
+    assert tree.ok and tree.value is not None
+    expected = next(item for item in tree.value.nodes if item.path == "Main.Topic")
+    assert expected.child_count == 2
+
+    index_path = component.runtime.foundation.layout.node_index_path(
+        FoundationContext(repo_root=tmp_path)
+    )
+    index_path.unlink()
+    rebuilt = component.get_node(tmp_path, path="Main.Topic")
+    assert rebuilt.ok and rebuilt.value is not None
+    assert rebuilt.value.model_dump(mode="json") == expected.model_dump(mode="json")
+    assert index_path.is_file()
+
+    def _unexpected_full_tree_scan(*args, **kwargs):
+        raise AssertionError("single get_node() must not load the full node tree")
+
+    monkeypatch.setattr(component, "_load_all_nodes", _unexpected_full_tree_scan)
+    monkeypatch.setattr(component.node_store, "list_nodes", _unexpected_full_tree_scan)
+
+    first = component.get_node(tmp_path, path="Main.Topic")
+    second = component.get_node(tmp_path, path="Main.Topic")
+
+    assert first.ok and first.value is not None
+    assert second.ok and second.value is not None
+    assert first.value.model_dump(mode="json") == expected.model_dump(mode="json")
+    assert second.value.model_dump(mode="json") == expected.model_dump(mode="json")
+
+
 def test_get_node_missing_and_tree_hides_obsolete_nodes(tmp_path: Path) -> None:
     component = make_runtime().node.node_tree
     assert component.ensure_root_scope_node(tmp_path).ok

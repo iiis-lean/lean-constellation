@@ -309,8 +309,14 @@ class FakeNodeProjectionForConsistency:
         del repo_root
         return self.foundation.ok(SimpleNamespace(summary=f"Refreshed Prelude for {node_path}."))
 
-    def check_interfaces_sync(self, repo_root: Path, *, node_path: str):
-        del repo_root
+    def check_interfaces_sync(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        scope_export_context=None,
+    ):
+        del repo_root, scope_export_context
         if self.interfaces_passed:
             return self.foundation.ok(
                 self.foundation.gate_passed("interfaces_projection_sync", summary=f"Interfaces are synchronized for {node_path}.")
@@ -323,8 +329,14 @@ class FakeNodeProjectionForConsistency:
             )
         )
 
-    def refresh_interfaces(self, repo_root: Path, *, node_path: str):
-        del repo_root
+    def refresh_interfaces(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        scope_export_context=None,
+    ):
+        del repo_root, scope_export_context
         return self.foundation.ok(SimpleNamespace(summary=f"Refreshed Interfaces for {node_path}."))
 
 

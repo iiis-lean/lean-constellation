@@ -1,3 +1,4 @@
+from collections import Counter
 from pathlib import Path
 
 from lean_constellation.domain.refs import DeclRef
@@ -5,11 +6,17 @@ from lean_constellation.domain.repo import ProofAvailability
 from lean_constellation.services.decl_graph import DeclState, RepoReleaseHeads
 from lean_constellation.services.foundation import WriteMode
 from tests.unit.services.repo_workspace.test_repo_release import (
+    _prepare_adapter_release_repo,
     _prepare_native_provider,
     _prepare_release_repo,
     _release,
     _write_decl,
 )
+
+
+def _dumps(result) -> list[dict]:
+    assert result.ok and result.value is not None
+    return [item.model_dump(mode="json") for item in result.value]
 
 
 def _set_active_contract_head(runtime, repo_root: Path, *, node_path: str, name: str, revision: int) -> None:
@@ -99,6 +106,269 @@ def test_release_target_uses_exact_historical_contract_head(tmp_path: Path) -> N
     assert resolved.ok and resolved.value.compatible is True
     assert resolved.value.resolved_revision == 1
     assert resolved.value.reason == "exact_revision"
+
+
+def test_release_batch_matches_single_results_and_reads_each_contract_once(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime, versions = _prepare_release_repo(tmp_path)
+    assert runtime.repo_workspace.release.create_release(
+        tmp_path,
+        release=_release("r1", versions),
+    ).ok
+    refs = [
+        DeclRef(node="Main.Results", name="PublicResult", revision=1),
+        DeclRef(node="Main.Foundation.Defs", name="Support", revision=1),
+        DeclRef(node="Main.Results", name="PublicResult", revision=1),
+    ]
+    target = RepoReleaseHeads(release_id="r1")
+    expected = [
+        runtime.decl_graph.ref_compatibility.resolve_decl_ref(
+            tmp_path,
+            ref=ref,
+            required_availability=ProofAvailability.DECLARED,
+            target=target,
+        ).value.model_dump(mode="json")
+        for ref in refs
+    ]
+    component = runtime.decl_graph.ref_compatibility
+    revision_results = {
+        (ref.node, ref.name, ref.revision): runtime.decl_graph.decl_catalog.get_decl_revision(
+            tmp_path,
+            node_path=ref.node,
+            name=ref.name,
+            revision=ref.revision,
+        )
+        for ref in refs
+    }
+    decl_results = {
+        (ref.node, ref.name): runtime.decl_graph.decl_catalog.get_decl(
+            tmp_path,
+            node_path=ref.node,
+            name=ref.name,
+        )
+        for ref in refs
+    }
+
+    release_calls = 0
+    node_calls: Counter[str] = Counter()
+    contract_calls: Counter[tuple[str, int]] = Counter()
+    original_release = runtime.repo_workspace.release.get_release
+    original_node = runtime.node.node_tree.node_store.load_node_by_id
+    original_contract = runtime.repo_workspace.release._load_contract
+
+    def count_release(*args, **kwargs):
+        nonlocal release_calls
+        release_calls += 1
+        return original_release(*args, **kwargs)
+
+    def count_node(*args, **kwargs):
+        node_calls[kwargs["node_id"]] += 1
+        return original_node(*args, **kwargs)
+
+    def count_contract(*args, **kwargs):
+        contract_calls[(kwargs["node_id"], kwargs["version"])] += 1
+        return original_contract(*args, **kwargs)
+
+    monkeypatch.setattr(runtime.repo_workspace.release, "get_release", count_release)
+    monkeypatch.setattr(runtime.node.node_tree.node_store, "load_node_by_id", count_node)
+    monkeypatch.setattr(runtime.repo_workspace.release, "_load_contract", count_contract)
+    monkeypatch.setattr(
+        component,
+        "_decl_revision",
+        lambda _context, _repo_root, *, node_path, name, revision: revision_results[
+            (node_path, name, revision)
+        ],
+    )
+    monkeypatch.setattr(
+        component,
+        "_decl",
+        lambda _context, _repo_root, *, node_path, name: decl_results[(node_path, name)],
+    )
+
+    batched = component.resolve_decl_refs_batch(
+        tmp_path,
+        refs=refs,
+        required_availability=ProofAvailability.DECLARED,
+        target=target,
+    )
+
+    assert _dumps(batched) == expected
+    assert [item["anchor"] for item in expected] == [ref.model_dump(mode="json") for ref in refs]
+    assert release_calls == 1
+    assert node_calls and all(count == 1 for count in node_calls.values())
+    assert contract_calls and all(count == 1 for count in contract_calls.values())
+
+
+def test_batch_isolates_native_current_release_and_adapter_targets(tmp_path: Path) -> None:
+    native_root = tmp_path / "Native"
+    runtime, versions = _prepare_release_repo(native_root)
+    assert runtime.repo_workspace.release.create_release(
+        native_root,
+        release=_release("native_r1", versions),
+    ).ok
+    anchor = DeclRef(node="Main.Results", name="PublicResult", revision=1)
+    initial_current = runtime.decl_graph.ref_compatibility.resolve_decl_refs_batch(
+        native_root,
+        refs=[anchor],
+        required_availability=ProofAvailability.DECLARED,
+    )
+    assert initial_current.ok and initial_current.value[0].resolved_revision == 1
+    _write_decl(native_root, node_path=anchor.node, name=anchor.name, revision=2)
+    opened = runtime.node.contract.ensure_open_contract(
+        native_root,
+        node_path=anchor.node,
+    )
+    assert opened.ok and opened.value is not None and opened.value.version == 2
+    committed = runtime.node.contract._commit_content_contract_with_head(
+        native_root,
+        node_path=anchor.node,
+        summary="Advance current head without mutating the released contract.",
+        decl_graph_head={anchor.name: 2},
+    )
+    assert committed.ok and committed.value is not None
+    _set_active_contract_head(
+        runtime,
+        native_root,
+        node_path=anchor.node,
+        name=anchor.name,
+        revision=2,
+    )
+
+    current = runtime.decl_graph.ref_compatibility.resolve_decl_refs_batch(
+        native_root,
+        refs=[anchor],
+        required_availability=ProofAvailability.DECLARED,
+    )
+    released = runtime.decl_graph.ref_compatibility.resolve_decl_refs_batch(
+        native_root,
+        refs=[anchor],
+        required_availability=ProofAvailability.DECLARED,
+        target=RepoReleaseHeads(release_id="native_r1"),
+    )
+
+    assert current.ok and current.value[0].resolved_revision == 2
+    assert released.ok and released.value[0].resolved_revision == 1
+
+    adapter_root = tmp_path / "Adapter"
+    adapter_runtime, adapter_versions = _prepare_adapter_release_repo(adapter_root)
+    adapter_ref = DeclRef(node="Main", name="PublicResult", revision=1)
+    adapter_current = adapter_runtime.decl_graph.ref_compatibility.resolve_decl_refs_batch(
+        adapter_root,
+        refs=[adapter_ref, adapter_ref],
+        required_availability=ProofAvailability.DECLARED,
+    )
+    assert adapter_runtime.repo_workspace.release.create_release(
+        adapter_root,
+        release=_release("adapter_r1", adapter_versions),
+    ).ok
+    adapter_release = adapter_runtime.decl_graph.ref_compatibility.resolve_decl_refs_batch(
+        adapter_root,
+        refs=[adapter_ref, adapter_ref],
+        required_availability=ProofAvailability.DECLARED,
+        target=RepoReleaseHeads(release_id="adapter_r1"),
+    )
+
+    assert [item.compatible for item in adapter_current.value] == [True, True]
+    assert [item.compatible for item in adapter_release.value] == [True, True]
+
+
+def test_external_public_batch_resolves_provider_boundary_once(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime, provider_root = _prepare_native_provider(tmp_path)
+    consumer_root = tmp_path / "Consumer"
+    consumer_root.mkdir()
+    ref = DeclRef(
+        repo="Provider",
+        node="Main.Results",
+        name="PublicResult",
+        revision=1,
+    )
+    component = runtime.decl_graph.ref_compatibility
+    counts: Counter[str] = Counter()
+    original_available = runtime.repo_workspace.provider_availability.check_provider_available
+    original_format = runtime.repo_workspace.metadata.get_repo_format
+    original_publication = runtime.repo_workspace.metadata.get_repo_publication
+    original_release = runtime.repo_workspace.release.get_release
+    original_boundary = component._load_public_boundary_context
+
+    def counted(name, original):
+        def wrapper(*args, **kwargs):
+            counts[name] += 1
+            return original(*args, **kwargs)
+
+        return wrapper
+
+    monkeypatch.setattr(
+        runtime.repo_workspace.provider_availability,
+        "check_provider_available",
+        counted("availability", original_available),
+    )
+    monkeypatch.setattr(
+        runtime.repo_workspace.metadata,
+        "get_repo_format",
+        counted("format", original_format),
+    )
+    monkeypatch.setattr(
+        runtime.repo_workspace.metadata,
+        "get_repo_publication",
+        counted("publication", original_publication),
+    )
+    monkeypatch.setattr(
+        runtime.repo_workspace.release,
+        "get_release",
+        counted("release", original_release),
+    )
+    monkeypatch.setattr(
+        component,
+        "_load_public_boundary_context",
+        counted("boundary", original_boundary),
+    )
+
+    resolved = component.resolve_public_decl_refs_batch(
+        consumer_root,
+        refs=[ref, ref],
+        required_availability=ProofAvailability.DECLARED,
+    )
+
+    assert resolved.ok and resolved.value is not None
+    assert [item.anchor for item in resolved.value] == [ref, ref]
+    assert [item.compatible for item in resolved.value] == [True, True]
+    assert provider_root == tmp_path / "Provider"
+    # The availability gate itself reads format/publication/release once; the
+    # resolver then reads each once for boundary data. Neither count scales
+    # with the two input positions.
+    assert counts == Counter(
+        availability=1,
+        format=2,
+        publication=2,
+        release=2,
+        boundary=1,
+    )
+
+
+def test_batch_preserves_single_invalid_repo_typed_issue(tmp_path: Path) -> None:
+    runtime, _ = _prepare_release_repo(tmp_path)
+    ref = DeclRef(repo="../escape", node="Main.Results", name="PublicResult", revision=1)
+
+    single = runtime.decl_graph.ref_compatibility.resolve_decl_ref(
+        tmp_path,
+        ref=ref,
+        required_availability=ProofAvailability.DECLARED,
+    )
+    batched = runtime.decl_graph.ref_compatibility.resolve_decl_refs_batch(
+        tmp_path,
+        refs=[ref],
+        required_availability=ProofAvailability.DECLARED,
+    )
+
+    assert not single.ok and not batched.ok
+    assert [issue.model_dump(mode="json") for issue in single.issues] == [
+        issue.model_dump(mode="json") for issue in batched.issues
+    ]
 
 
 def test_scope_export_anchor_remains_valid_after_proof_only_progression(tmp_path: Path) -> None:

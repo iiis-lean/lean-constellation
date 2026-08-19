@@ -29,6 +29,7 @@ from lean_constellation.services.foundation import (
 from lean_constellation.services.node.node_tree import NodeKind
 
 if TYPE_CHECKING:
+    from lean_constellation.services.node.export import ScopeExportOperationContext
     from lean_constellation.services.runtime import LeanRuntimeServices
 
 
@@ -187,7 +188,16 @@ class PublicStatementClosureComponent:
         scope_path: str,
         roots: list[DeclRef] | None = None,
         visible: bool = False,
+        scope_export_context: "ScopeExportOperationContext | None" = None,
     ) -> ServiceResult[PublicStatementClosureReport]:
+        if scope_export_context is not None:
+            checked_context = self.runtime.node.export._scope_export_operation_context(
+                repo_root,
+                scope_path=scope_path,
+                operation_context=scope_export_context,
+            )
+            if not checked_context.ok:
+                return self.runtime.foundation.fail(checked_context.issues)
         selected = self._scope_roots(
             Path(repo_root),
             scope_path=scope_path,
@@ -224,8 +234,14 @@ class PublicStatementClosureComponent:
         *,
         scope_path: str,
         visible: bool = False,
+        scope_export_context: "ScopeExportOperationContext | None" = None,
     ) -> ServiceResult[GateReport]:
-        report = self.inspect_scope(repo_root, scope_path=scope_path, visible=visible)
+        report = self.inspect_scope(
+            repo_root,
+            scope_path=scope_path,
+            visible=visible,
+            scope_export_context=scope_export_context,
+        )
         if not report.ok or report.value is None:
             return self.runtime.foundation.ok(
                 self.runtime.foundation.gate_failed(

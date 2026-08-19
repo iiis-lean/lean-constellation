@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from lean_constellation.domain.refs import DeclRef
 from lean_constellation.services.decl_graph.models import (
     Decl,
     DeclLifecycle,
@@ -17,6 +18,9 @@ from lean_constellation.services.foundation import ServiceResult
 from lean_constellation.services.node.node_tree import NodeContract, NodeKind, NodeLifecycle
 
 if TYPE_CHECKING:
+    from lean_constellation.services.repo_workspace.repo_release import (
+        RepoReleaseAuditContext,
+    )
     from lean_constellation.services.runtime import LeanRuntimeServices
 
 
@@ -33,13 +37,19 @@ class DeclReleaseGuard:
         node_path: str,
         decl: Decl,
         candidate: DeclRevision,
+        release_audit_context: RepoReleaseAuditContext | None = None,
     ) -> ServiceResult[None]:
-        protected = self._protected_entry(repo_root, node_path=node_path, decl_name=decl.name)
+        protected = self._protected_entry(
+            repo_root,
+            node_path=node_path,
+            decl_name=decl.name,
+            release_audit_context=release_audit_context,
+        )
         if not protected.ok:
             return self.runtime.foundation.fail(protected.issues)
         if protected.value is None:
             return self.runtime.foundation.ok(None)
-        baseline_decl, baseline_revision = protected.value
+        protection, baseline_revision = protected.value
         if candidate.state in {DeclState.PLANNED, DeclState.SPECIFIED}:
             return self._blocked("release_protected_statement_floor", node_path, decl.name)
         if candidate.statement.formal is None or not (candidate.statement.formal.code or "").strip():
@@ -49,11 +59,11 @@ class DeclReleaseGuard:
         )
         if not current_fingerprint.ok or current_fingerprint.value is None:
             return self.runtime.foundation.fail(current_fingerprint.issues)
-        released_fingerprint = self.runtime.decl_graph.declared_api.fingerprint(
+        released_fingerprint = self.runtime.decl_graph.declared_api.fingerprint_candidate(
             repo_root,
-            node_path=baseline_decl.node_path,
-            decl_name=baseline_decl.name,
-            revision=baseline_revision.revision,
+            node_path=protection.node_path,
+            decl=decl,
+            revision=baseline_revision,
         )
         if not released_fingerprint.ok or released_fingerprint.value is None:
             return self.runtime.foundation.fail(released_fingerprint.issues)
@@ -62,7 +72,17 @@ class DeclReleaseGuard:
         return self.runtime.foundation.ok(None)
 
     def check_delete(self, repo_root: Path, *, node_path: str, decl_name: str) -> ServiceResult[None]:
-        protected = self._protected_entry(repo_root, node_path=node_path, decl_name=decl_name)
+        release_context = self.runtime.repo_workspace.release.create_release_audit_context(
+            repo_root
+        )
+        if not release_context.ok or release_context.value is None:
+            return self.runtime.foundation.fail(release_context.issues)
+        protected = self._protected_entry(
+            repo_root,
+            node_path=node_path,
+            decl_name=decl_name,
+            release_audit_context=release_context.value,
+        )
         if not protected.ok:
             return self.runtime.foundation.fail(protected.issues)
         if protected.value is not None:
@@ -91,11 +111,19 @@ class DeclReleaseGuard:
         """Reject stable inbound references while allowing edges internal to an exact delete set."""
 
         issues = []
+        release_context = self.runtime.repo_workspace.release.create_release_audit_context(
+            repo_root
+        )
+        inbound_index = None
         for decl_name in sorted(decl_names):
+            if not release_context.ok or release_context.value is None:
+                issues.extend(release_context.issues)
+                continue
             protected = self._protected_entry(
                 repo_root,
                 node_path=node_path,
                 decl_name=decl_name,
+                release_audit_context=release_context.value,
             )
             if not protected.ok:
                 issues.extend(protected.issues)
@@ -109,16 +137,16 @@ class DeclReleaseGuard:
                     ).issues
                 )
                 continue
-            inbound = self.current_inbound_refs(
-                repo_root,
-                node_path=node_path,
-                decl_name=decl_name,
-            )
-            if not inbound.ok or inbound.value is None:
-                issues.extend(inbound.issues)
+            if inbound_index is None:
+                inbound_index = self._current_inbound_refs_index(
+                    repo_root,
+                    targets={(node_path, name) for name in decl_names},
+                )
+            if not inbound_index.ok or inbound_index.value is None:
+                issues.extend(inbound_index.issues)
                 continue
             external = []
-            for ref in inbound.value:
+            for ref in inbound_index.value[(node_path, decl_name)]:
                 parts = ref.split(":")
                 if (
                     len(parts) == 5
@@ -142,7 +170,51 @@ class DeclReleaseGuard:
         return self.runtime.foundation.ok(None)
 
     def current_inbound_refs(self, repo_root: Path, *, node_path: str, decl_name: str) -> ServiceResult[list[str]]:
-        refs: list[str] = []
+        indexed = self._current_inbound_refs_index(
+            repo_root,
+            targets={(node_path, decl_name)},
+        )
+        if not indexed.ok or indexed.value is None:
+            return self.runtime.foundation.fail(indexed.issues)
+        return self.runtime.foundation.ok(indexed.value[(node_path, decl_name)])
+
+    def _current_inbound_refs_index(
+        self,
+        repo_root: Path,
+        *,
+        targets: set[tuple[str, str]],
+    ) -> ServiceResult[dict[tuple[str, str], list[str]]]:
+        """Build one caller-owned reverse index for exact current declaration targets."""
+
+        refs_by_target: dict[tuple[str, str], list[str]] = {
+            target: [] for target in targets
+        }
+        if not refs_by_target:
+            return self.runtime.foundation.ok(refs_by_target)
+
+        def append_local_dep(
+            dep: object,
+            *,
+            consumer_node_path: str,
+            description: str,
+        ) -> None:
+            if not isinstance(dep, RepoDeclDep) or dep.ref.repo is not None:
+                return
+            target_node = (
+                dep.ref.node if dep.ref.node != "Main" else consumer_node_path
+            )
+            key = (target_node, dep.ref.name)
+            if key in refs_by_target:
+                refs_by_target[key].append(description)
+
+        def append_local_ref(ref: DeclRef, *, description: str) -> None:
+            if ref.repo is not None:
+                return
+            key = (ref.node, ref.name)
+            if key in refs_by_target:
+                refs_by_target[key].append(description)
+
+        repo_root = Path(repo_root)
         nodes = self.runtime.node.node_tree.node_store.list_nodes(repo_root)
         if not nodes.ok or nodes.value is None:
             return self.runtime.foundation.fail(nodes.issues)
@@ -164,13 +236,24 @@ class DeclReleaseGuard:
                     )
                     if not revision.ok or revision.value is None:
                         return self.runtime.foundation.fail(revision.issues)
-                    for section, deps in (("statement", revision.value.statement.deps), ("proof", revision.value.proof.deps if revision.value.proof else [])):
+                    for section, deps in (
+                        ("statement", revision.value.statement.deps),
+                        (
+                            "proof",
+                            revision.value.proof.deps
+                            if revision.value.proof
+                            else [],
+                        ),
+                    ):
                         for dep in deps:
-                            if not isinstance(dep, RepoDeclDep) or dep.ref.repo is not None:
-                                continue
-                            target_node = dep.ref.node if dep.ref.node != "Main" else node.path
-                            if target_node == node_path and dep.ref.name == decl_name:
-                                refs.append(f"current:decl:{node.path}:{dependent.name}:{section}")
+                            append_local_dep(
+                                dep,
+                                consumer_node_path=node.path,
+                                description=(
+                                    f"current:decl:{node.path}:"
+                                    f"{dependent.name}:{section}"
+                                ),
+                            )
                 rounds = self.runtime.decl_graph.list_rounds(
                     repo_root,
                     node_path=node.path,
@@ -202,19 +285,15 @@ class DeclReleaseGuard:
                             ),
                         ):
                             for dep in deps:
-                                if not isinstance(dep, RepoDeclDep) or dep.ref.repo is not None:
-                                    continue
-                                target_node = (
-                                    dep.ref.node
-                                    if dep.ref.node != "Main"
-                                    else node.path
-                                )
-                                if target_node == node_path and dep.ref.name == decl_name:
-                                    refs.append(
+                                append_local_dep(
+                                    dep,
+                                    consumer_node_path=node.path,
+                                    description=(
                                         "admitted:round:"
                                         f"{round_record.round_id}:{node.path}:"
                                         f"{revision_ref.decl_name}:{section}"
-                                    )
+                                    ),
+                                )
             contract_versions = sorted(
                 {
                     version
@@ -249,46 +328,33 @@ class DeclReleaseGuard:
                     ),
                 ):
                     for ref in candidates:
-                        if ref.repo is None and ref.node == node_path and ref.name == decl_name:
-                            refs.append(f"current:contract:{node.path}:{label}")
+                        append_local_ref(
+                            ref,
+                            description=f"current:contract:{node.path}:{label}",
+                        )
                 for dep in contract.value.deps:
                     for ref in dep.expected_decl_refs:
-                        if ref.repo is None and ref.node == node_path and ref.name == decl_name:
-                            refs.append(f"current:contract:{node.path}:deps")
-        external = self._cross_repo_inbound_refs(
-            repo_root,
-            node_path=node_path,
-            decl_name=decl_name,
-        )
-        if not external.ok or external.value is None:
-            return self.runtime.foundation.fail(external.issues)
-        refs.extend(external.value)
-        return self.runtime.foundation.ok(sorted(set(refs)))
+                        append_local_ref(
+                            ref,
+                            description=f"current:contract:{node.path}:deps",
+                        )
 
-    def _cross_repo_inbound_refs(
-        self,
-        repo_root: Path,
-        *,
-        node_path: str,
-        decl_name: str,
-    ) -> ServiceResult[list[str]]:
-        """Find stable sibling-repository consumers of one current-repo declaration."""
-
-        provider_key = Path(repo_root).name
+        provider_key = repo_root.name
         repos = self.runtime.repo_workspace.workspace_catalog.list_workspace_repos(
-            Path(repo_root).parent
+            repo_root.parent
         )
         if not repos.ok or repos.value is None:
             return self.runtime.foundation.fail(repos.issues)
-        refs: list[str] = []
         for repo in repos.value:
             if repo.repo_key == provider_key:
                 continue
             consumer_root = Path(repo.repo_root)
-            nodes = self.runtime.node.node_tree.node_store.list_nodes(consumer_root)
-            if not nodes.ok or nodes.value is None:
-                return self.runtime.foundation.fail(nodes.issues)
-            for node in nodes.value:
+            consumer_nodes = self.runtime.node.node_tree.node_store.list_nodes(
+                consumer_root
+            )
+            if not consumer_nodes.ok or consumer_nodes.value is None:
+                return self.runtime.foundation.fail(consumer_nodes.issues)
+            for node in consumer_nodes.value:
                 if node.lifecycle != NodeLifecycle.ACTIVE:
                     continue
                 if node.kind == NodeKind.CONTENT:
@@ -318,17 +384,18 @@ class DeclReleaseGuard:
                                 else [],
                             ),
                         ):
-                            if any(
-                                isinstance(dep, RepoDeclDep)
-                                and dep.ref.repo == provider_key
-                                and dep.ref.node == node_path
-                                and dep.ref.name == decl_name
-                                for dep in deps
-                            ):
-                                refs.append(
-                                    f"workspace:decl:{repo.repo_key}:{node.path}:"
-                                    f"{dependent.name}:{section}"
-                                )
+                            for dep in deps:
+                                if (
+                                    not isinstance(dep, RepoDeclDep)
+                                    or dep.ref.repo != provider_key
+                                ):
+                                    continue
+                                key = (dep.ref.node, dep.ref.name)
+                                if key in refs_by_target:
+                                    refs_by_target[key].append(
+                                        f"workspace:decl:{repo.repo_key}:{node.path}:"
+                                        f"{dependent.name}:{section}"
+                                    )
                 contract_versions = sorted(
                     {
                         version
@@ -363,67 +430,38 @@ class DeclReleaseGuard:
                             for ref in dep.expected_decl_refs
                         ],
                     ]
-                    if any(
-                        ref.repo == provider_key
-                        and ref.node == node_path
-                        and ref.name == decl_name
+                    matched_targets = {
+                        (ref.node, ref.name)
                         for ref in candidates
-                    ):
-                        refs.append(
+                        if ref.repo == provider_key
+                        and (ref.node, ref.name) in refs_by_target
+                    }
+                    for key in matched_targets:
+                        refs_by_target[key].append(
                             f"workspace:contract:{repo.repo_key}:{node.path}"
                         )
-        return self.runtime.foundation.ok(sorted(set(refs)))
 
-    def _protected_entry(self, repo_root: Path, *, node_path: str, decl_name: str):
-        latest = self.runtime.repo_workspace.release.get_latest_release(repo_root)
-        if not latest.ok:
-            return self.runtime.foundation.fail(latest.issues)
-        if latest.value is None:
-            return self.runtime.foundation.ok(None)
-        baseline = self.runtime.repo_workspace.release.resolve_release_baseline(
-            repo_root, release_id=latest.value.release.release_id
+        return self.runtime.foundation.ok(
+            {
+                target: sorted(set(refs))
+                for target, refs in refs_by_target.items()
+            }
         )
-        if not baseline.ok or baseline.value is None:
-            return self.runtime.foundation.fail(baseline.issues)
-        node = self.runtime.node.node_tree.get_node(repo_root, path=node_path)
-        if not node.ok or node.value is None:
-            return self.runtime.foundation.fail(node.issues)
-        entry = next(
-            (
-                item
-                for item in baseline.value.protected_decl_views
-                if item.node_id == node.value.node_id and item.decl_name == decl_name
-            ),
-            None,
+
+    def _protected_entry(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        decl_name: str,
+        release_audit_context: RepoReleaseAuditContext | None = None,
+    ):
+        return self.runtime.repo_workspace.release.resolve_decl_release_protection(
+            repo_root,
+            node_path=node_path,
+            decl_name=decl_name,
+            audit_context=release_audit_context,
         )
-        if entry is None:
-            return self.runtime.foundation.ok(None)
-        release = self.runtime.repo_workspace.release.get_release(repo_root, release_id=entry.last_release_id)
-        if not release.ok or release.value is None:
-            return self.runtime.foundation.fail(release.issues)
-        version = release.value.release.node_contract_versions.get(entry.node_id)
-        if version is None:
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue("release_contract_missing", "Protected declaration node is absent from its release.", object_ref=entry.node_id)
-            )
-        contract_path = self.runtime.node.node_tree.node_store.contract_path(repo_root, node_id=entry.node_id, version=version)
-        contract = self.runtime.foundation.store.read_json(contract_path, NodeContract)
-        if not contract.ok or contract.value is None:
-            return self.runtime.foundation.fail(contract.issues)
-        revision_number = contract.value.decl_graph_head.get(decl_name)
-        if revision_number is None:
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue("release_decl_head_missing", "Protected declaration is absent from its released head.", object_ref=f"{node_path}:{decl_name}")
-            )
-        decl = self.runtime.decl_graph.decl_catalog.get_decl(repo_root, node_path=node_path, name=decl_name)
-        revision = self.runtime.decl_graph.decl_catalog.get_decl_revision(
-            repo_root, node_path=node_path, name=decl_name, revision=revision_number
-        )
-        if not decl.ok or decl.value is None:
-            return self.runtime.foundation.fail(decl.issues)
-        if not revision.ok or revision.value is None:
-            return self.runtime.foundation.fail(revision.issues)
-        return self.runtime.foundation.ok((decl.value, revision.value))
 
     def _fingerprint_candidate(self, repo_root: Path, *, node_path: str, decl: Decl, revision: DeclRevision) -> ServiceResult[str]:
         fingerprint = self.runtime.decl_graph.declared_api.fingerprint_candidate(

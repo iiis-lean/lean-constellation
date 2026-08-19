@@ -458,13 +458,18 @@ class PublicDeclAccessResolver:
         )
         if not exports.ok or exports.value is None:
             return self.runtime.foundation.fail(exports.issues)
+        release_statuses = self.runtime.repo_workspace.release.get_decl_release_status_batch(
+            repo_root,
+            decls=[(view.ref.node, view.ref.name) for view in exports.value],
+        )
+        if not release_statuses.ok or release_statuses.value is None:
+            return self.runtime.foundation.fail(release_statuses.issues)
         values: list[DeclPublicView] = []
-        for view in exports.value:
-            status = self.runtime.repo_workspace.release.get_decl_release_status(
-                repo_root, node_path=view.ref.node, decl_name=view.ref.name
-            )
-            if not status.ok or status.value is None:
-                return self.runtime.foundation.fail(status.issues)
+        for view, status in zip(
+            exports.value,
+            release_statuses.value,
+            strict=True,
+        ):
             values.append(
                 DeclPublicView(
                     ref=view.ref,
@@ -475,8 +480,8 @@ class PublicDeclAccessResolver:
                     stale=not view.valid,
                     source="scope_exports",
                     summary=view.summary,
-                    released_state=status.value.released_state,
-                    release_protected=status.value.release_protected,
+                    released_state=status.released_state,
+                    release_protected=status.release_protected,
                 )
             )
         return self.runtime.foundation.ok(values, warnings=exports.issues)
@@ -666,7 +671,7 @@ class PublicDeclAccessResolver:
         )
         if not public_refs.ok or public_refs.value is None:
             return self.runtime.foundation.fail(public_refs.issues)
-        values: list[DeclPublicView] = []
+        unique_resolved = []
         seen: set[tuple[str, str, int]] = set()
         for resolved in public_refs.value:
             ref = resolved.anchor
@@ -674,16 +679,28 @@ class PublicDeclAccessResolver:
             if key in seen:
                 continue
             seen.add(key)
+            unique_resolved.append(resolved)
+        release_statuses = self.runtime.repo_workspace.release.get_decl_release_status_batch(
+            provider_root,
+            decls=[
+                (resolved.anchor.node, resolved.anchor.name)
+                for resolved in unique_resolved
+            ],
+        )
+        if not release_statuses.ok or release_statuses.value is None:
+            return self.runtime.foundation.fail(release_statuses.issues)
+        values: list[DeclPublicView] = []
+        for resolved, status in zip(
+            unique_resolved,
+            release_statuses.value,
+            strict=True,
+        ):
+            ref = resolved.anchor
             decl = self.runtime.decl_graph.decl_catalog.get_decl(
                 provider_root, node_path=ref.node, name=ref.name
             )
             if not decl.ok or decl.value is None:
                 return self.runtime.foundation.fail(decl.issues)
-            status = self.runtime.repo_workspace.release.get_decl_release_status(
-                provider_root, node_path=ref.node, decl_name=ref.name
-            )
-            if not status.ok or status.value is None:
-                return self.runtime.foundation.fail(status.issues)
             values.append(
                 DeclPublicView(
                     ref=self._with_repo(ref, repo_key=repo_key),
@@ -696,8 +713,8 @@ class PublicDeclAccessResolver:
                     stale=not resolved.compatible,
                     source="repo_main_public_boundary",
                     summary=decl.value.summary,
-                    released_state=status.value.released_state,
-                    release_protected=status.value.release_protected,
+                    released_state=status.released_state,
+                    release_protected=status.release_protected,
                 )
             )
         if cache_key is not None:
