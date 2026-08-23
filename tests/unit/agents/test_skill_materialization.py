@@ -368,6 +368,8 @@ def test_content_plan_specialized_skills_spell_out_operational_flow() -> None:
     assert "ensure_open_decl_strategy" in strategy
     assert "close_decl_strategy" in strategy
     assert "DeclGraph read tools" in strategy
+    assert "`get_decl_strategy` without a selector" in strategy
+    assert "stable strategy sequence" in strategy
 
     round_planning = specs["decl-round-change-planning"].body
     assert "create_decl_round_draft" in round_planning
@@ -381,11 +383,20 @@ def test_content_plan_specialized_skills_spell_out_operational_flow() -> None:
     assert "actual typed edge" in round_planning
     assert "Do not round or pad its end line" in round_planning
     assert "split provider before consumer" in round_planning
+    assert "`get_decl_round` without a selector" in round_planning
+    assert "stable round sequence" in round_planning
 
     closeout = specs["decl-round-closeout"].body
     assert "write_decl_change_summary" in closeout
     assert "write_decl_round_summary" in closeout
     assert "mark_decl_round_terminal" in closeout
+    assert "`get_decl_round` without a selector" in closeout
+    assert "current awaiting-closeout round" in closeout
+
+    for current_skill in (strategy, round_planning, closeout):
+        assert "strategy_id" not in current_skill
+        assert "round_id" not in current_skill
+        assert "round_index" not in current_skill
 
     completion = specs["content-node-completion-decision"].body
     assert "bind_current_node_interface" in completion

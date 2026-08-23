@@ -71,9 +71,7 @@ class RoundStartValidationStepResult(LeanRenderableStepResult):
             "outcome": self.outcome,
             "repo_key": self.repo_key,
             "node_path": self.node_path,
-            "strategy_id": self.strategy_id,
-            "round_id": self.round_id,
-            "round_index": self.round_index,
+            "round_sequence": self.round_index,
             "change_count": self.change_count,
             "create_count": self.create_count,
             "update_count": self.update_count,
@@ -136,7 +134,6 @@ class DeclStageWorkerStepResult(LeanRenderableStepResult):
         return {
             "outcome": self.outcome,
             "stage": self.stage,
-            "round_id": self.round_id,
             "completed_decl_names": list(self.completed_decl_names),
             "affected_decl_names": list(self.affected_decl_names),
             "reason": self.reason,
@@ -162,7 +159,6 @@ class DeclStageReviewerStepResult(LeanRenderableStepResult):
         return {
             "outcome": self.outcome,
             "stage": self.stage,
-            "round_id": self.round_id,
             "node_path": self.node_path,
             "accepted": self.accepted,
             "retry_required": self.retry_required,
@@ -325,7 +321,10 @@ class RoundStartValidationStep(BaseStep):
                 create_count=counts["create_count"],
                 update_count=counts["update_count"],
                 theorem_like_count=counts["theorem_like_count"],
-                summary=f"Decl round {input_model.round_id} is running with {counts['change_count']} changes.",
+                summary=(
+                    f"Declaration Round {round_record_value.round_index} is running with "
+                    f"{counts['change_count']} changes."
+                ),
             )
         )
 

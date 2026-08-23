@@ -1471,6 +1471,8 @@ The strategy objective and rationale should record the selected Source route, bo
 
 ## Creating Or Continuing A Strategy
 
+Read the current Strategy with `get_decl_strategy` without a selector. When a deliberate comparison with history is needed, list the Strategies and select one by its stable strategy sequence.
+
 Use `ensure_open_decl_strategy` when no viable open strategy exists or when the current route needs to be made explicit. The strategy objective should name the mathematical route, not just say continue work.
 
 Continue an open strategy only if it still explains the next useful round. If the strategy remains valid after a blocked or failed round, close out that round first, repair prerequisites if possible, and then continue under the same strategy.
@@ -1538,7 +1540,7 @@ Prepare a round by editing graph truth with small tools. Do not submit one large
 Before planning changes:
 
 1. Re-read the current node contract with `get_current_node_contract`.
-2. Re-read graph, round history, and strategy state with the available DeclGraph read tools.
+2. Read the current Round with `get_decl_round` without a selector. When a deliberate historical comparison is needed, list the Rounds and select one by its stable round sequence; use the other DeclGraph read tools for graph and Strategy state.
 3. Ensure the next batch is small, coherent, and aligned with the open strategy.
 4. Create or reuse the draft round with `create_decl_round_draft`.
 
@@ -1658,7 +1660,7 @@ The round Flow records only its structured execution outcome and leaves the roun
 ## Required Order
 
 1. Read the callback result and confirm the current round is awaiting closeout.
-2. Re-read the current round, changed declarations, affected revisions, and relevant graph state; do not duplicate the detailed callback payload already present in the turn.
+2. Read the current awaiting-closeout round with `get_decl_round` without a selector, then re-read its changed declarations, affected revisions, and relevant graph state; do not duplicate the detailed callback payload already present in the turn.
 3. Write one summary per changed declaration with `write_decl_change_summary`.
 4. Write the round summary with `write_decl_round_summary`.
 5. Commit terminal closeout with `mark_decl_round_terminal`.

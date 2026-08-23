@@ -350,7 +350,14 @@ def test_decl_stage_agent_prompts_include_change_metadata(tmp_path: Path) -> Non
         round_index=round_index,
     )
 
-    advance_and_run(runtime, flow_id)
+    start_step_id = advance_and_run(runtime, flow_id)
+    start_step = runtime.flow_service.get_step(start_step_id)
+    start_agent_fields = start_step.result.agent_fields()
+    assert start_agent_fields["round_sequence"] == round_index
+    assert "strategy_id" not in start_agent_fields
+    assert "round_id" not in start_agent_fields
+    assert strategy_id not in start_step.result.render_for_agent(None)
+    assert round_id not in start_step.result.render_for_agent(None)
     advance_and_run(runtime, flow_id)
     prepare_step_id = advance_and_run(runtime, flow_id)
     prepare_step = runtime.flow_service.get_step(prepare_step_id)
@@ -359,10 +366,14 @@ def test_decl_stage_agent_prompts_include_change_metadata(tmp_path: Path) -> Non
     assert "target_metadata" not in prepare_step.result.model_dump(mode="json")
 
     queue_worker_completed(runtime, repo_root, stage="statement_nl", round_id=round_id)
-    advance_and_run(runtime, flow_id)
+    worker_step_id = advance_and_run(runtime, flow_id)
+    worker_step = runtime.flow_service.get_step(worker_step_id)
     worker_record = runtime.agent_service.start_records[-1]
+    assert worker_record.variables["round_id"] == round_id
     assert "target_metadata" not in worker_record.variables
     assert "context_brief" not in worker_record.variables
+    assert f"Round sequence: {round_index}." in (worker_record.prompt or "")
+    assert round_id not in (worker_record.prompt or "")
     assert "Assigned declarations:" in (worker_record.prompt or "")
     assert "Pipeline position: planned --Statement NL--> specified" in (worker_record.prompt or "")
     assert "global target_state does not expand this stage's authority" in (worker_record.prompt or "")
@@ -372,18 +383,24 @@ def test_decl_stage_agent_prompts_include_change_metadata(tmp_path: Path) -> Non
     assert "known_statement_deps" not in (worker_record.prompt or "")
     assert "known_proof_deps" not in (worker_record.prompt or "")
     assert "state=planned" not in (worker_record.prompt or "")
+    assert "round_id" not in worker_step.result.agent_fields()
     assert runtime.flow_service.get_flow(flow_id).state.position.phase == "stage_reviewer"
 
     queue_review(runtime, repo_root, stage="statement_nl", round_id=round_id, accepted=True)
-    advance_and_run(runtime, flow_id)
+    reviewer_step_id = advance_and_run(runtime, flow_id)
+    reviewer_step = runtime.flow_service.get_step(reviewer_step_id)
     reviewer_record = runtime.agent_service.start_records[-1]
+    assert reviewer_record.variables["round_id"] == round_id
     assert "target_metadata" not in reviewer_record.variables
     assert "context_brief" not in reviewer_record.variables
+    assert f"Round sequence: {round_index}." in (reviewer_record.prompt or "")
+    assert round_id not in (reviewer_record.prompt or "")
     assert "Review decl stage statement_nl." in (reviewer_record.prompt or "")
     assert "Pipeline position: planned --Statement NL--> specified" in (reviewer_record.prompt or "")
     assert "Review only this layer" in (reviewer_record.prompt or "")
     assert "Assigned declarations:" in (reviewer_record.prompt or "")
     assert "Required through: Proof Formal" in (reviewer_record.prompt or "")
+    assert "round_id" not in reviewer_step.result.agent_fields()
 
 
 def test_decl_round_stale_contract_fails_before_mutation(tmp_path: Path) -> None:

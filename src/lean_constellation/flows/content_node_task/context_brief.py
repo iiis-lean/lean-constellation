@@ -86,22 +86,20 @@ class PreparationContextBrief(StrictModel):
 
 
 class StrategyRoundContextBrief(StrictModel):
-    strategy_id: str
+    strategy_sequence: int = Field(ge=1)
     strategy_objective: str | None = None
     strategy_rationale: str | None = None
-    round_id: str
-    round_index: int | None = None
+    round_sequence: int = Field(ge=1)
     round_objective: str | None = None
     round_status: str | None = None
 
     def render(self) -> str:
         return "\n".join(
             [
-                f"Strategy {self.strategy_id} objective: {self.strategy_objective or '(unavailable)'}",
+                f"Strategy {self.strategy_sequence} objective: {self.strategy_objective or '(unavailable)'}",
                 f"Strategy rationale: {self.strategy_rationale or '(not provided)'}",
                 (
-                    f"Round {self.round_id} (index={self.round_index or 'unknown'}, "
-                    f"status={self.round_status or 'unknown'}) objective: "
+                    f"Round {self.round_sequence} (status={self.round_status or 'unknown'}) objective: "
                     f"{self.round_objective or '(unavailable)'}"
                 ),
             ]
@@ -124,10 +122,16 @@ class ContentPlanContextBrief(StrictModel):
         if self.active_strategy_round is not None:
             lines.extend(
                 [
-                    f"- Active declaration strategy: {self.active_strategy_round.strategy_objective or 'open'}",
+                    (
+                        "- Active declaration strategy: "
+                        f"Strategy {self.active_strategy_round.strategy_sequence}; objective: "
+                        f"{self.active_strategy_round.strategy_objective or 'open'}"
+                    ),
                     (
                         "- Active declaration round: "
-                        f"{self.active_strategy_round.round_status or 'open'}"
+                        f"Round {self.active_strategy_round.round_sequence}; status: "
+                        f"{self.active_strategy_round.round_status or 'open'}; objective: "
+                        f"{self.active_strategy_round.round_objective or 'open'}"
                     ),
                 ]
             )
@@ -469,9 +473,8 @@ def _latest_strategy_round_brief(
         return None
     rounds.sort(key=lambda item: (item.created_at, item.flow_id))
     latest = rounds[-1]
-    input_fields = _agent_fields(latest.input)
-    strategy_id = _text(input_fields.get("strategy_id"))
-    round_id = _text(input_fields.get("round_id"))
+    strategy_id = _text(getattr(latest.input, "strategy_id", None))
+    round_id = _text(getattr(latest.input, "round_id", None))
     if strategy_id is None or round_id is None:
         return None
     return _strategy_round_brief(
@@ -480,7 +483,6 @@ def _latest_strategy_round_brief(
         node_path=node_path,
         strategy_id=strategy_id,
         round_id=round_id,
-        round_index=input_fields.get("round_index"),
     )
 
 
@@ -491,29 +493,49 @@ def _strategy_round_brief(
     node_path: str,
     strategy_id: str,
     round_id: str,
-    round_index: int | None,
-) -> StrategyRoundContextBrief:
+) -> StrategyRoundContextBrief | None:
+    if repo_root is None:
+        return None
     strategy_objective = None
     strategy_rationale = None
     round_objective = None
     round_status = None
     graph = getattr(app, "decl_graph", None)
-    if repo_root is not None and graph is not None:
-        strategy = graph.get_strategy(repo_root, node_path=node_path, strategy_id=strategy_id)
-        if strategy.ok and strategy.value is not None:
-            strategy_objective = strategy.value.objective
-            strategy_rationale = strategy.value.rationale
-        round_record = graph.get_round(repo_root, node_path=node_path, round_id=round_id)
-        if round_record.ok and round_record.value is not None:
-            round_objective = round_record.value.objective
-            round_status = round_record.value.status.value
-            round_index = round_record.value.round_index
-    return StrategyRoundContextBrief(
+    if graph is None:
+        return None
+    strategy = graph.get_strategy(repo_root, node_path=node_path, strategy_id=strategy_id)
+    strategy_sequence = graph.strategy_sequence(
+        repo_root,
+        node_path=node_path,
         strategy_id=strategy_id,
+    )
+    round_record = graph.get_round(repo_root, node_path=node_path, round_id=round_id)
+    round_sequence = graph.round_sequence(
+        repo_root,
+        node_path=node_path,
+        round_id=round_id,
+    )
+    if (
+        not strategy.ok
+        or strategy.value is None
+        or not strategy_sequence.ok
+        or strategy_sequence.value is None
+        or not round_record.ok
+        or round_record.value is None
+        or round_record.value.strategy_id != strategy_id
+        or not round_sequence.ok
+        or round_sequence.value is None
+    ):
+        return None
+    strategy_objective = strategy.value.objective
+    strategy_rationale = strategy.value.rationale
+    round_objective = round_record.value.objective
+    round_status = round_record.value.status.value
+    return StrategyRoundContextBrief(
+        strategy_sequence=strategy_sequence.value,
         strategy_objective=strategy_objective,
         strategy_rationale=strategy_rationale,
-        round_id=round_id,
-        round_index=round_index,
+        round_sequence=round_sequence.value,
         round_objective=round_objective,
         round_status=round_status,
     )

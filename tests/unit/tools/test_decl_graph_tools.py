@@ -5,11 +5,18 @@ from pydantic import ValidationError
 
 from lean_constellation.tools import build_application_tool_specs
 from lean_constellation.tools.args import (
+    ChangeSummaryArgs,
     CurrentDeclVisibilityRevisionArgs,
     DeclCreateArgs,
     DeclUpdateArgs,
     NodeDeclVisibilityRevisionArgs,
-    RoundDiscardArgs,
+    NoArgs,
+    RoundDraftArgs,
+    RoundIdArgs,
+    RoundSummaryArgs,
+    RoundTerminalArgs,
+    StrategyCloseArgs,
+    StrategyIdArgs,
 )
 from lean_constellation.tools.keys import ApplicationToolViewKey
 from lean_constellation.tools.views import build_application_tool_views
@@ -71,7 +78,6 @@ def test_decl_graph_tools_are_registered() -> None:
 def test_decl_planning_tool_schemas_expose_actual_transition_fields_only() -> None:
     created = DeclCreateArgs.model_validate(
         {
-            "round_id": "round_1",
             "decl_name": "main_result",
             "kind": "theorem",
             "objective": "Create the result.",
@@ -80,7 +86,6 @@ def test_decl_planning_tool_schemas_expose_actual_transition_fields_only() -> No
     )
     parsed = DeclUpdateArgs.model_validate(
         {
-            "round_id": "round_1",
             "decl_name": "main_result",
             "objective": "Continue proof work.",
             "target_state": "proved",
@@ -110,7 +115,6 @@ def test_decl_planning_tool_schemas_expose_actual_transition_fields_only() -> No
         with pytest.raises(ValidationError):
             DeclUpdateArgs.model_validate(
                 {
-                    "round_id": "round_1",
                     "objective": "Legacy request.",
                     "target_state": "proved",
                     **legacy_payload,
@@ -118,12 +122,59 @@ def test_decl_planning_tool_schemas_expose_actual_transition_fields_only() -> No
             )
 
 
-def test_discard_decl_round_draft_rejects_removed_reason_field() -> None:
-    assert RoundDiscardArgs.model_validate({"round_id": "round_1"}).round_id == "round_1"
-    with pytest.raises(ValidationError):
-        RoundDiscardArgs.model_validate(
-            {"round_id": "round_1", "reason": "Legacy narrative field."}
-        )
+def test_decl_round_agent_schemas_reject_random_ids_and_use_optional_sequences() -> None:
+    assert NoArgs.model_validate({}).model_dump() == {}
+    assert RoundIdArgs.model_validate({}).model_dump() == {"round_sequence": None}
+    assert RoundIdArgs.model_validate({"round_sequence": 2}).round_sequence == 2
+    assert StrategyIdArgs.model_validate({}).model_dump() == {"strategy_sequence": None}
+    assert StrategyIdArgs.model_validate({"strategy_sequence": 2}).strategy_sequence == 2
+
+    current_context_models = (
+        (StrategyCloseArgs, {"summary": "Close."}, "strategy_id"),
+        (RoundDraftArgs, {"objective": "Draft."}, "strategy_id"),
+        (NoArgs, {}, "round_id"),
+        (ChangeSummaryArgs, {"change_id": "change_1", "summary": "Done."}, "round_id"),
+        (RoundSummaryArgs, {"summary": "Done."}, "round_id"),
+        (RoundTerminalArgs, {"result_kind": "success"}, "round_id"),
+        (
+            DeclCreateArgs,
+            {
+                "decl_name": "main_result",
+                "kind": "theorem",
+                "objective": "Create.",
+                "summary": "Main result.",
+            },
+            "round_id",
+        ),
+        (
+            DeclUpdateArgs,
+            {
+                "decl_name": "main_result",
+                "objective": "Update.",
+                "target_state": "proved",
+                "start_stage": "proof_nl",
+            },
+            "round_id",
+        ),
+    )
+    for model, valid_payload, stale_field in current_context_models:
+        model.model_validate(valid_payload)
+        with pytest.raises(ValidationError):
+            model.model_validate({**valid_payload, stale_field: "random-id"})
+
+    for model, field in ((RoundIdArgs, "round_sequence"), (StrategyIdArgs, "strategy_sequence")):
+        with pytest.raises(ValidationError):
+            model.model_validate({field: 0})
+
+    specs = {spec.name: spec for spec in build_application_tool_specs()}
+    assert specs["discard_decl_round_draft"].args_model.model_json_schema()["properties"] == {}
+    assert specs["validate_decl_round_draft"].args_model.model_json_schema()["properties"] == {}
+    assert set(specs["get_decl_strategy"].args_model.model_json_schema()["properties"]) == {
+        "strategy_sequence"
+    }
+    assert set(specs["get_decl_round"].args_model.model_json_schema()["properties"]) == {
+        "round_sequence"
+    }
 
 
 def test_content_plan_reuses_actual_dependency_tool_groups_without_reviewer_write_expansion() -> None:

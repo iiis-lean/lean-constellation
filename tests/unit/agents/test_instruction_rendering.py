@@ -206,6 +206,8 @@ def test_content_plan_instruction_spells_out_operational_flow_and_tools() -> Non
     text = render_agent_instruction("ContentPlanAgent")
 
     assert "After every callback, re-read current truth" in text
+    assert "DeclGraph navigation is current-context first" in text
+    assert "stable sequence only for a deliberate historical read" in text
     assert "get_current_repo_completion_policy" in text
     assert "content-plan-completion-policy" in text
     assert "submit_content_preparation_recon" in text
@@ -226,6 +228,9 @@ def test_content_plan_instruction_spells_out_operational_flow_and_tools() -> Non
     assert "faithfully carry the evidence recorded by `decl-round-closeout`" in text
     assert "you do not decide the repository node tree" in text
     assert "interface fit and binding" in text
+    assert "strategy_id" not in text
+    assert "round_id" not in text
+    assert "round_index" not in text
 
 
 def test_bottom_up_policy_instruction_is_navigation_not_a_duplicate_decision_tree() -> None:

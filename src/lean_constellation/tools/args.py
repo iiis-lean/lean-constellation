@@ -754,49 +754,50 @@ class StrategyEnsureArgs(StrictModel):
 
 
 class StrategyCloseArgs(StrictModel):
-    strategy_id: str = Field(description="Strategy id to close.")
     summary: str = Field(description="Closeout summary.")
     reason: str | None = Field(default=None, description="Optional reason for closing.")
     failed: bool = Field(default=False, description="Whether the strategy is being closed as failed.")
 
 
 class RoundDraftArgs(StrictModel):
-    strategy_id: str = Field(description="Open strategy id for this round.")
     objective: str = Field(description="Round objective.")
 
 
 class RoundIdArgs(StrictModel):
-    round_id: str | None = Field(default=None, description="Declaration round id; omit to use the current stage round.")
-
-
-class RoundDiscardArgs(RoundIdArgs):
-    pass
+    round_sequence: int | None = Field(
+        default=None,
+        ge=1,
+        description="Historical declaration round sequence; omit to inspect the current round.",
+    )
 
 
 class StrategyIdArgs(StrictModel):
-    strategy_id: str = Field(description="Declaration strategy id.")
+    strategy_sequence: int | None = Field(
+        default=None,
+        ge=1,
+        description="Historical declaration strategy sequence; omit to inspect the current open strategy.",
+    )
 
 
 class ChangeIdArgs(StrictModel):
     change_id: str = Field(description="Declaration change id.")
 
 
-class ChangeSummaryArgs(RoundIdArgs):
+class ChangeSummaryArgs(StrictModel):
     change_id: str = Field(description="Declaration change id.")
     summary: str = Field(description="Summary for this declaration change.")
 
 
-class RoundSummaryArgs(RoundIdArgs):
+class RoundSummaryArgs(StrictModel):
     summary: str = Field(description="Round closeout summary.")
 
 
-class RoundTerminalArgs(RoundIdArgs):
+class RoundTerminalArgs(StrictModel):
     result_kind: str = Field(description="Round terminal result kind.")
     reason: str | None = Field(default=None, description="Optional reason for the terminal result.")
 
 
 class DeclCreateArgs(StrictModel):
-    round_id: str = Field(description="Round id in which to plan this declaration creation.")
     decl_name: str = Field(description="Flat Lean Constellation declaration key and native module filename segment; dots and path separators are not allowed.")
     kind: str = Field(description="Declaration kind.")
     objective: str = Field(description="Mathematical objective for this declaration change in the current round.")
@@ -810,7 +811,6 @@ class DeclCreateArgs(StrictModel):
 
 
 class DeclUpdateArgs(StrictModel):
-    round_id: str = Field(description="Round id in which to plan this update.")
     decl_name: str = Field(description="Existing declaration name.")
     objective: str = Field(description="Objective for this update.")
     target_state: str = Field(description="Target state after this update: declared or proved.")
@@ -1078,14 +1078,6 @@ class ProofDepsClearArgs(StrictModel):
     decl_name: str = Field(description="Theorem-like declaration name to update in the current planning draft or proof stage batch.")
 
 
-class DeclStageFormalArgs(StrictModel):
-    round_id: str | None = Field(default=None, description="Current declaration round id; omit to use the current stage round.")
-    decl_name: str = Field(description="Declaration name to update.")
-    lean_code: str = Field(description="Captured Lean code to store in the declaration revision.")
-    lean_check: dict[str, object] = Field(description="LeanCheck view produced by capture/check tools.")
-    deps: list[str] | None = Field(default=None, description="Optional declaration dependency names.")
-
-
 class DeclStageFileArgs(DeclNameArgs):
     pass
 
@@ -1142,12 +1134,6 @@ class ProofFormalReviewRejectedArgs(StrictModel):
     issue_categories: list[str] = Field(description="Concrete proof-route alignment, source, dependency, helper, or semantic issue categories.")
     required_changes: list[str] = Field(description="Actionable proof formalization changes the worker must make before the next review.")
     recommended_next_action: str = Field(description="Recommended routing action for the retry, such as worker_repairable or needs_proof_nl_update.")
-
-
-class StageReviewSubmitArgs(StrictModel):
-    round_id: str = Field(description="Current declaration round id.")
-    stage: str = Field(description="Stage under review.")
-    summary: str = Field(description="Overall review summary for the stage.")
 
 
 class UpstreamDeclSearchArgs(StrictModel):

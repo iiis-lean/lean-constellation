@@ -649,7 +649,12 @@ class ContentPlanAgentStep(AgentStep):
                     round_index=submission.round_index,
                     request_count=len(submission.requests),
                 ),
-                summary=submission.summary or f"Dispatch decl round {submission.round_id}.",
+                summary=submission.summary
+                or (
+                    f"Dispatch declaration Round {submission.round_index}."
+                    if submission.round_index is not None
+                    else "Dispatch current declaration round."
+                ),
             )
         if isinstance(submission, ContentNodeReadySubmission):
             return ContentPlanStepResult(

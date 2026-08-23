@@ -14,6 +14,7 @@ from lean_constellation.services.decl_graph.graph_store import GraphStoreCompone
 from lean_constellation.services.decl_graph.decl_catalog import DeclCatalogComponent
 from lean_constellation.services.decl_graph.dependency import DeclDependencyComponent
 from lean_constellation.services.decl_graph.models import (
+    DeclChangeAgentView,
     DeclChangeView,
     DeclDeleteReceipt,
     DeclDeleteClosureView,
@@ -21,9 +22,12 @@ from lean_constellation.services.decl_graph.models import (
     DeclDependencyMutationReceipt,
     DeclFileRevisionView,
     DeclGraphIndex,
+    DeclGraphIndexAgentView,
     DeclGraphRoundView,
+    DeclGraphRoundAgentView,
     DeclGraphStoreView,
     DeclGraphStrategyView,
+    DeclGraphStrategyAgentView,
     DeclLifecycle,
     DeclManagedProjectionEffect,
     DeclOriginMutationReceipt,
@@ -306,6 +310,9 @@ class DeclGraphService:
     def get_decl_graph_index(self, repo_root: Path, *, node_path: str) -> ServiceResult[DeclGraphIndex]:
         return self.graph_store.get_index(repo_root, node_path=node_path)
 
+    def decl_graph_index_agent_view(self, index: DeclGraphIndex) -> DeclGraphIndexAgentView:
+        return self.views.graph_index_agent_view(index)
+
     def get_decl_graph_store_view(self, repo_root: Path, *, node_path: str) -> ServiceResult[DeclGraphStoreView]:
         return self.graph_store.get_store_view(repo_root, node_path=node_path)
 
@@ -339,6 +346,19 @@ class DeclGraphService:
         if not strategy.ok or strategy.value is None:
             return self.runtime.foundation.fail(strategy.issues)
         return self.runtime.foundation.ok(self.views.strategy_view(strategy.value))
+
+    def ensure_open_strategy_agent_view(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        objective: str,
+        rationale: str | None = None,
+    ) -> ServiceResult[DeclGraphStrategyAgentView]:
+        strategy = self.ensure_open_strategy(repo_root, node_path=node_path, objective=objective, rationale=rationale)
+        if not strategy.ok or strategy.value is None:
+            return self.runtime.foundation.fail(strategy.issues)
+        return self.strategy_agent_view(repo_root, node_path=node_path, strategy=strategy.value)
 
     def require_current_open_strategy(
         self,
@@ -478,6 +498,28 @@ class DeclGraphService:
             return self.runtime.foundation.fail(strategy.issues)
         return self.runtime.foundation.ok(self.views.strategy_view(strategy.value))
 
+    def close_strategy_agent_view(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        strategy_id: str,
+        summary: str,
+        reason: str | None = None,
+        failed: bool = False,
+    ) -> ServiceResult[DeclGraphStrategyAgentView]:
+        strategy = self.close_strategy(
+            repo_root,
+            node_path=node_path,
+            strategy_id=strategy_id,
+            summary=summary,
+            reason=reason,
+            failed=failed,
+        )
+        if not strategy.ok or strategy.value is None:
+            return self.runtime.foundation.fail(strategy.issues)
+        return self.strategy_agent_view(repo_root, node_path=node_path, strategy=strategy.value)
+
     def create_round_draft(
         self,
         repo_root: Path,
@@ -505,6 +547,19 @@ class DeclGraphService:
         if not round_record.ok or round_record.value is None:
             return self.runtime.foundation.fail(round_record.issues)
         return self.runtime.foundation.ok(self.views.round_view(round_record.value))
+
+    def create_round_draft_agent_view(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        strategy_id: str,
+        objective: str,
+    ) -> ServiceResult[DeclGraphRoundAgentView]:
+        round_record = self.create_round_draft(repo_root, node_path=node_path, strategy_id=strategy_id, objective=objective)
+        if not round_record.ok or round_record.value is None:
+            return self.runtime.foundation.fail(round_record.issues)
+        return self.round_agent_view(repo_root, node_path=node_path, round_record=round_record.value)
 
     def discard_round_draft(
         self,
@@ -646,6 +701,57 @@ class DeclGraphService:
             return self.runtime.foundation.fail(strategy.issues)
         return self.runtime.foundation.ok(self.views.strategy_view(strategy.value))
 
+    def strategy_agent_view(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        strategy: DeclGraphStrategy,
+    ) -> ServiceResult[DeclGraphStrategyAgentView]:
+        sequence = self.strategy_sequence(
+            repo_root,
+            node_path=node_path,
+            strategy_id=strategy.strategy_id,
+        )
+        if not sequence.ok or sequence.value is None:
+            return self.runtime.foundation.fail(sequence.issues)
+        rounds = self.list_rounds(repo_root, node_path=node_path)
+        if not rounds.ok or rounds.value is None:
+            return self.runtime.foundation.fail(rounds.issues)
+        round_sequence_by_id = {
+            round_record.round_id: round_record.round_index
+            for round_record in rounds.value
+        }
+        missing_round_ids = [
+            round_id
+            for round_id in strategy.created_round_ids
+            if round_id not in round_sequence_by_id
+        ]
+        if missing_round_ids:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "strategy_round_reference_missing",
+                    "The declaration strategy references a missing declaration round.",
+                    object_ref=missing_round_ids[0],
+                )
+            )
+        return self.runtime.foundation.ok(
+            self.views.strategy_agent_view(
+                strategy,
+                strategy_sequence=sequence.value,
+                round_sequences=[round_sequence_by_id[round_id] for round_id in strategy.created_round_ids],
+            )
+        )
+
+    def get_strategy_agent_view(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        strategy: DeclGraphStrategy,
+    ) -> ServiceResult[DeclGraphStrategyAgentView]:
+        return self.strategy_agent_view(repo_root, node_path=node_path, strategy=strategy)
+
     def list_strategies(self, repo_root: Path, *, node_path: str) -> ServiceResult[list[DeclGraphStrategy]]:
         return self.strategy_round.list_strategies(repo_root, node_path=node_path)
 
@@ -654,6 +760,50 @@ class DeclGraphService:
         if not strategies.ok or strategies.value is None:
             return self.runtime.foundation.fail(strategies.issues)
         return self.runtime.foundation.ok([self.views.strategy_view(strategy) for strategy in strategies.value])
+
+    def list_strategy_agent_views(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+    ) -> ServiceResult[list[DeclGraphStrategyAgentView]]:
+        strategies = self.list_strategies(repo_root, node_path=node_path)
+        if not strategies.ok or strategies.value is None:
+            return self.runtime.foundation.fail(strategies.issues)
+        rounds = self.list_rounds(repo_root, node_path=node_path)
+        if not rounds.ok or rounds.value is None:
+            return self.runtime.foundation.fail(rounds.issues)
+        round_sequence_by_id = {
+            round_record.round_id: round_record.round_index
+            for round_record in rounds.value
+        }
+        ordered = sorted(
+            strategies.value,
+            key=lambda strategy: (strategy.created_at, strategy.strategy_id),
+        )
+        views: list[DeclGraphStrategyAgentView] = []
+        for sequence, strategy in enumerate(ordered, start=1):
+            missing_round_ids = [
+                round_id
+                for round_id in strategy.created_round_ids
+                if round_id not in round_sequence_by_id
+            ]
+            if missing_round_ids:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "strategy_round_reference_missing",
+                        "The declaration strategy references a missing declaration round.",
+                        object_ref=missing_round_ids[0],
+                    )
+                )
+            views.append(
+                self.views.strategy_agent_view(
+                    strategy,
+                    strategy_sequence=sequence,
+                    round_sequences=[round_sequence_by_id[round_id] for round_id in strategy.created_round_ids],
+                )
+            )
+        return self.runtime.foundation.ok(views)
 
     def get_round(self, repo_root: Path, *, node_path: str, round_id: str) -> ServiceResult[DeclGraphRound]:
         return self.strategy_round.get_round(repo_root, node_path=node_path, round_id=round_id)
@@ -664,6 +814,36 @@ class DeclGraphService:
             return self.runtime.foundation.fail(round_record.issues)
         return self.runtime.foundation.ok(self.views.round_view(round_record.value))
 
+    def round_agent_view(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_record: DeclGraphRound,
+    ) -> ServiceResult[DeclGraphRoundAgentView]:
+        strategy_sequence = self.strategy_sequence(
+            repo_root,
+            node_path=node_path,
+            strategy_id=round_record.strategy_id,
+        )
+        if not strategy_sequence.ok or strategy_sequence.value is None:
+            return self.runtime.foundation.fail(strategy_sequence.issues)
+        return self.runtime.foundation.ok(
+            self.views.round_agent_view(
+                round_record,
+                strategy_sequence=strategy_sequence.value,
+            )
+        )
+
+    def get_round_agent_view(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_record: DeclGraphRound,
+    ) -> ServiceResult[DeclGraphRoundAgentView]:
+        return self.round_agent_view(repo_root, node_path=node_path, round_record=round_record)
+
     def list_rounds(self, repo_root: Path, *, node_path: str) -> ServiceResult[list[DeclGraphRound]]:
         return self.strategy_round.list_rounds(repo_root, node_path=node_path)
 
@@ -672,6 +852,54 @@ class DeclGraphService:
         if not rounds.ok or rounds.value is None:
             return self.runtime.foundation.fail(rounds.issues)
         return self.runtime.foundation.ok([self.views.round_view(round_record) for round_record in rounds.value])
+
+    def list_round_agent_views(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+    ) -> ServiceResult[list[DeclGraphRoundAgentView]]:
+        rounds = self.list_rounds(repo_root, node_path=node_path)
+        if not rounds.ok or rounds.value is None:
+            return self.runtime.foundation.fail(rounds.issues)
+        strategies = self.list_strategies(repo_root, node_path=node_path)
+        if not strategies.ok or strategies.value is None:
+            return self.runtime.foundation.fail(strategies.issues)
+        strategy_sequence_by_id = {
+            strategy.strategy_id: sequence
+            for sequence, strategy in enumerate(
+                sorted(
+                    strategies.value,
+                    key=lambda strategy: (strategy.created_at, strategy.strategy_id),
+                ),
+                start=1,
+            )
+        }
+        missing_strategy_ids = [
+            round_record.strategy_id
+            for round_record in rounds.value
+            if round_record.strategy_id not in strategy_sequence_by_id
+        ]
+        if missing_strategy_ids:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "round_strategy_reference_missing",
+                    "The declaration round references a missing declaration strategy.",
+                    object_ref=missing_strategy_ids[0],
+                )
+            )
+        return self.runtime.foundation.ok(
+            [
+                self.views.round_agent_view(
+                    round_record,
+                    strategy_sequence=strategy_sequence_by_id[round_record.strategy_id],
+                )
+                for round_record in rounds.value
+            ]
+        )
+
+    def change_agent_view(self, change: DeclChangeView) -> DeclChangeAgentView:
+        return self.views.change_agent_view(change)
 
     def create_decl(
         self,

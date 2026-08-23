@@ -101,8 +101,21 @@ def test_strict_decl_graph_strategy_round_readiness_tool_cases_execute(
         recorder=evidence_recorder,
         assertion_summary="Open declaration strategy was ensured.",
     )
-    strategy_id = _field(strategy.value, "strategy_id")
-    assert strategy_id
+    strategy_record = unwrap(
+        ws.runtime.decl_graph.require_current_open_strategy(
+            ws.provider_repo,
+            node_path=CONTENT_NODE_PATH,
+        )
+    )
+    strategy_id = strategy_record.strategy_id
+    strategy_sequence = unwrap(
+        ws.runtime.decl_graph.strategy_sequence(
+            ws.provider_repo,
+            node_path=CONTENT_NODE_PATH,
+            strategy_id=strategy_id,
+        )
+    )
+    assert _field(strategy.value, "strategy_sequence") == strategy_sequence
 
     strategies = call_tool_with_evidence(
         server,
@@ -113,29 +126,40 @@ def test_strict_decl_graph_strategy_round_readiness_tool_cases_execute(
         recorder=evidence_recorder,
         assertion_summary="Declaration strategies were listed.",
     )
-    assert any(_field(item, "strategy_id") == strategy_id for item in _as_items(strategies.value))
+    assert any(
+        _field(item, "strategy_sequence") == strategy_sequence
+        for item in _as_items(strategies.value)
+    )
 
     strategy_lookup = call_tool_with_evidence(
         server,
         "content_plan",
         "get_decl_strategy",
-        {"strategy_id": strategy_id},
+        {"strategy_sequence": strategy_sequence},
         runtime_context=plan_ctx,
         recorder=evidence_recorder,
         assertion_summary="Declaration strategy was loaded.",
     )
-    assert _field(strategy_lookup.value, "strategy_id") == strategy_id
+    assert _field(strategy_lookup.value, "strategy_sequence") == strategy_sequence
 
     round_record = call_tool_with_evidence(
         server,
         "content_plan",
         "create_decl_round_draft",
-        {"strategy_id": strategy_id, "objective": "Plan create, update, and delete changes."},
+        {"objective": "Plan create, update, and delete changes."},
         runtime_context=plan_ctx,
         recorder=evidence_recorder,
         assertion_summary="Declaration round draft was created.",
     )
-    round_id = _field(round_record.value, "round_id")
+    current_round = unwrap(
+        ws.runtime.decl_graph.require_current_draft_round(
+            ws.provider_repo,
+            node_path=CONTENT_NODE_PATH,
+        )
+    )
+    round_id = current_round.round_id
+    round_sequence = current_round.round_index
+    assert _field(round_record.value, "round_sequence") == round_sequence
     assert _field(round_record.value, "status") == "draft"
 
     create_change = call_tool_with_evidence(
@@ -143,7 +167,6 @@ def test_strict_decl_graph_strategy_round_readiness_tool_cases_execute(
         "content_plan",
         "plan_create_decl",
         {
-            "round_id": round_id,
             "decl_name": "created_result",
             "kind": "theorem",
             "objective": "Create a new strict ToolSweep theorem.",
@@ -162,7 +185,6 @@ def test_strict_decl_graph_strategy_round_readiness_tool_cases_execute(
         "content_plan",
         "plan_update_decl",
         {
-            "round_id": round_id,
             "decl_name": "existing_result",
             "objective": "Open a strict ToolSweep update revision.",
             "target_state": "proved",
@@ -183,13 +205,16 @@ def test_strict_decl_graph_strategy_round_readiness_tool_cases_execute(
         recorder=evidence_recorder,
         assertion_summary="Declaration rounds were listed.",
     )
-    assert any(_field(item, "round_id") == round_id for item in _as_items(rounds.value))
+    assert any(
+        _field(item, "round_sequence") == round_sequence
+        for item in _as_items(rounds.value)
+    )
 
     round_lookup = call_tool_with_evidence(
         server,
         "content_plan",
         "get_decl_round",
-        {"round_id": round_id},
+        {"round_sequence": round_sequence},
         runtime_context=plan_ctx,
         recorder=evidence_recorder,
         assertion_summary="Declaration round was loaded.",
@@ -257,7 +282,7 @@ def test_strict_decl_graph_strategy_round_readiness_tool_cases_execute(
         server,
         "content_plan",
         "validate_decl_round_draft",
-        {"round_id": round_id},
+        {},
         runtime_context=plan_ctx,
         recorder=evidence_recorder,
         assertion_summary="Draft round gate passed for planned changes.",
@@ -316,18 +341,18 @@ def test_strict_decl_graph_strategy_round_readiness_tool_cases_execute(
             server,
             "content_plan",
             "write_decl_change_summary",
-            {"round_id": round_id, "change_id": change_id, "summary": f"Strict ToolSweep summarized {change_id}."},
+            {"change_id": change_id, "summary": f"Strict ToolSweep summarized {change_id}."},
             runtime_context=plan_ctx,
             recorder=evidence_recorder,
             assertion_summary=f"Decl change summary was written for {change_id}.",
         )
-        assert _field(summarized.value, "round_id") == round_id
+        assert _field(summarized.value, "round_sequence") == round_sequence
 
     round_summary = call_tool_with_evidence(
         server,
         "content_plan",
         "write_decl_round_summary",
-        {"round_id": round_id, "summary": "Strict ToolSweep round summary."},
+        {"summary": "Strict ToolSweep round summary."},
         runtime_context=plan_ctx,
         recorder=evidence_recorder,
         assertion_summary="Decl round summary was written.",
@@ -353,7 +378,6 @@ def test_strict_decl_graph_strategy_round_readiness_tool_cases_execute(
         "content_plan",
         "mark_decl_round_terminal",
         {
-            "round_id": round_id,
             "result_kind": "blocked",
             "reason": "Strict ToolSweep intentionally leaves the planned revisions unexecuted.",
         },
@@ -379,18 +403,24 @@ def test_strict_decl_graph_strategy_round_readiness_tool_cases_execute(
         server,
         "content_plan",
         "create_decl_round_draft",
-        {"strategy_id": strategy_id, "objective": "Exercise atomic rejected-draft rollback."},
+        {"objective": "Exercise atomic rejected-draft rollback."},
         runtime_context=plan_ctx,
         recorder=evidence_recorder,
         assertion_summary="An isolated declaration round draft was created for discard coverage.",
     )
-    discard_round_id = _field(discard_round.value, "round_id")
+    discard_round_record = unwrap(
+        ws.runtime.decl_graph.require_current_draft_round(
+            ws.provider_repo,
+            node_path=CONTENT_NODE_PATH,
+        )
+    )
+    discard_round_id = discard_round_record.round_id
+    assert _field(discard_round.value, "round_sequence") == discard_round_record.round_index
     discarded_change = call_tool_with_evidence(
         server,
         "content_plan",
         "plan_create_decl",
         {
-            "round_id": discard_round_id,
             "decl_name": "discarded_result",
             "kind": "theorem",
             "objective": "Create a declaration that must disappear with the rejected draft.",
@@ -407,7 +437,7 @@ def test_strict_decl_graph_strategy_round_readiness_tool_cases_execute(
         server,
         "content_plan",
         "discard_decl_round_draft",
-        {"round_id": discard_round_id},
+        {},
         runtime_context=plan_ctx,
         recorder=evidence_recorder,
         assertion_summary="The unsubmitted draft and its planned declaration revision were atomically discarded.",
@@ -434,7 +464,7 @@ def test_strict_decl_graph_strategy_round_readiness_tool_cases_execute(
         server,
         "content_plan",
         "close_decl_strategy",
-        {"strategy_id": strategy_id, "summary": "Strict ToolSweep strategy closed.", "reason": "ToolSweep complete.", "failed": True},
+        {"summary": "Strict ToolSweep strategy closed.", "reason": "ToolSweep complete.", "failed": True},
         runtime_context=plan_ctx,
         recorder=evidence_recorder,
         assertion_summary="Decl strategy was closed.",

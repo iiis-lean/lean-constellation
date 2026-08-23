@@ -22,9 +22,18 @@ from lean_constellation.flows.common.flow_requests import (
 from lean_constellation.flows.common.submissions import new_submission_id
 from lean_constellation.flows.common.testing import FakeLeanFlowRuntime, create_fake_lean_flow_runtime
 from lean_constellation.flows.content_node_task.decl_round.submissions import DeclRoundDispatchSubmission
+from lean_constellation.flows.content_node_task.decl_round.flow import (
+    DeclGraphRoundInput,
+    DeclGraphRoundResult,
+)
 from lean_constellation.flows.content_node_task.decl_round.steps import (
     DeclStageReviewerStepState,
     DeclStageWorkerStepState,
+)
+from lean_constellation.flows.content_node_task.context_brief import (
+    ContentPlanContextBrief,
+    PreparationContextBrief,
+    StrategyRoundContextBrief,
 )
 from lean_constellation.flows.content_node_task.preparation.mathlib_recon.submissions import MathlibReconCompletedSubmission
 from lean_constellation.flows.content_node_task.preparation.node_dir_recon.submissions import NodeDirDependencyReconCompletedSubmission
@@ -159,6 +168,58 @@ def _run_step(runtime: FakeLeanFlowRuntime, step, submission=None):
     return runtime.flow_service.get_step(step_id)
 
 
+def test_decl_round_agent_projection_uses_sequences_without_exact_ids() -> None:
+    input_model = DeclGraphRoundInput(
+        repo_key="Repo",
+        node_path="Main.Core",
+        strategy_id="strategy_private",
+        round_id="round_private",
+        round_index=3,
+    )
+    result = DeclGraphRoundResult(
+        outcome="blocked",
+        repo_key="Repo",
+        node_path="Main.Core",
+        strategy_id="strategy_private",
+        round_id="round_private",
+        round_index=3,
+        terminal_stage="proof_formal",
+        reason="Need a provider lemma.",
+    )
+    brief = StrategyRoundContextBrief(
+        strategy_sequence=2,
+        strategy_objective="Build the provider layer.",
+        round_sequence=3,
+        round_objective="Prove the current batch.",
+        round_status="blocked",
+    )
+
+    rendered = "\n".join(
+        (
+            input_model.render_for_agent(None),
+            result.render_for_agent(None),
+            brief.render(),
+            ContentPlanContextBrief(
+                preparation=PreparationContextBrief(),
+                active_strategy_round=brief,
+            ).render(),
+        )
+    )
+
+    assert input_model.agent_fields()["round_sequence"] == 3
+    assert result.agent_fields()["round_sequence"] == 3
+    assert "Strategy 2 objective" in rendered
+    assert "Round 3 (status=blocked)" in rendered
+    assert "Active declaration strategy: Strategy 2" in rendered
+    assert "Active declaration round: Round 3" in rendered
+    assert "strategy_private" not in rendered
+    assert "round_private" not in rendered
+    assert input_model.strategy_id == "strategy_private"
+    assert input_model.round_id == "round_private"
+    assert result.strategy_id == "strategy_private"
+    assert result.round_id == "round_private"
+
+
 def test_content_plan_agent_step_dispatch_and_completion_results(tmp_path: Path) -> None:
     runtime = create_fake_lean_flow_runtime(tmp_path / "ark")
     flow_id = _start_content_flow(runtime, tmp_path)
@@ -250,11 +311,14 @@ def test_content_plan_agent_step_dispatch_and_completion_results(tmp_path: Path)
                     round_id="round_1",
                 )
             ],
-            summary="Dispatch round.",
+            summary=None,
         ),
     )
     assert isinstance(decl_round.result, ContentPlanStepResult)
     assert decl_round.result.outcome == "decl_round_dispatch"
+    assert decl_round.result.agent_fields()["decl_round_sequence"] == 1
+    assert "strategy_1" not in decl_round.result.render_for_agent(None)
+    assert "round_1" not in decl_round.result.render_for_agent(None)
 
     ready = _run_step(
         runtime,

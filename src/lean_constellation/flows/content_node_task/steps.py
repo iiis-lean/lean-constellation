@@ -75,7 +75,7 @@ class ContentPlanStepResult(LeanRenderableStepResult):
             "resource_target": f"{self.resource_request.target_kind}:{self.resource_request.target}"
             if self.resource_request
             else None,
-            "decl_round": self.decl_round.round_id if self.decl_round else None,
+            "decl_round_sequence": self.decl_round.round_index if self.decl_round else None,
             "completion_reason": self.completion.reason if self.completion else None,
             "incomplete_reason": self.incomplete_reason,
         }

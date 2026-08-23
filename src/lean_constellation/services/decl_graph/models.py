@@ -291,6 +291,21 @@ class DeclGraphIndex(StrictModel):
         return sorted(stripped)
 
 
+class DeclGraphIndexAgentView(StrictModel):
+    """Agent-facing DeclGraph inventory without durable random identities."""
+
+    node_path: str
+    strategy_count: int = Field(ge=0)
+    round_count: int = Field(ge=0)
+    decl_count: int = Field(ge=0)
+    decl_names: list[str] = Field(default_factory=list)
+
+    @field_validator("node_path")
+    @classmethod
+    def _required_text(cls, value: str) -> str:
+        return _required_text(value)
+
+
 class DeclGraphStoreView(StrictModel):
     """Agent/internal view of the decl graph store location and index counts."""
 
@@ -666,7 +681,7 @@ class DeclView(StrictModel):
 
 
 class DeclGraphStrategyView(StrictModel):
-    """Agent/API-facing declaration strategy view."""
+    """Exact declaration strategy view for internal and Operator surfaces."""
 
     strategy_id: str
     node_path: str
@@ -685,8 +700,28 @@ class DeclGraphStrategyView(StrictModel):
         return _required_text(value)
 
 
+class DeclGraphStrategyAgentView(StrictModel):
+    """Agent-facing strategy projection addressed by stable sequence."""
+
+    strategy_sequence: int = Field(ge=1)
+    node_path: str
+    status: DeclStrategyStatus
+    objective: str
+    rationale: str | None = None
+    round_sequences: list[int] = Field(default_factory=list)
+    summary: str | None = None
+    closed_reason: str | None = None
+    created_at: str | None = None
+    closed_at: str | None = None
+
+    @field_validator("node_path", "objective")
+    @classmethod
+    def _required_text(cls, value: str) -> str:
+        return _required_text(value)
+
+
 class DeclGraphRoundView(StrictModel):
-    """Agent/API-facing declaration round view."""
+    """Exact declaration round view for internal and Operator surfaces."""
 
     round_id: str
     node_path: str
@@ -715,6 +750,35 @@ class DeclGraphRoundView(StrictModel):
         return _required_text(value)
 
 
+class DeclGraphRoundAgentView(StrictModel):
+    """Agent-facing round projection addressed by stable sequence."""
+
+    round_sequence: int = Field(ge=1)
+    strategy_sequence: int = Field(ge=1)
+    node_path: str
+    status: DeclRoundStatus
+    objective: str
+    revision_refs: list[DeclRevisionRef] = Field(default_factory=list)
+    discarded_by: str | None = None
+    discarded_at: str | None = None
+    change_ids: list[str] = Field(default_factory=list)
+    summary: str | None = None
+    execution_result_kind: DeclRoundResultKind | None = None
+    execution_reason: str | None = None
+    result_kind: DeclRoundResultKind | None = None
+    result_reason: str | None = None
+    closeout_required: bool = False
+    required_next_action: str | None = None
+    created_at: str | None = None
+    started_at: str | None = None
+    committed_at: str | None = None
+
+    @field_validator("node_path", "objective")
+    @classmethod
+    def _required_text(cls, value: str) -> str:
+        return _required_text(value)
+
+
 class DeclChangeView(StrictModel):
     """Round-level declaration change view derived from DeclRevision.change."""
 
@@ -735,6 +799,30 @@ class DeclChangeView(StrictModel):
     updated_at: str = Field(default_factory=utc_now_iso)
 
     @field_validator("change_id", "node_path", "round_id", "decl_name", "objective")
+    @classmethod
+    def _required_text(cls, value: str) -> str:
+        return _required_text(value)
+
+
+class DeclChangeAgentView(StrictModel):
+    """Agent-facing change projection without the owning random Round id."""
+
+    change_id: str
+    node_path: str
+    kind: DeclChangeKind
+    decl_name: str
+    base_revision: int | None = None
+    start_stage: DeclStage | None = None
+    target_state: DeclState | None = None
+    require_target_state_satisfied: bool = True
+    objective: str
+    summary: str | None = None
+    status: DeclChangeStatus = DeclChangeStatus.PLANNED
+    target_revision: int | None = None
+    created_at: str = Field(default_factory=utc_now_iso)
+    updated_at: str = Field(default_factory=utc_now_iso)
+
+    @field_validator("change_id", "node_path", "decl_name", "objective")
     @classmethod
     def _required_text(cls, value: str) -> str:
         return _required_text(value)

@@ -6,7 +6,9 @@ from pydantic import ValidationError
 from lean_constellation.app.operator_data.api import OperatorDataApi
 from lean_constellation.app.operator_data.decl_projection import (
     FormalApplyInput,
+    NodeInput,
     RoundBatchInput,
+    RoundInput,
     StrategyInput,
 )
 from lean_constellation.app.operator_data.node import (
@@ -83,3 +85,55 @@ def test_round_batch_preserves_typed_decl_drafts_at_service_boundary(tmp_path) -
 
     assert created.ok and created.value is not None, created.issues
     assert [item.decl_name for item in created.value.revision_refs] == ["coreValue"]
+
+
+def test_operator_strategy_and_round_views_preserve_exact_identity(tmp_path) -> None:  # noqa: ANN001
+    workspace = tmp_path / "workspace"
+    make_repo(workspace)
+    api = OperatorDataApi(make_registry(workspace))
+    assert api.node.create_scope_node(
+        "MainRepo",
+        CreateScopeNodeInput(path="Main", goal="Root.", boundary="Root."),
+    ).ok
+    assert api.node.create_content_node(
+        "MainRepo",
+        CreateContentNodeInput(
+            path="Main.Core",
+            goal="Core.",
+            boundary="Core.",
+            objective="Declare one value.",
+            success_criteria="The declaration draft exists.",
+            expected_parent_contract_version=1,
+        ),
+    ).ok
+    strategy = api.decl_projection.ensure_strategy(
+        "MainRepo",
+        StrategyInput(node_path="Main.Core", objective="Declare the core value."),
+    )
+    assert strategy.ok and strategy.value is not None
+    assert strategy.value.strategy_id
+
+    round_record = api.decl_projection.create_round(
+        "MainRepo",
+        RoundInput(
+            node_path="Main.Core",
+            strategy_id=strategy.value.strategy_id,
+            objective="Create the value draft.",
+        ),
+    )
+    assert round_record.ok and round_record.value is not None
+    assert round_record.value.round_id
+    assert round_record.value.strategy_id == strategy.value.strategy_id
+
+    strategies = api.decl_projection.list_strategies(
+        "MainRepo",
+        NodeInput(node_path="Main.Core"),
+    )
+    rounds = api.decl_projection.list_rounds(
+        "MainRepo",
+        NodeInput(node_path="Main.Core"),
+    )
+    assert strategies.ok and strategies.value is not None
+    assert rounds.ok and rounds.value is not None
+    assert strategies.value[0].strategy_id == strategy.value.strategy_id
+    assert rounds.value[0].round_id == round_record.value.round_id

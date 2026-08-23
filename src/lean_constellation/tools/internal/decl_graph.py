@@ -26,7 +26,6 @@ from lean_constellation.tools.args import (
     PublicStatementBoundaryArgs,
     PublicStatementClosureArgs,
     RoundDraftArgs,
-    RoundDiscardArgs,
     RoundIdArgs,
     RoundSummaryArgs,
     RoundTerminalArgs,
@@ -495,12 +494,56 @@ def _public_decl_item(runtime, repo_root, public_decl) -> dict[str, object]:
     }
 
 
-def _required_round_id(runtime, ctx, round_id: str | None) -> str:
-    if round_id and round_id.strip():
-        return round_id.strip()
-    if ctx.decl_stage and ctx.decl_stage.round_id:
-        return ctx.decl_stage.round_id
-    raise ValueError("round_id is required when current tool context has no decl-stage round.")
+def _draft_round(runtime, ctx):
+    return runtime.decl_graph.require_current_draft_round(
+        ctx.repo_root,
+        node_path=_node(ctx),
+    )
+
+
+def _strategy_for_read(runtime, ctx, strategy_sequence: int | None):
+    if strategy_sequence is not None:
+        return runtime.decl_graph.get_strategy_by_sequence(
+            ctx.repo_root,
+            node_path=_node(ctx),
+            strategy_sequence=strategy_sequence,
+        )
+    if ctx.runtime.round_id:
+        current_round = runtime.decl_graph.get_round(
+            ctx.repo_root,
+            node_path=_node(ctx),
+            round_id=ctx.runtime.round_id,
+        )
+        if not current_round.ok or current_round.value is None:
+            return runtime.foundation.fail(current_round.issues)
+        return runtime.decl_graph.get_strategy(
+            ctx.repo_root,
+            node_path=_node(ctx),
+            strategy_id=current_round.value.strategy_id,
+        )
+    return runtime.decl_graph.require_current_open_strategy(
+        ctx.repo_root,
+        node_path=_node(ctx),
+    )
+
+
+def _round_for_read(runtime, ctx, round_sequence: int | None):
+    if round_sequence is not None:
+        return runtime.decl_graph.get_round_by_sequence(
+            ctx.repo_root,
+            node_path=_node(ctx),
+            round_sequence=round_sequence,
+        )
+    if ctx.runtime.round_id:
+        return runtime.decl_graph.get_round(
+            ctx.repo_root,
+            node_path=_node(ctx),
+            round_id=ctx.runtime.round_id,
+        )
+    return runtime.decl_graph.require_current_unfinished_round(
+        ctx.repo_root,
+        node_path=_node(ctx),
+    )
 
 
 def _closeout_round(runtime, ctx):
@@ -513,12 +556,18 @@ def _closeout_round(runtime, ctx):
 
 def _ensure_graph(runtime, ctx, args: NoArgs):
     del args
-    return runtime.decl_graph.ensure_decl_graph(ctx.repo_root, node_path=_node(ctx))
+    ensured = runtime.decl_graph.ensure_decl_graph(ctx.repo_root, node_path=_node(ctx))
+    if not ensured.ok:
+        return runtime.foundation.fail(ensured.issues)
+    return _graph_index(runtime, ctx, NoArgs())
 
 
 def _graph_index(runtime, ctx, args: NoArgs):
     del args
-    return runtime.decl_graph.get_decl_graph_index(ctx.repo_root, node_path=_node(ctx))
+    index = runtime.decl_graph.get_decl_graph_index(ctx.repo_root, node_path=_node(ctx))
+    if not index.ok or index.value is None:
+        return runtime.foundation.fail(index.issues)
+    return runtime.foundation.ok(runtime.decl_graph.decl_graph_index_agent_view(index.value))
 
 
 def _graph_store(runtime, ctx, args: NoArgs):
@@ -527,7 +576,10 @@ def _graph_store(runtime, ctx, args: NoArgs):
 
 
 def _node_graph_index(runtime, ctx, args: NodeDeclListArgs):
-    return runtime.decl_graph.get_decl_graph_index(ctx.repo_root, node_path=args.node_path)
+    index = runtime.decl_graph.get_decl_graph_index(ctx.repo_root, node_path=args.node_path)
+    if not index.ok or index.value is None:
+        return runtime.foundation.fail(index.issues)
+    return runtime.foundation.ok(runtime.decl_graph.decl_graph_index_agent_view(index.value))
 
 
 def _node_graph_store(runtime, ctx, args: NodeDeclListArgs):
@@ -536,11 +588,14 @@ def _node_graph_store(runtime, ctx, args: NodeDeclListArgs):
 
 def _rebuild_graph(runtime, ctx, args: NoArgs):
     del args
-    return runtime.decl_graph.rebuild_decl_graph_index(ctx.repo_root, node_path=_node(ctx))
+    index = runtime.decl_graph.rebuild_decl_graph_index(ctx.repo_root, node_path=_node(ctx))
+    if not index.ok or index.value is None:
+        return runtime.foundation.fail(index.issues)
+    return runtime.foundation.ok(runtime.decl_graph.decl_graph_index_agent_view(index.value))
 
 
 def _ensure_open_strategy(runtime, ctx, args: StrategyEnsureArgs):
-    return runtime.decl_graph.ensure_open_strategy_view(
+    return runtime.decl_graph.ensure_open_strategy_agent_view(
         ctx.repo_root,
         node_path=_node(ctx),
         objective=args.objective,
@@ -549,10 +604,16 @@ def _ensure_open_strategy(runtime, ctx, args: StrategyEnsureArgs):
 
 
 def _close_strategy(runtime, ctx, args: StrategyCloseArgs):
-    return runtime.decl_graph.close_strategy_view(
+    current = runtime.decl_graph.require_current_open_strategy(
         ctx.repo_root,
         node_path=_node(ctx),
-        strategy_id=args.strategy_id,
+    )
+    if not current.ok or current.value is None:
+        return runtime.foundation.fail(current.issues)
+    return runtime.decl_graph.close_strategy_agent_view(
+        ctx.repo_root,
+        node_path=_node(ctx),
+        strategy_id=current.value.strategy_id,
         summary=args.summary,
         reason=args.reason,
         failed=args.failed,
@@ -561,50 +622,97 @@ def _close_strategy(runtime, ctx, args: StrategyCloseArgs):
 
 def _list_strategies(runtime, ctx, args: NoArgs):
     del args
-    return runtime.decl_graph.list_strategy_views(ctx.repo_root, node_path=_node(ctx))
+    return runtime.decl_graph.list_strategy_agent_views(ctx.repo_root, node_path=_node(ctx))
 
 
 def _get_strategy(runtime, ctx, args: StrategyIdArgs):
-    return runtime.decl_graph.get_strategy_view(ctx.repo_root, node_path=_node(ctx), strategy_id=args.strategy_id)
+    current = _strategy_for_read(runtime, ctx, args.strategy_sequence)
+    if not current.ok or current.value is None:
+        return runtime.foundation.fail(current.issues)
+    return runtime.decl_graph.get_strategy_agent_view(
+        ctx.repo_root,
+        node_path=_node(ctx),
+        strategy=current.value,
+    )
 
 
 def _create_round_draft(runtime, ctx, args: RoundDraftArgs):
-    return runtime.decl_graph.create_round_draft_view(
+    strategy = runtime.decl_graph.require_current_open_strategy(
         ctx.repo_root,
         node_path=_node(ctx),
-        strategy_id=args.strategy_id,
+    )
+    if not strategy.ok or strategy.value is None:
+        return runtime.foundation.fail(strategy.issues)
+    return runtime.decl_graph.create_round_draft_agent_view(
+        ctx.repo_root,
+        node_path=_node(ctx),
+        strategy_id=strategy.value.strategy_id,
         objective=args.objective,
     )
 
 
-def _discard_round_draft(runtime, ctx, args: RoundDiscardArgs):
-    return runtime.decl_graph.discard_round_draft(
+def _discard_round_draft(runtime, ctx, args: NoArgs):
+    del args
+    current = _draft_round(runtime, ctx)
+    if not current.ok or current.value is None:
+        return runtime.foundation.fail(current.issues)
+    strategy_sequence = runtime.decl_graph.strategy_sequence(
         ctx.repo_root,
         node_path=_node(ctx),
-        round_id=_required_round_id(runtime, ctx, args.round_id),
+        strategy_id=current.value.strategy_id,
+    )
+    if not strategy_sequence.ok or strategy_sequence.value is None:
+        return runtime.foundation.fail(strategy_sequence.issues)
+    discarded = runtime.decl_graph.discard_round_draft(
+        ctx.repo_root,
+        node_path=_node(ctx),
+        round_id=current.value.round_id,
         discarded_by=ctx.runtime.agent_id or "content_plan",
     )
+    if not discarded.ok or discarded.value is None:
+        return runtime.foundation.fail(discarded.issues)
+    payload = discarded.value.model_dump(mode="json")
+    payload.pop("round_id")
+    payload.pop("strategy_id")
+    payload["round_sequence"] = current.value.round_index
+    payload["strategy_sequence"] = strategy_sequence.value
+    payload["summary"] = "Discarded the current unsubmitted draft declaration round."
+    return runtime.foundation.ok(payload)
 
 
 def _list_rounds(runtime, ctx, args: NoArgs):
     del args
-    return runtime.decl_graph.list_round_views(ctx.repo_root, node_path=_node(ctx))
+    return runtime.decl_graph.list_round_agent_views(ctx.repo_root, node_path=_node(ctx))
 
 
 def _get_round(runtime, ctx, args: RoundIdArgs):
-    return runtime.decl_graph.get_round_view(ctx.repo_root, node_path=_node(ctx), round_id=_required_round_id(runtime, ctx, args.round_id))
+    current = _round_for_read(runtime, ctx, args.round_sequence)
+    if not current.ok or current.value is None:
+        return runtime.foundation.fail(current.issues)
+    return runtime.decl_graph.get_round_agent_view(
+        ctx.repo_root,
+        node_path=_node(ctx),
+        round_record=current.value,
+    )
 
 
 def _write_change_summary(runtime, ctx, args: ChangeSummaryArgs):
     current_round = _closeout_round(runtime, ctx)
     if not current_round.ok or current_round.value is None:
         return runtime.foundation.fail(current_round.issues)
-    return runtime.decl_graph.write_decl_change_summary_view(
+    updated = runtime.decl_graph.write_decl_change_summary(
         ctx.repo_root,
         node_path=_node(ctx),
         round_id=current_round.value.round_id,
         change_id=args.change_id,
         summary=args.summary,
+    )
+    if not updated.ok or updated.value is None:
+        return runtime.foundation.fail(updated.issues)
+    return runtime.decl_graph.get_round_agent_view(
+        ctx.repo_root,
+        node_path=_node(ctx),
+        round_record=updated.value,
     )
 
 
@@ -612,11 +720,18 @@ def _write_round_summary(runtime, ctx, args: RoundSummaryArgs):
     current_round = _closeout_round(runtime, ctx)
     if not current_round.ok or current_round.value is None:
         return runtime.foundation.fail(current_round.issues)
-    return runtime.decl_graph.write_round_summary_view(
+    updated = runtime.decl_graph.write_round_summary(
         ctx.repo_root,
         node_path=_node(ctx),
         round_id=current_round.value.round_id,
         summary=args.summary,
+    )
+    if not updated.ok or updated.value is None:
+        return runtime.foundation.fail(updated.issues)
+    return runtime.decl_graph.get_round_agent_view(
+        ctx.repo_root,
+        node_path=_node(ctx),
+        round_record=updated.value,
     )
 
 
@@ -624,6 +739,13 @@ def _mark_round_terminal(runtime, ctx, args: RoundTerminalArgs):
     current_round = _closeout_round(runtime, ctx)
     if not current_round.ok or current_round.value is None:
         return runtime.foundation.fail(current_round.issues)
+    strategy_sequence = runtime.decl_graph.strategy_sequence(
+        ctx.repo_root,
+        node_path=_node(ctx),
+        strategy_id=current_round.value.strategy_id,
+    )
+    if not strategy_sequence.ok or strategy_sequence.value is None:
+        return runtime.foundation.fail(strategy_sequence.issues)
     closed = runtime.decl_graph.closeout_round_by_plan(
         ctx.repo_root,
         node_path=_node(ctx),
@@ -632,19 +754,47 @@ def _mark_round_terminal(runtime, ctx, args: RoundTerminalArgs):
         result_kind=args.result_kind,
         acknowledged_by=ctx.runtime.agent_id or "content_plan",
     )
-    return closed
+    if not closed.ok or closed.value is None:
+        return runtime.foundation.fail(closed.issues)
+    payload = closed.value.model_dump(mode="json")
+    payload.pop("round_id")
+    payload["round_sequence"] = current_round.value.round_index
+    payload["strategy_sequence"] = strategy_sequence.value
+    return runtime.foundation.ok(payload)
 
 
 def _create_decl(runtime, ctx, args: DeclCreateArgs):
+    current = _draft_round(runtime, ctx)
+    if not current.ok or current.value is None:
+        return runtime.foundation.fail(current.issues)
     payload = args.model_dump()
     payload["name"] = payload.pop("decl_name")
-    return runtime.decl_graph.create_decl(ctx.repo_root, node_path=_node(ctx), **payload)
+    created = runtime.decl_graph.create_decl(
+        ctx.repo_root,
+        node_path=_node(ctx),
+        round_id=current.value.round_id,
+        **payload,
+    )
+    if not created.ok or created.value is None:
+        return runtime.foundation.fail(created.issues)
+    return runtime.foundation.ok(runtime.decl_graph.change_agent_view(created.value))
 
 
 def _open_decl_update(runtime, ctx, args: DeclUpdateArgs):
+    current = _draft_round(runtime, ctx)
+    if not current.ok or current.value is None:
+        return runtime.foundation.fail(current.issues)
     payload = args.model_dump()
     payload["name"] = payload.pop("decl_name")
-    return runtime.decl_graph.open_decl_update(ctx.repo_root, node_path=_node(ctx), **payload)
+    updated = runtime.decl_graph.open_decl_update(
+        ctx.repo_root,
+        node_path=_node(ctx),
+        round_id=current.value.round_id,
+        **payload,
+    )
+    if not updated.ok or updated.value is None:
+        return runtime.foundation.fail(updated.issues)
+    return runtime.foundation.ok(runtime.decl_graph.change_agent_view(updated.value))
 
 
 def _restore_decl_revision(runtime, ctx, args: DeclRestoreArgs):
@@ -716,11 +866,15 @@ def _compute_delete_closure(runtime, ctx, args: DeclNamesArgs):
     return runtime.decl_graph.compute_delete_closure(ctx.repo_root, node_path=_node(ctx), decl_names=args.decl_names)
 
 
-def _validate_round_draft(runtime, ctx, args: RoundIdArgs):
+def _validate_round_draft(runtime, ctx, args: NoArgs):
+    del args
+    current = _draft_round(runtime, ctx)
+    if not current.ok or current.value is None:
+        return runtime.foundation.fail(current.issues)
     return runtime.decl_graph.validate_round_draft(
         ctx.repo_root,
         node_path=_node(ctx),
-        round_id=_required_round_id(runtime, ctx, args.round_id),
+        round_id=current.value.round_id,
     )
 
 
@@ -1026,7 +1180,7 @@ def build_tool_specs() -> list[ToolSpec]:
             description="Ensure the current content node DeclGraph store exists.",
             args_model=NoArgs,
             capability=ToolCapability.WRITE,
-            result_view="decl_graph_store",
+            result_view="decl_graph_index",
             groups={AppGroup.DECL_GRAPH_CURRENT_WRITE},
             roles=plan_roles,
             handler=_ensure_graph,
@@ -1095,7 +1249,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="close_decl_strategy",
-            description="Close an open declaration strategy as closed or failed.",
+            description="Close the current open declaration strategy as closed or failed.",
             args_model=StrategyCloseArgs,
             capability=ToolCapability.WRITE,
             result_view="decl_strategy",
@@ -1115,7 +1269,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="get_decl_strategy",
-            description="Inspect one declaration strategy in the current content node.",
+            description="Inspect the current declaration strategy, or a historical strategy by sequence.",
             args_model=StrategyIdArgs,
             capability=ToolCapability.READ,
             result_view="decl_strategy",
@@ -1125,7 +1279,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="create_decl_round_draft",
-            description="Create a draft declaration round under an open strategy.",
+            description="Create a draft declaration round under the current open strategy.",
             args_model=RoundDraftArgs,
             capability=ToolCapability.WRITE,
             result_view="decl_round",
@@ -1139,7 +1293,7 @@ def build_tool_specs() -> list[ToolSpec]:
                 "Atomically discard one unsubmitted draft round and roll back all of its "
                 "planned create or update revisions."
             ),
-            args_model=RoundDiscardArgs,
+            args_model=NoArgs,
             capability=ToolCapability.WRITE,
             result_view="decl_round_discard_receipt",
             groups={AppGroup.DECL_ROUND_CHANGE_WRITE},
@@ -1158,7 +1312,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="get_decl_round",
-            description="Inspect a declaration round in the current content node.",
+            description="Inspect the current declaration round, or a historical round by sequence.",
             args_model=RoundIdArgs,
             capability=ToolCapability.READ,
             result_view="decl_round",
@@ -1403,8 +1557,8 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="validate_decl_round_draft",
-            description="Validate a draft declaration round before submit.",
-            args_model=RoundIdArgs,
+            description="Validate the current draft declaration round before submit.",
+            args_model=NoArgs,
             capability=ToolCapability.READ,
             result_view="gate_report",
             groups={AppGroup.DECL_ROUND_CHANGE_WRITE},

@@ -4,9 +4,15 @@ from __future__ import annotations
 
 from lean_constellation.services.decl_graph.models import (
     Decl,
+    DeclChangeAgentView,
+    DeclChangeView,
+    DeclGraphIndex,
+    DeclGraphIndexAgentView,
     DeclGraphRound,
+    DeclGraphRoundAgentView,
     DeclGraphRoundView,
     DeclGraphStrategy,
+    DeclGraphStrategyAgentView,
     DeclGraphStrategyView,
     DeclRoundStatus,
     DeclReviewMarkRecord,
@@ -17,7 +23,7 @@ from lean_constellation.services.decl_graph.models import (
 
 
 class DeclGraphViewMapper:
-    """Build Agent/API-facing views from DeclGraph truth models."""
+    """Build exact and Agent-facing views from DeclGraph truth models."""
 
     def decl_view(self, decl: Decl, revision: DeclRevision | None = None) -> DeclView:
         return DeclView(
@@ -38,6 +44,15 @@ class DeclGraphViewMapper:
             updated_at=decl.updated_at,
         )
 
+    def graph_index_agent_view(self, index: DeclGraphIndex) -> DeclGraphIndexAgentView:
+        return DeclGraphIndexAgentView(
+            node_path=index.node_path,
+            strategy_count=len(index.strategy_ids),
+            round_count=len(index.round_ids),
+            decl_count=len(index.decl_names),
+            decl_names=list(index.decl_names),
+        )
+
     def strategy_view(self, strategy: DeclGraphStrategy) -> DeclGraphStrategyView:
         return DeclGraphStrategyView(
             strategy_id=strategy.strategy_id,
@@ -46,6 +61,26 @@ class DeclGraphViewMapper:
             objective=strategy.objective,
             rationale=strategy.rationale,
             created_round_ids=list(strategy.created_round_ids),
+            summary=strategy.summary,
+            closed_reason=strategy.closed_reason,
+            created_at=strategy.created_at,
+            closed_at=strategy.closed_at,
+        )
+
+    def strategy_agent_view(
+        self,
+        strategy: DeclGraphStrategy,
+        *,
+        strategy_sequence: int,
+        round_sequences: list[int],
+    ) -> DeclGraphStrategyAgentView:
+        return DeclGraphStrategyAgentView(
+            strategy_sequence=strategy_sequence,
+            node_path=strategy.node_path,
+            status=strategy.status,
+            objective=strategy.objective,
+            rationale=strategy.rationale,
+            round_sequences=round_sequences,
             summary=strategy.summary,
             closed_reason=strategy.closed_reason,
             created_at=strategy.created_at,
@@ -79,6 +114,43 @@ class DeclGraphViewMapper:
             started_at=round_record.started_at,
             committed_at=round_record.committed_at,
         )
+
+    def round_agent_view(
+        self,
+        round_record: DeclGraphRound,
+        *,
+        strategy_sequence: int,
+    ) -> DeclGraphRoundAgentView:
+        return DeclGraphRoundAgentView(
+            round_sequence=round_record.round_index,
+            strategy_sequence=strategy_sequence,
+            node_path=round_record.node_path,
+            status=round_record.status,
+            objective=round_record.objective,
+            revision_refs=list(round_record.revision_refs),
+            discarded_by=round_record.discarded_by,
+            discarded_at=round_record.discarded_at,
+            change_ids=round_record.change_ids,
+            summary=round_record.summary,
+            execution_result_kind=round_record.execution_result_kind,
+            execution_reason=round_record.execution_reason,
+            result_kind=round_record.result_kind,
+            result_reason=round_record.result_reason,
+            closeout_required=round_record.status == DeclRoundStatus.AWAITING_CLOSEOUT,
+            required_next_action=(
+                "Write every declaration change summary, write the round summary, then close the round."
+                if round_record.status == DeclRoundStatus.AWAITING_CLOSEOUT
+                else None
+            ),
+            created_at=round_record.created_at,
+            started_at=round_record.started_at,
+            committed_at=round_record.committed_at,
+        )
+
+    def change_agent_view(self, change: DeclChangeView) -> DeclChangeAgentView:
+        payload = change.model_dump()
+        payload.pop("round_id")
+        return DeclChangeAgentView.model_validate(payload)
 
     def review_mark_view(self, mark: DeclReviewMarkRecord) -> DeclReviewMarkView:
         return DeclReviewMarkView(

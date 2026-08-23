@@ -17,6 +17,7 @@ from lean_constellation.services import LeanProviderOverrides
 from lean_constellation.services.decl_graph import DeclState
 from lean_constellation.services.decl_graph.models import (
     DeclFormalSection,
+    DeclGraphRound,
     DeclProof,
     DeclRevisionStatus,
     DeclStatement,
@@ -34,6 +35,7 @@ from tests.unit_services_helpers import (
     write_proof_formal_for_test,
     write_statement_formal_for_test,
 )
+from tests.unit.flows.decl_round._helpers import seed_committed_theorem
 
 
 def _raw(
@@ -1201,6 +1203,296 @@ def test_current_node_and_decl_graph_tools_invoke_context_handlers(tmp_path: Pat
     assert graph.value.ok is True
 
 
+def test_content_plan_round_tools_resolve_current_context_without_agent_ids(tmp_path: Path) -> None:
+    runtime = create_test_runtime_services(register_application_tools=True)
+    initialize_native_test_repo(tmp_path, project_name=tmp_path.name)
+    assert runtime.node.node_tree.ensure_root_scope_node(tmp_path).ok
+    assert runtime.node.create_scope_node(
+        tmp_path,
+        path="Main.Topic",
+        goal="Topic scope.",
+        boundary="Topic scope boundary.",
+    ).ok
+    assert runtime.node.create_content_node(
+        tmp_path,
+        path="Main.Topic.Core",
+        goal="Topic goal.",
+        boundary="Topic boundary.",
+        objective="Plan topic declarations.",
+        success_criteria="Ready content.",
+    ).ok
+    seed_committed_theorem(runtime, tmp_path, decl_name="existing_result")
+    raw = _raw(
+        tmp_path,
+        view="content_plan",
+        agent_type="ContentPlanAgent",
+        role="plan",
+        node_path="Main.Topic.Core",
+    )
+
+    strategy = _unwrap_tool_result(runtime.tool_facade.invoke_agent_tool(
+        raw,
+        tool_name="ensure_open_decl_strategy",
+        flat_args={"objective": "Extend the theorem graph."},
+    ))
+    assert strategy["strategy_sequence"] == 1
+    assert "strategy_id" not in strategy
+    assert "created_round_ids" not in strategy
+
+    draft = _unwrap_tool_result(runtime.tool_facade.invoke_agent_tool(
+        raw,
+        tool_name="create_decl_round_draft",
+        flat_args={"objective": "Update the existing result."},
+    ))
+    assert draft["round_sequence"] == 2
+    assert draft["strategy_sequence"] == 1
+    assert "round_id" not in draft
+    assert "strategy_id" not in draft
+
+    agent_indexes = [
+        _unwrap_tool_result(runtime.tool_facade.invoke_agent_tool(
+            raw,
+            tool_name=tool_name,
+            flat_args={},
+        ))
+        for tool_name in (
+            "ensure_current_decl_graph",
+            "get_current_decl_graph_index",
+            "rebuild_current_decl_graph_index",
+        )
+    ]
+    agent_indexes.append(_unwrap_tool_result(runtime.tool_facade.invoke_agent_tool(
+        _raw(
+            tmp_path,
+            view="native_repo_coordinator",
+            agent_type="CoordinatorAgent",
+            role="coordinator",
+        ),
+        tool_name="get_node_decl_graph_index",
+        flat_args={"node_path": "Main.Topic.Core"},
+    )))
+    for index in agent_indexes:
+        assert index["strategy_count"] == 1
+        assert index["round_count"] == 2
+        assert "node_id" not in index
+        assert "strategy_ids" not in index
+        assert "round_ids" not in index
+    exact_index = runtime.decl_graph.get_decl_graph_index(
+        tmp_path,
+        node_path="Main.Topic.Core",
+    )
+    assert exact_index.ok and exact_index.value is not None
+    assert exact_index.value.strategy_ids
+    assert exact_index.value.round_ids
+
+    updated = _unwrap_tool_result(runtime.tool_facade.invoke_agent_tool(
+        raw,
+        tool_name="plan_update_decl",
+        flat_args={
+            "decl_name": "existing_result",
+            "objective": "Revisit the proof route.",
+            "target_state": "proved",
+            "start_stage": "proof_nl",
+        },
+    ))
+    assert updated["change_id"]
+    assert "round_id" not in updated
+
+    validation = _unwrap_tool_result(runtime.tool_facade.invoke_agent_tool(
+        raw,
+        tool_name="validate_decl_round_draft",
+        flat_args={},
+    ))
+    assert validation["gate_name"] == "decl_round_draft"
+
+    current_round = _unwrap_tool_result(runtime.tool_facade.invoke_agent_tool(
+        raw,
+        tool_name="get_decl_round",
+        flat_args={},
+    ))
+    historical_round = _unwrap_tool_result(runtime.tool_facade.invoke_agent_tool(
+        raw,
+        tool_name="get_decl_round",
+        flat_args={"round_sequence": 1},
+    ))
+    current_strategy = _unwrap_tool_result(runtime.tool_facade.invoke_agent_tool(
+        raw,
+        tool_name="get_decl_strategy",
+        flat_args={},
+    ))
+    strategy_list = _unwrap_tool_result(runtime.tool_facade.invoke_agent_tool(
+        raw,
+        tool_name="list_decl_strategies",
+        flat_args={},
+    ))
+    round_list = _unwrap_tool_result(runtime.tool_facade.invoke_agent_tool(
+        raw,
+        tool_name="list_decl_rounds",
+        flat_args={},
+    ))
+    assert current_round["round_sequence"] == 2
+    assert historical_round["round_sequence"] == 1
+    assert current_strategy["strategy_sequence"] == 1
+    assert all("round_id" not in item for item in (current_round, historical_round))
+    assert "strategy_id" not in current_strategy
+    strategy_items = [item.model_dump(mode="json") for item in strategy_list["items"]]
+    round_items = [item.model_dump(mode="json") for item in round_list["items"]]
+    assert strategy_items[0]["strategy_sequence"] == 1
+    assert all("strategy_id" not in item for item in strategy_items)
+    assert [item["round_sequence"] for item in round_items] == [1, 2]
+    assert all(
+        "round_id" not in item and "strategy_id" not in item
+        for item in round_items
+    )
+
+    discarded = _unwrap_tool_result(runtime.tool_facade.invoke_agent_tool(
+        raw,
+        tool_name="discard_decl_round_draft",
+        flat_args={},
+    ))
+    assert discarded["round_sequence"] == 2
+    assert discarded["strategy_sequence"] == 1
+    assert "round_id" not in discarded
+    assert "strategy_id" not in discarded
+
+    next_draft = _unwrap_tool_result(runtime.tool_facade.invoke_agent_tool(
+        raw,
+        tool_name="create_decl_round_draft",
+        flat_args={"objective": "Create a new declaration."},
+    ))
+    assert next_draft["round_sequence"] == 3
+    created = _unwrap_tool_result(runtime.tool_facade.invoke_agent_tool(
+        raw,
+        tool_name="plan_create_decl",
+        flat_args={
+            "decl_name": "new_result",
+            "kind": "theorem",
+            "objective": "Create the new result.",
+            "summary": "New result.",
+            "target_state": "proved",
+        },
+    ))
+    assert created["change_id"]
+    assert "round_id" not in created
+    _unwrap_tool_result(runtime.tool_facade.invoke_agent_tool(
+        raw,
+        tool_name="discard_decl_round_draft",
+        flat_args={},
+    ))
+    closed_strategy = _unwrap_tool_result(runtime.tool_facade.invoke_agent_tool(
+        raw,
+        tool_name="close_decl_strategy",
+        flat_args={"summary": "Strategy complete."},
+    ))
+    assert closed_strategy["strategy_sequence"] == 1
+    assert closed_strategy["status"] == "closed"
+    assert "strategy_id" not in closed_strategy
+
+
+def test_content_plan_round_tools_fail_closed_for_missing_or_ambiguous_context(tmp_path: Path) -> None:
+    runtime = create_test_runtime_services(register_application_tools=True)
+    initialize_native_test_repo(tmp_path, project_name=tmp_path.name)
+    assert runtime.node.node_tree.ensure_root_scope_node(tmp_path).ok
+    assert runtime.node.create_content_node(
+        tmp_path,
+        path="Main.Topic",
+        goal="Topic goal.",
+        boundary="Topic boundary.",
+        objective="Plan topic declarations.",
+        success_criteria="Ready content.",
+    ).ok
+    assert runtime.decl_graph.ensure_decl_graph(tmp_path, node_path="Main.Topic").ok
+    raw = _raw(
+        tmp_path,
+        view="content_plan",
+        agent_type="ContentPlanAgent",
+        role="plan",
+        node_path="Main.Topic",
+    )
+
+    missing_strategy = _unwrap_tool_failure(runtime.tool_facade.invoke_agent_tool(
+        raw,
+        tool_name="create_decl_round_draft",
+        flat_args={"objective": "Cannot route without a strategy."},
+    ))
+    assert missing_strategy[0].kind == "current_open_strategy_missing"
+
+    strategy = runtime.decl_graph.ensure_open_strategy(
+        tmp_path,
+        node_path="Main.Topic",
+        objective="Current strategy.",
+    )
+    assert strategy.ok and strategy.value is not None
+    first = runtime.decl_graph.create_round_draft(
+        tmp_path,
+        node_path="Main.Topic",
+        strategy_id=strategy.value.strategy_id,
+        objective="First draft.",
+    )
+    assert first.ok and first.value is not None
+    corrupt = DeclGraphRound(
+        round_id="round_corrupt_second",
+        node_path="Main.Topic",
+        strategy_id=strategy.value.strategy_id,
+        round_index=2,
+        objective="Corrupt second draft.",
+    )
+    assert runtime.foundation.store.write_json_atomic(
+        runtime.decl_graph.graph_store.round_path(
+            tmp_path,
+            node_path="Main.Topic",
+            round_id=corrupt.round_id,
+        ),
+        corrupt,
+        mode=WriteMode.CREATE_ONLY,
+    ).ok
+
+    exact_raw = _raw(
+        tmp_path,
+        view="content_plan",
+        agent_type="ContentPlanAgent",
+        role="plan",
+        node_path="Main.Topic",
+        round_id=first.value.round_id,
+    )
+    exact_round = _unwrap_tool_result(runtime.tool_facade.invoke_agent_tool(
+        exact_raw,
+        tool_name="get_decl_round",
+        flat_args={},
+    ))
+    exact_strategy = _unwrap_tool_result(runtime.tool_facade.invoke_agent_tool(
+        exact_raw,
+        tool_name="get_decl_strategy",
+        flat_args={},
+    ))
+    assert exact_round["round_sequence"] == first.value.round_index
+    assert exact_strategy["strategy_sequence"] == 1
+
+    ambiguous = _unwrap_tool_failure(runtime.tool_facade.invoke_agent_tool(
+        raw,
+        tool_name="plan_create_decl",
+        flat_args={
+            "decl_name": "must_not_exist",
+            "kind": "definition",
+            "objective": "Must fail closed.",
+            "summary": "Must not be written.",
+        },
+    ))
+    assert ambiguous[0].kind == "current_draft_round_ambiguous"
+    assert not runtime.decl_graph.get_decl(
+        tmp_path,
+        node_path="Main.Topic",
+        name="must_not_exist",
+    ).ok
+
+    invalid_sequence = _unwrap_tool_failure(runtime.tool_facade.invoke_agent_tool(
+        raw,
+        tool_name="get_decl_round",
+        flat_args={"round_sequence": 99},
+    ))
+    assert invalid_sequence[0].kind == "round_sequence_not_found"
+
+
 def test_mark_decl_round_terminal_commits_open_revisions_after_runtime_failure(tmp_path: Path) -> None:
     runtime = create_test_runtime_services(register_application_tools=True)
     initialize_native_test_repo(tmp_path, project_name=tmp_path.name)
@@ -1249,19 +1541,6 @@ def test_mark_decl_round_terminal_commits_open_revisions_after_runtime_failure(t
         round_id=round_record.value.round_id,
     )
     assert current_round.ok and current_round.value is not None
-    assert runtime.decl_graph.write_decl_change_summary(
-        tmp_path,
-        node_path="Main.Topic",
-        round_id=round_record.value.round_id,
-        change_id=current_round.value.change_ids[0],
-        summary="Runtime failed before formal capture.",
-    ).ok
-    assert runtime.decl_graph.write_round_summary(
-        tmp_path,
-        node_path="Main.Topic",
-        round_id=round_record.value.round_id,
-        summary="Close the failed round.",
-    ).ok
     recorded = runtime.decl_graph.record_round_execution_result(
         tmp_path,
         node_path="Main.Topic",
@@ -1271,18 +1550,36 @@ def test_mark_decl_round_terminal_commits_open_revisions_after_runtime_failure(t
     )
     assert recorded.ok, recorded.issues
 
+    raw = _raw(
+        tmp_path,
+        view="content_plan",
+        agent_type="ContentPlanAgent",
+        role="plan",
+        node_path="Main.Topic",
+    )
+    change_summary = _unwrap_tool_result(runtime.tool_facade.invoke_agent_tool(
+        raw,
+        tool_name="write_decl_change_summary",
+        flat_args={
+            "change_id": current_round.value.change_ids[0],
+            "summary": "Runtime failed before formal capture.",
+        },
+    ))
+    round_summary = _unwrap_tool_result(runtime.tool_facade.invoke_agent_tool(
+        raw,
+        tool_name="write_decl_round_summary",
+        flat_args={"summary": "Close the failed round."},
+    ))
+    assert change_summary["round_sequence"] == round_record.value.round_index
+    assert round_summary["round_sequence"] == round_record.value.round_index
+    assert "round_id" not in change_summary
+    assert "round_id" not in round_summary
+
     value = _unwrap_tool_result(
         runtime.tool_facade.invoke_agent_tool(
-            _raw(
-                tmp_path,
-                view="content_plan",
-                agent_type="ContentPlanAgent",
-                role="plan",
-                node_path="Main.Topic",
-            ),
+            raw,
             tool_name="mark_decl_round_terminal",
             flat_args={
-                "round_id": round_record.value.round_id,
                 "result_kind": "failed",
                 "reason": "Agent response stream disconnected.",
             },
@@ -1291,6 +1588,8 @@ def test_mark_decl_round_terminal_commits_open_revisions_after_runtime_failure(t
 
     assert value["changed"] is True
     assert value["result_kind"] == "failed"
+    assert value["round_sequence"] == round_record.value.round_index
+    assert "round_id" not in value
     closed_round = runtime.decl_graph.get_round(
         tmp_path,
         node_path="Main.Topic",

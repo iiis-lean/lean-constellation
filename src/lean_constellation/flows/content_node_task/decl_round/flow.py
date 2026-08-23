@@ -98,16 +98,16 @@ class DeclGraphRoundInput(LeanRenderableFlowInput):
     round_index: int | None = None
 
     def agent_title(self) -> str:
-        return f"Run DeclGraph round {self.round_id}"
+        if self.round_index is not None:
+            return f"Run DeclGraph Round {self.round_index}"
+        return "Run current assigned DeclGraph round"
 
     def agent_fields(self) -> dict[str, object]:
         return {
             "repo_key": self.repo_key,
             "node_path": self.node_path,
             "contract_version": self.contract_version,
-            "strategy_id": self.strategy_id,
-            "round_id": self.round_id,
-            "round_index": self.round_index,
+            "round_sequence": self.round_index,
         }
 
 
@@ -150,9 +150,7 @@ class DeclGraphRoundResult(LeanRenderableFlowResult):
             "outcome": self.outcome,
             "repo_key": self.repo_key,
             "node_path": self.node_path,
-            "strategy_id": self.strategy_id,
-            "round_id": self.round_id,
-            "round_index": self.round_index,
+            "round_sequence": self.round_index,
             "completed_stages": self.completed_stages,
             "skipped_stages": self.skipped_stages,
             "terminal_stage": self.terminal_stage,
@@ -619,6 +617,12 @@ def _agent_variables(
     }
 
 
+def _round_agent_context(input_model: DeclGraphRoundInput) -> str:
+    if input_model.round_index is not None:
+        return f"Round sequence: {input_model.round_index}."
+    return "Current assigned round."
+
+
 def _stage_worker_prompt(ctx: FlowContext, input_model: DeclGraphRoundInput, state: DeclGraphRoundState) -> str:
     stage = _require_stage(state)
     mode = "retry_after_review" if state.current_retry_count else "initial"
@@ -630,7 +634,7 @@ def _stage_worker_prompt(ctx: FlowContext, input_model: DeclGraphRoundInput, sta
     return (
         f"Run decl stage worker for {stage}.\n"
         f"Mode: {mode}.\n"
-        f"Repo: {input_model.repo_key}. Node: {input_model.node_path}. Round: {input_model.round_id}.\n"
+        f"Repo: {input_model.repo_key}. Node: {input_model.node_path}. {_round_agent_context(input_model)}\n"
         f"Pipeline position: {_stage_pipeline_position(stage)}\n"
         f"Required Skill re-entry: read and apply {', '.join(f'${skill}' for skill in required_skills)} from the current Home before acting.\n"
         "The Flow owns later stages; global target_state does not expand this stage's authority. Missing later-stage artifacts are expected here.\n"
@@ -654,7 +658,7 @@ def _stage_reviewer_prompt(ctx: FlowContext, input_model: DeclGraphRoundInput, s
     return (
         f"Review decl stage {stage}.\n"
         f"Mode: {mode}.\n"
-        f"Repo: {input_model.repo_key}. Node: {input_model.node_path}. Round: {input_model.round_id}.\n"
+        f"Repo: {input_model.repo_key}. Node: {input_model.node_path}. {_round_agent_context(input_model)}\n"
         f"Pipeline position: {_stage_pipeline_position(stage)}\n"
         f"Required Skill re-entry: read and apply {', '.join(f'${skill}' for skill in required_skills)} from the current Home before review.\n"
         "This is a read-only review role; do not perform worker mutation.\n"

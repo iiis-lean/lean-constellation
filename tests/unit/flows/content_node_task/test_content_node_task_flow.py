@@ -15,6 +15,7 @@ from lean_constellation.flows.common.submissions import new_submission_id
 from lean_constellation.flows.common.testing import FakeLeanFlowRuntime, create_fake_lean_flow_runtime
 from lean_constellation.flows.content_node_task.decl_round.flow import DeclGraphRoundResult
 from lean_constellation.flows.content_node_task.decl_round.submissions import DeclRoundDispatchSubmission
+from lean_constellation.flows.content_node_task.context_brief import _strategy_round_brief
 from lean_constellation.flows.content_node_task.flows import ContentNodeTaskState
 from lean_constellation.flows.content_node_task.preparation.mathlib_recon.flow import MathlibReconResult
 from lean_constellation.flows.content_node_task.preparation.node_dir_recon.flow import NodeDirDependencyReconResult
@@ -633,6 +634,80 @@ def test_content_node_task_decl_round_dispatch_ensures_stage_agents(tmp_path: Pa
     assert "reassess whether the strategy still explains the next round" in callback_prompt
 
 
+def test_content_plan_context_brief_resolves_stable_strategy_round_sequences(tmp_path: Path) -> None:
+    _runtime_service, lean_runtime = _runtime(tmp_path)
+    repo_root = tmp_path / "workspace" / "Repo"
+    _prepare_content_repo(lean_runtime, repo_root)
+    prior_strategy = lean_runtime.decl_graph.ensure_open_strategy(
+        repo_root,
+        node_path="Main.Core",
+        objective="Try the prior route.",
+    )
+    assert prior_strategy.ok and prior_strategy.value is not None
+    closed = lean_runtime.decl_graph.close_strategy(
+        repo_root,
+        node_path="Main.Core",
+        strategy_id=prior_strategy.value.strategy_id,
+        summary="Replace the prior route.",
+    )
+    assert closed.ok
+    strategy = lean_runtime.decl_graph.ensure_open_strategy(
+        repo_root,
+        node_path="Main.Core",
+        objective="Build the provider layer.",
+    )
+    assert strategy.ok and strategy.value is not None
+    round_record = lean_runtime.decl_graph.create_round_draft(
+        repo_root,
+        node_path="Main.Core",
+        strategy_id=strategy.value.strategy_id,
+        objective="Prove the current batch.",
+    )
+    assert round_record.ok and round_record.value is not None
+    strategy_sequence = lean_runtime.decl_graph.strategy_sequence(
+        repo_root,
+        node_path="Main.Core",
+        strategy_id=strategy.value.strategy_id,
+    )
+    prior_strategy_sequence = lean_runtime.decl_graph.strategy_sequence(
+        repo_root,
+        node_path="Main.Core",
+        strategy_id=prior_strategy.value.strategy_id,
+    )
+    assert strategy_sequence.ok and strategy_sequence.value is not None
+    assert prior_strategy_sequence.ok and prior_strategy_sequence.value is not None
+    assert strategy_sequence.value != prior_strategy_sequence.value
+
+    brief = _strategy_round_brief(
+        SimpleNamespace(decl_graph=lean_runtime.decl_graph),
+        repo_root=repo_root,
+        node_path="Main.Core",
+        strategy_id=strategy.value.strategy_id,
+        round_id=round_record.value.round_id,
+    )
+
+    assert brief is not None
+    assert brief.strategy_sequence == strategy_sequence.value
+    assert brief.round_sequence == 1
+    rendered = brief.render()
+    assert (
+        f"Strategy {strategy_sequence.value} objective: Build the provider layer."
+        in rendered
+    )
+    assert "Round 1 (status=draft) objective: Prove the current batch." in rendered
+    assert strategy.value.strategy_id not in rendered
+    assert round_record.value.round_id not in rendered
+
+    mismatched = _strategy_round_brief(
+        SimpleNamespace(decl_graph=lean_runtime.decl_graph),
+        repo_root=repo_root,
+        node_path="Main.Core",
+        strategy_id=prior_strategy.value.strategy_id,
+        round_id=round_record.value.round_id,
+    )
+    assert mismatched is None
+
+
 def _pending_decl_round_callback(tmp_path: Path):
     runtime, lean_runtime = _runtime(tmp_path)
     repo_root = tmp_path / "workspace" / "Repo"
@@ -685,6 +760,7 @@ def test_content_node_task_decl_round_callback_binds_exact_runtime_context(tmp_p
             repo_key=repo_root.name,
             node_path="Main.Core",
             round_id="round_exact",
+            round_index=7,
             completed_stages=["statement_nl"],
             summary="Exact round completed.",
         ),
@@ -694,6 +770,22 @@ def test_content_node_task_decl_round_callback_binds_exact_runtime_context(tmp_p
     assert callback_step_id is not None
     callback_step = runtime.flow_service.get_step(callback_step_id)
     assert callback_step.state.variables["round_id"] == "round_exact"
+    runtime.agent_service.queue_submission(
+        ContentNodeBlockedSubmission(
+            submission_id=new_submission_id("sub"),
+            submission_type="content_node_blocked",
+            tool_name="submit_content_node_blocked",
+            repo_key=repo_root.name,
+            node_path="Main.Core",
+            reason="Stop after callback projection check.",
+            summary="Stop after callback projection check.",
+        )
+    )
+    runtime.run_step(callback_step_id)
+    callback_prompt = runtime.agent_service.start_records[-1].prompt or ""
+    assert "Round Sequence: 7" in callback_prompt
+    assert "strategy_exact" not in callback_prompt
+    assert "round_exact" not in callback_prompt
 
 
 def test_content_node_task_failed_decl_round_callback_binds_exact_input_context(tmp_path: Path) -> None:
