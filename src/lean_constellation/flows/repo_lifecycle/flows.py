@@ -612,7 +612,7 @@ class NativeRepoPreparationFlow(LeanBusinessFlow):
                             builder_summary=(
                                 state.source_corpus_candidate.preparation_summary
                                 if state.source_corpus_candidate is not None
-                                else "Existing SourceCorpus passed deterministic scan."
+                                else "SourceCorpus Builder candidate summary is unavailable."
                             ),
                             previous_feedback=state.latest_source_corpus_reviewer_feedback,
                         ),
@@ -823,7 +823,8 @@ class NativeRepoPreparationFlow(LeanBusinessFlow):
         result: ExistingSourceCorpusScanStepResult,
     ) -> None:
         if result.outcome == "ready":
-            state.position = FlowPosition(phase="source_corpus_review")
+            state.source_corpus_ready = True
+            state.position = FlowPosition(phase="prepare_source_index_child")
             return
         self._finish_native_preparation(state, input_model, "blocked", result.error.message if result.error else result.summary, result.summary)
 
@@ -876,8 +877,6 @@ class NativeRepoPreparationFlow(LeanBusinessFlow):
                 state.position = FlowPosition(phase="source_corpus")
                 return
             reason = submission.feedback or "Source corpus fidelity review rejected the current candidate."
-            if state.source_corpus_mode == "existing":
-                reason = f"Existing SourceCorpus requires an explicit prepare/repair run: {reason}"
             self._finish_native_preparation(state, input_model, "blocked", reason, submission.summary)
             return
 

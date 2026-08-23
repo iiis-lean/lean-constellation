@@ -146,6 +146,13 @@ def _prepare_native_repo(
     )
     initialized = lean_runtime.repo_workspace.initialize_repo_as_native(repo_root, project_name=repo_root.name)
     assert initialized.ok
+    scanned = lean_runtime.material.source_corpus.scan_source_corpus(
+        repo_root,
+        created_from_mode="prepared",
+    )
+    assert scanned.ok and scanned.value is not None
+    manifest_path = lean_runtime.material.source_corpus._manifest_path(repo_root)  # noqa: SLF001
+    assert lean_runtime.foundation.store.write_json_atomic(manifest_path, scanned.value).ok
 
 
 def _prepare_native_repo_for_source_prepare(
@@ -288,8 +295,6 @@ def _run_to_source_child_waiting(
     flow_id = _start_native_with_children(runtime, repo_root)
     _advance_and_run(runtime, flow_id)
     _advance_and_run(runtime, flow_id)
-    _approve_source_corpus(runtime)
-    _advance_and_run(runtime, flow_id)
     _advance_and_run(runtime, flow_id)
     dispatch_step_id = _advance_and_run(runtime, flow_id)
     children = runtime.flow_service.store.list_child_flows(
@@ -312,10 +317,10 @@ def test_fresh_native_preparation_dispatches_reusable_children_and_resumes_after
     assert flow.state.pre_run_mutation_checkpoint_id is not None
     assert flow.state.position.phase == "source_corpus"
     _advance_and_run(runtime, flow_id)
-    assert runtime.flow_service.get_flow(flow_id).state.position.phase == "source_corpus_review"
-    _approve_source_corpus(runtime)
-    _advance_and_run(runtime, flow_id)
-    assert runtime.flow_service.get_flow(flow_id).state.position.phase == "prepare_source_index_child"
+    flow = runtime.flow_service.get_flow(flow_id)
+    assert flow.state.position.phase == "prepare_source_index_child"
+    assert flow.state.source_corpus_ready is True
+    assert flow.state.source_corpus_reviewed is False
 
     _advance_and_run(runtime, flow_id)
     assert runtime.flow_service.get_flow(flow_id).state.position.phase == "dispatch_preparation_child"
@@ -728,26 +733,75 @@ def test_source_corpus_builder_candidate_survives_restart_before_review(tmp_path
     assert manifest.value.relpath == "custom_sources"
 
 
-def test_source_corpus_reviewer_rejection_blocks_existing_mode(tmp_path: Path) -> None:
+def test_existing_source_corpus_scan_skips_reviewer_and_prepares_source_index_child(tmp_path: Path) -> None:
     runtime, lean_runtime, _ = _runtime(tmp_path)
     repo_root = tmp_path / "workspace" / "Provider"
     _prepare_native_repo(lean_runtime, repo_root)
+    source_root = repo_root / ".lean_constellation" / "source"
+    source_bytes_before = {
+        path.relative_to(source_root).as_posix(): path.read_bytes()
+        for path in source_root.rglob("*")
+        if path.is_file()
+    }
+    manifest_path = lean_runtime.material.source_corpus._manifest_path(repo_root)  # noqa: SLF001
+    manifest_bytes_before = manifest_path.read_bytes()
+
     flow_id = _start_native(runtime, repo_root)
     _advance_and_run(runtime, flow_id)
     _advance_and_run(runtime, flow_id)
-    runtime.agent_service.queue_submission(
-        SourceCorpusReviewSubmission(
-            submission_id=new_submission_id("review"),
-            tool_name="submit_source_corpus_review",
-            approved=False,
-            feedback="Existing transcription omits a source hypothesis.",
-            checked_materials=["README.md"],
-            summary="Existing corpus needs repair.",
-        )
-    )
-    _advance_and_run(runtime, flow_id)
 
+    flow = runtime.flow_service.get_flow(flow_id)
+    assert flow.state.position.phase == "prepare_source_index_child"
+    assert flow.state.source_corpus_ready is True
+    assert flow.state.source_corpus_reviewed is False
+    assert not (repo_root / ".lean_constellation" / "work" / "drafts" / "source_corpus").exists()
+    step_types = {
+        step.step_type for step in runtime.flow_service.store.list_steps(flow_id=flow_id)
+    }
+    assert step_types.isdisjoint(
+        {"source_corpus_builder_agent_step", "source_corpus_reviewer_agent_step"}
+    )
+    assert runtime.agent_service.start_records == []
+    source_bytes_after = {
+        path.relative_to(source_root).as_posix(): path.read_bytes()
+        for path in source_root.rglob("*")
+        if path.is_file()
+    }
+    assert source_bytes_after == source_bytes_before
+    assert manifest_path.read_bytes() == manifest_bytes_before
+
+
+def test_malformed_existing_source_corpus_blocks_without_reviewer(tmp_path: Path) -> None:
+    runtime, lean_runtime, _ = _runtime(tmp_path)
+    repo_root = tmp_path / "workspace" / "Provider"
+    _prepare_native_repo(lean_runtime, repo_root)
+    (repo_root / ".lean_constellation" / "source" / "README.md").write_bytes(b"\xff\xfe")
+    manifest_path = lean_runtime.material.source_corpus._manifest_path(repo_root)  # noqa: SLF001
+    manifest_bytes_before = manifest_path.read_bytes()
+
+    flow_id = _start_native(runtime, repo_root)
+    _advance_and_run(runtime, flow_id)
+    scan_step_id = _advance_and_run(runtime, flow_id)
+
+    scan_step = runtime.flow_service.get_step(scan_step_id)
+    assert scan_step.result.outcome == "blocked"
+    assert scan_step.result.error is not None
+    assert scan_step.result.error.code in {
+        "source_corpus_entry_not_readable",
+        "source_corpus_no_readable_text",
+        "source_corpus_readme_unreadable",
+    }
     flow = runtime.flow_service.get_flow(flow_id)
     assert flow.status is FlowStatus.COMPLETED
     assert flow.result.outcome == "blocked"
-    assert "explicit prepare/repair run" in flow.result.blocked_reason
+    assert flow.state.source_corpus_ready is False
+    assert flow.state.source_corpus_reviewed is False
+    assert not (repo_root / ".lean_constellation" / "work" / "drafts" / "source_corpus").exists()
+    step_types = {
+        step.step_type for step in runtime.flow_service.store.list_steps(flow_id=flow_id)
+    }
+    assert step_types.isdisjoint(
+        {"source_corpus_builder_agent_step", "source_corpus_reviewer_agent_step"}
+    )
+    assert runtime.agent_service.start_records == []
+    assert manifest_path.read_bytes() == manifest_bytes_before
