@@ -4,7 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from agent_runtime_kit.flow.models import BaseFlowError, FlowStatus
+from agent_runtime_kit.flow.models import BaseFlowError, FlowStatus, FlowStepValidationError
 from pydantic import ValidationError
 
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
@@ -220,6 +220,7 @@ def test_content_node_task_preparation_dispatch_callback_and_blocked_completion(
     callback_step_id = runtime.flow_service.advance_flow(flow_id)
     assert callback_step_id is not None
     assert runtime.flow_service.get_flow(flow_id).state.position.phase == "callback_plan_agent"
+    assert "round_id" not in runtime.flow_service.get_step(callback_step_id).state.variables
 
     blocked_reason = """Blocked object
 - Main.Core::consumer@2
@@ -630,6 +631,117 @@ def test_content_node_task_decl_round_dispatch_ensures_stage_agents(tmp_path: Pa
     )
     assert "decl-strategy-planning" in callback_prompt
     assert "reassess whether the strategy still explains the next round" in callback_prompt
+
+
+def _pending_decl_round_callback(tmp_path: Path):
+    runtime, lean_runtime = _runtime(tmp_path)
+    repo_root = tmp_path / "workspace" / "Repo"
+    _prepare_content_repo(lean_runtime, repo_root)
+    flow_id = _start_content_task(runtime, repo_root)
+    _advance_and_run(runtime, flow_id)
+
+    runtime.agent_service.queue_submission(
+        DeclRoundDispatchSubmission(
+            submission_id=new_submission_id("sub"),
+            submission_type="decl_round_dispatch",
+            tool_name="submit_current_decl_round",
+            repo_key=repo_root.name,
+            node_path="Main.Core",
+            strategy_id="strategy_exact",
+            round_id="round_exact",
+            round_index=7,
+            requests=[
+                build_decl_round_request(
+                    repo_key=repo_root.name,
+                    node_path="Main.Core",
+                    scope_id=f"repo:{repo_root.name}:node:Main.Core",
+                    strategy_id="strategy_exact",
+                    round_id="round_exact",
+                    round_index=7,
+                )
+            ],
+            summary="Dispatch exact decl round.",
+        )
+    )
+    initial_plan_step_id = _advance_and_run(runtime, flow_id)
+    initial_plan_step = runtime.flow_service.get_step(initial_plan_step_id)
+    assert "round_id" not in initial_plan_step.state.variables
+    _advance_and_run(runtime, flow_id)
+    dispatch_step_id = _advance_and_run(runtime, flow_id)
+    child_flow = runtime.flow_service.store.list_child_flows(
+        parent_flow_id=flow_id,
+        parent_dispatch_step_id=dispatch_step_id,
+    )[0]
+    return runtime, repo_root, flow_id, child_flow
+
+
+def test_content_node_task_decl_round_callback_binds_exact_runtime_context(tmp_path: Path) -> None:
+    runtime, repo_root, flow_id, child_flow = _pending_decl_round_callback(tmp_path)
+    _complete_child_flow(
+        runtime,
+        child_flow.flow_id,
+        DeclGraphRoundResult(
+            outcome="completed",
+            repo_key=repo_root.name,
+            node_path="Main.Core",
+            round_id="round_exact",
+            completed_stages=["statement_nl"],
+            summary="Exact round completed.",
+        ),
+    )
+
+    callback_step_id = runtime.flow_service.advance_flow(flow_id)
+    assert callback_step_id is not None
+    callback_step = runtime.flow_service.get_step(callback_step_id)
+    assert callback_step.state.variables["round_id"] == "round_exact"
+
+
+def test_content_node_task_failed_decl_round_callback_binds_exact_input_context(tmp_path: Path) -> None:
+    runtime, _repo_root, flow_id, child_flow = _pending_decl_round_callback(tmp_path)
+    runtime.flow_service.store.update_flow_record(
+        child_flow.flow_id,
+        lambda flow: (
+            setattr(flow, "result", None),
+            setattr(flow, "status", FlowStatus.FAILED),
+            setattr(flow, "finished_at", flow.finished_at or flow.created_at),
+        ),
+    )
+
+    callback_step_id = runtime.flow_service.advance_flow(flow_id)
+    assert callback_step_id is not None
+    callback_step = runtime.flow_service.get_step(callback_step_id)
+    assert callback_step.state.variables["round_id"] == "round_exact"
+
+
+@pytest.mark.parametrize("corruption", ["lineage", "missing_result", "result_identity"])
+def test_content_node_task_decl_round_callback_rejects_invalid_child_truth(
+    tmp_path: Path,
+    corruption: str,
+) -> None:
+    runtime, repo_root, flow_id, child_flow = _pending_decl_round_callback(tmp_path)
+
+    def corrupt(flow) -> None:  # noqa: ANN001
+        flow.status = FlowStatus.COMPLETED
+        flow.finished_at = flow.finished_at or flow.created_at
+        flow.result = DeclGraphRoundResult(
+            outcome="completed",
+            repo_key=repo_root.name,
+            node_path="Main.Core",
+            round_id="round_exact",
+            completed_stages=["statement_nl"],
+            summary="Exact round completed.",
+        )
+        if corruption == "lineage":
+            flow.parent_dispatch_step_id = "dispatch_other"
+        elif corruption == "missing_result":
+            flow.result = None
+        else:
+            flow.result = flow.result.model_copy(update={"node_path": "Main.Other"})
+
+    runtime.flow_service.store.update_flow_record(child_flow.flow_id, corrupt)
+    expected_error = FlowStepValidationError if corruption == "lineage" else TypeError
+    with pytest.raises(expected_error):
+        runtime.flow_service.advance_flow(flow_id)
 
 
 def test_content_ready_intent_completes_only_after_deterministic_audit(tmp_path: Path) -> None:

@@ -340,6 +340,103 @@ class DeclGraphService:
             return self.runtime.foundation.fail(strategy.issues)
         return self.runtime.foundation.ok(self.views.strategy_view(strategy.value))
 
+    def require_current_open_strategy(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+    ) -> ServiceResult[DeclGraphStrategy]:
+        return self.strategy_round.require_current_open_strategy(repo_root, node_path=node_path)
+
+    def require_current_draft_round(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+    ) -> ServiceResult[DeclGraphRound]:
+        return self.strategy_round.require_current_draft_round(repo_root, node_path=node_path)
+
+    def require_current_unfinished_round(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+    ) -> ServiceResult[DeclGraphRound]:
+        return self.strategy_round.require_current_unfinished_round(repo_root, node_path=node_path)
+
+    def require_current_awaiting_closeout_round(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+    ) -> ServiceResult[DeclGraphRound]:
+        return self.strategy_round.require_current_awaiting_closeout_round(repo_root, node_path=node_path)
+
+    def resolve_round_for_closeout(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        exact_round_id: str | None,
+    ) -> ServiceResult[DeclGraphRound]:
+        return self.strategy_round.resolve_round_for_closeout(
+            repo_root,
+            node_path=node_path,
+            exact_round_id=exact_round_id,
+        )
+
+    def get_strategy_by_sequence(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        strategy_sequence: int,
+    ) -> ServiceResult[DeclGraphStrategy]:
+        return self.strategy_round.get_strategy_by_sequence(
+            repo_root,
+            node_path=node_path,
+            strategy_sequence=strategy_sequence,
+        )
+
+    def get_round_by_sequence(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_sequence: int,
+    ) -> ServiceResult[DeclGraphRound]:
+        return self.strategy_round.get_round_by_sequence(
+            repo_root,
+            node_path=node_path,
+            round_sequence=round_sequence,
+        )
+
+    def strategy_sequence(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        strategy_id: str,
+    ) -> ServiceResult[int]:
+        return self.strategy_round.strategy_sequence(
+            repo_root,
+            node_path=node_path,
+            strategy_id=strategy_id,
+        )
+
+    def round_sequence(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_id: str,
+    ) -> ServiceResult[int]:
+        return self.strategy_round.round_sequence(
+            repo_root,
+            node_path=node_path,
+            round_id=round_id,
+        )
+
     def close_strategy(
         self,
         repo_root: Path,

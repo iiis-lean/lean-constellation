@@ -3,7 +3,15 @@ from pathlib import Path
 
 from tests.unit_services_helpers import initialize_native_test_repo, make_runtime
 
-from lean_constellation.services.decl_graph import DeclRoundResultKind, DeclRoundStatus, DeclState, DeclStrategyStatus
+from lean_constellation.services.decl_graph import (
+    DeclGraphRound,
+    DeclGraphStrategy,
+    DeclRoundResultKind,
+    DeclRoundStatus,
+    DeclState,
+    DeclStrategyStatus,
+)
+from lean_constellation.services.foundation import WriteMode
 
 
 def _create_content_node(tmp_path: Path, *, node_path: str = "Main.Topic.Core") -> None:
@@ -341,3 +349,318 @@ def test_round_draft_rejects_second_unfinished_round(tmp_path: Path) -> None:
     assert not second.ok
     assert second.issues[0].kind == "round_closeout_pending"
     assert service.start_round(tmp_path, node_path="Main.Topic.Core", round_id=first.value.round_id).ok
+
+
+def test_current_strategy_resolver_distinguishes_missing_unique_and_ambiguous(tmp_path: Path) -> None:
+    _create_content_node(tmp_path)
+    runtime = make_runtime()
+    service = runtime.decl_graph
+    node_path = "Main.Topic.Core"
+
+    missing = service.require_current_open_strategy(tmp_path, node_path=node_path)
+    assert not missing.ok
+    assert missing.issues[0].kind == "current_open_strategy_missing"
+
+    first = service.ensure_open_strategy(tmp_path, node_path=node_path, objective="First strategy.")
+    assert first.ok and first.value is not None
+    unique = service.require_current_open_strategy(tmp_path, node_path=node_path)
+    assert unique.ok and unique.value is not None
+    assert unique.value.strategy_id == first.value.strategy_id
+
+    second = DeclGraphStrategy(
+        strategy_id="strategy_corrupt_second",
+        node_path=node_path,
+        objective="Corrupt second open strategy.",
+    )
+    written = runtime.foundation.store.write_json_atomic(
+        service.graph_store.strategy_path(tmp_path, node_path=node_path, strategy_id=second.strategy_id),
+        second,
+        mode=WriteMode.CREATE_ONLY,
+    )
+    assert written.ok
+
+    ambiguous = service.require_current_open_strategy(tmp_path, node_path=node_path)
+    assert not ambiguous.ok
+    assert ambiguous.issues[0].kind == "current_open_strategy_ambiguous"
+
+
+def test_current_round_resolvers_filter_lifecycle_and_propagate_read_errors(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _create_content_node(tmp_path)
+    runtime = make_runtime()
+    service = runtime.decl_graph
+    node_path = "Main.Topic.Core"
+    strategy = service.ensure_open_strategy(tmp_path, node_path=node_path, objective="Current strategy.")
+    assert strategy.ok and strategy.value is not None
+    draft = service.create_round_draft(
+        tmp_path,
+        node_path=node_path,
+        strategy_id=strategy.value.strategy_id,
+        objective="Draft round.",
+    )
+    assert draft.ok and draft.value is not None
+
+    resolved_draft = service.require_current_draft_round(tmp_path, node_path=node_path)
+    resolved_unfinished = service.require_current_unfinished_round(tmp_path, node_path=node_path)
+    assert resolved_draft.ok and resolved_draft.value is not None
+    assert resolved_unfinished.ok and resolved_unfinished.value is not None
+    assert resolved_draft.value.round_id == draft.value.round_id
+    assert resolved_unfinished.value.round_id == draft.value.round_id
+
+    assert service.start_round(tmp_path, node_path=node_path, round_id=draft.value.round_id).ok
+    no_draft = service.require_current_draft_round(tmp_path, node_path=node_path)
+    running = service.require_current_unfinished_round(tmp_path, node_path=node_path)
+    assert not no_draft.ok
+    assert no_draft.issues[0].kind == "current_draft_round_missing"
+    assert running.ok and running.value is not None
+    assert running.value.status is DeclRoundStatus.RUNNING
+
+    awaiting = service.strategy_round.record_round_execution_result(
+        tmp_path,
+        node_path=node_path,
+        round_id=draft.value.round_id,
+        result_kind=DeclRoundResultKind.SUCCESS,
+    )
+    assert awaiting.ok
+    resolved_closeout = service.require_current_awaiting_closeout_round(tmp_path, node_path=node_path)
+    assert resolved_closeout.ok and resolved_closeout.value is not None
+    assert resolved_closeout.value.round_id == draft.value.round_id
+
+    expected = runtime.foundation.fail(
+        runtime.foundation.issue("round_list_read_failed_for_test", "Synthetic list failure.")
+    )
+    monkeypatch.setattr(service.strategy_round, "list_rounds", lambda *_args, **_kwargs: expected)
+    read_failure = service.require_current_unfinished_round(tmp_path, node_path=node_path)
+    assert not read_failure.ok
+    assert read_failure.issues[0].kind == "round_list_read_failed_for_test"
+
+
+def test_multiple_current_rounds_are_ambiguous_and_mutation_gate_does_not_write(tmp_path: Path) -> None:
+    _create_content_node(tmp_path)
+    runtime = make_runtime()
+    service = runtime.decl_graph
+    node_path = "Main.Topic.Core"
+    strategy = service.ensure_open_strategy(tmp_path, node_path=node_path, objective="Current strategy.")
+    assert strategy.ok and strategy.value is not None
+    first = service.create_round_draft(
+        tmp_path,
+        node_path=node_path,
+        strategy_id=strategy.value.strategy_id,
+        objective="First draft.",
+    )
+    assert first.ok and first.value is not None
+    second = DeclGraphRound(
+        round_id="round_corrupt_second",
+        node_path=node_path,
+        strategy_id=strategy.value.strategy_id,
+        round_index=2,
+        objective="Corrupt second draft.",
+    )
+    written = runtime.foundation.store.write_json_atomic(
+        service.graph_store.round_path(tmp_path, node_path=node_path, round_id=second.round_id),
+        second,
+        mode=WriteMode.CREATE_ONLY,
+    )
+    assert written.ok
+
+    draft = service.require_current_draft_round(tmp_path, node_path=node_path)
+    unfinished = service.require_current_unfinished_round(tmp_path, node_path=node_path)
+    assert not draft.ok and draft.issues[0].kind == "current_draft_round_ambiguous"
+    assert not unfinished.ok and unfinished.issues[0].kind == "current_unfinished_round_ambiguous"
+
+    close_attempt = service.close_strategy(
+        tmp_path,
+        node_path=node_path,
+        strategy_id=strategy.value.strategy_id,
+        summary="Must not close against corrupt round truth.",
+    )
+    assert not close_attempt.ok
+    assert close_attempt.issues[0].kind == "current_unfinished_round_ambiguous"
+    unchanged = service.get_strategy(
+        tmp_path,
+        node_path=node_path,
+        strategy_id=strategy.value.strategy_id,
+    )
+    assert unchanged.ok and unchanged.value is not None
+    assert unchanged.value.status is DeclStrategyStatus.OPEN
+    assert unchanged.value.summary is None
+
+
+def test_mutation_gate_propagates_round_read_failure_without_writing(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _create_content_node(tmp_path)
+    runtime = make_runtime()
+    service = runtime.decl_graph
+    node_path = "Main.Topic.Core"
+    strategy = service.ensure_open_strategy(tmp_path, node_path=node_path, objective="Current strategy.")
+    assert strategy.ok and strategy.value is not None
+    expected = runtime.foundation.fail(
+        runtime.foundation.issue("round_list_read_failed_for_test", "Synthetic list failure.")
+    )
+    monkeypatch.setattr(service.strategy_round, "list_rounds", lambda *_args, **_kwargs: expected)
+
+    close_attempt = service.close_strategy(
+        tmp_path,
+        node_path=node_path,
+        strategy_id=strategy.value.strategy_id,
+        summary="Must not close after a failed round read.",
+    )
+    assert not close_attempt.ok
+    assert close_attempt.issues[0].kind == "round_list_read_failed_for_test"
+
+    unchanged = service.get_strategy(
+        tmp_path,
+        node_path=node_path,
+        strategy_id=strategy.value.strategy_id,
+    )
+    assert unchanged.ok and unchanged.value is not None
+    assert unchanged.value.status is DeclStrategyStatus.OPEN
+    assert unchanged.value.summary is None
+
+
+def test_strategy_and_round_sequence_resolution_is_stable_and_fail_closed(tmp_path: Path) -> None:
+    _create_content_node(tmp_path)
+    service = make_runtime().decl_graph
+    node_path = "Main.Topic.Core"
+    first_strategy = service.ensure_open_strategy(tmp_path, node_path=node_path, objective="First strategy.")
+    assert first_strategy.ok and first_strategy.value is not None
+    assert service.close_strategy(
+        tmp_path,
+        node_path=node_path,
+        strategy_id=first_strategy.value.strategy_id,
+        summary="First strategy closed.",
+    ).ok
+    second_strategy = service.ensure_open_strategy(tmp_path, node_path=node_path, objective="Second strategy.")
+    assert second_strategy.ok and second_strategy.value is not None
+
+    sequence_one = service.get_strategy_by_sequence(tmp_path, node_path=node_path, strategy_sequence=1)
+    sequence_two = service.get_strategy_by_sequence(tmp_path, node_path=node_path, strategy_sequence=2)
+    assert sequence_one.ok and sequence_one.value is not None
+    assert sequence_two.ok and sequence_two.value is not None
+    expected_order = sorted(
+        [first_strategy.value, second_strategy.value],
+        key=lambda item: (item.created_at, item.strategy_id),
+    )
+    assert sequence_one.value.strategy_id == expected_order[0].strategy_id
+    assert sequence_two.value.strategy_id == expected_order[1].strategy_id
+    first_reverse = service.strategy_sequence(
+        tmp_path,
+        node_path=node_path,
+        strategy_id=sequence_one.value.strategy_id,
+    )
+    second_reverse = service.strategy_sequence(
+        tmp_path,
+        node_path=node_path,
+        strategy_id=sequence_two.value.strategy_id,
+    )
+    assert first_reverse.ok and first_reverse.value == 1
+    assert second_reverse.ok and second_reverse.value == 2
+    missing_strategy = service.get_strategy_by_sequence(tmp_path, node_path=node_path, strategy_sequence=3)
+    assert not missing_strategy.ok
+    assert missing_strategy.issues[0].kind == "strategy_sequence_not_found"
+
+    round_record = service.create_round_draft(
+        tmp_path,
+        node_path=node_path,
+        strategy_id=second_strategy.value.strategy_id,
+        objective="First round in history.",
+    )
+    assert round_record.ok and round_record.value is not None
+    by_round_sequence = service.get_round_by_sequence(tmp_path, node_path=node_path, round_sequence=1)
+    assert by_round_sequence.ok and by_round_sequence.value is not None
+    assert by_round_sequence.value.round_id == round_record.value.round_id
+    round_reverse = service.round_sequence(
+        tmp_path,
+        node_path=node_path,
+        round_id=round_record.value.round_id,
+    )
+    assert round_reverse.ok and round_reverse.value == 1
+    missing_round = service.get_round_by_sequence(tmp_path, node_path=node_path, round_sequence=2)
+    assert not missing_round.ok
+    assert missing_round.issues[0].kind == "round_sequence_not_found"
+
+
+def test_closeout_round_resolution_prefers_exact_context_and_validates_lifecycle(tmp_path: Path) -> None:
+    _create_content_node(tmp_path)
+    service = make_runtime().decl_graph
+    node_path = "Main.Topic.Core"
+    strategy = service.ensure_open_strategy(tmp_path, node_path=node_path, objective="Closeout strategy.")
+    assert strategy.ok and strategy.value is not None
+    draft = service.create_round_draft(
+        tmp_path,
+        node_path=node_path,
+        strategy_id=strategy.value.strategy_id,
+        objective="Closeout round.",
+    )
+    assert draft.ok and draft.value is not None
+
+    stale = service.resolve_round_for_closeout(
+        tmp_path,
+        node_path=node_path,
+        exact_round_id=draft.value.round_id,
+    )
+    assert not stale.ok
+    assert stale.issues[0].kind == "round_context_lifecycle_mismatch"
+    wrong_context = service.resolve_round_for_closeout(
+        tmp_path,
+        node_path=node_path,
+        exact_round_id="round_from_another_node",
+    )
+    assert not wrong_context.ok
+    assert wrong_context.issues[0].kind == "round_context_mismatch"
+
+    assert service.start_round(tmp_path, node_path=node_path, round_id=draft.value.round_id).ok
+    awaiting = service.strategy_round.record_round_execution_result(
+        tmp_path,
+        node_path=node_path,
+        round_id=draft.value.round_id,
+        result_kind=DeclRoundResultKind.SUCCESS,
+    )
+    assert awaiting.ok
+    exact = service.resolve_round_for_closeout(
+        tmp_path,
+        node_path=node_path,
+        exact_round_id=draft.value.round_id,
+    )
+    fallback = service.resolve_round_for_closeout(
+        tmp_path,
+        node_path=node_path,
+        exact_round_id=None,
+    )
+    assert exact.ok and exact.value is not None
+    assert fallback.ok and fallback.value is not None
+    assert exact.value.round_id == draft.value.round_id
+    assert fallback.value.round_id == draft.value.round_id
+
+    second = DeclGraphRound(
+        round_id="round_corrupt_awaiting",
+        node_path=node_path,
+        strategy_id=strategy.value.strategy_id,
+        round_index=2,
+        objective="Corrupt awaiting round.",
+        status=DeclRoundStatus.AWAITING_CLOSEOUT,
+        execution_result_kind=DeclRoundResultKind.SUCCESS,
+        execution_completed_at="2026-08-24T00:00:00+00:00",
+    )
+    assert service.runtime.foundation.store.write_json_atomic(
+        service.graph_store.round_path(tmp_path, node_path=node_path, round_id=second.round_id),
+        second,
+        mode=WriteMode.CREATE_ONLY,
+    ).ok
+    exact_with_ambiguous_fallback = service.resolve_round_for_closeout(
+        tmp_path,
+        node_path=node_path,
+        exact_round_id=draft.value.round_id,
+    )
+    ambiguous_fallback = service.resolve_round_for_closeout(
+        tmp_path,
+        node_path=node_path,
+        exact_round_id=None,
+    )
+    assert exact_with_ambiguous_fallback.ok
+    assert not ambiguous_fallback.ok
+    assert ambiguous_fallback.issues[0].kind == "current_awaiting_closeout_round_ambiguous"

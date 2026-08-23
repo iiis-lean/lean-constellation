@@ -420,9 +420,7 @@ class SubmitContentPreparationReconArgs(SummarySubmitArgs):
 
 
 class SubmitCurrentDeclRoundArgs(SummarySubmitArgs):
-    strategy_id: str = Field(description="Current declaration strategy id that owns the submitted round.")
-    round_id: str = Field(description="Declaration round id to dispatch for child DeclGraphRoundFlow execution.")
-    round_index: int | None = Field(default=None, description="Optional human-readable round index for diagnostics and review.")
+    pass
 
 
 class SubmitContentNodeReadyArgs(SummarySubmitArgs):

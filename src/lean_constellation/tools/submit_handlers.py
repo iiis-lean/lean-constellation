@@ -1417,7 +1417,17 @@ def submit_current_decl_round(runtime: Any, ctx: ToolExecutionContext, args: Sub
     node = _require_node(runtime, ctx)
     if not node.ok or node.value is None:
         return runtime.foundation.fail(node.issues)
-    gate = runtime.decl_graph.validate_round_draft(ctx.repo_root, node_path=node.value, round_id=args.round_id)
+    current_round = runtime.decl_graph.require_current_draft_round(
+        ctx.repo_root,
+        node_path=node.value,
+    )
+    if not current_round.ok or current_round.value is None:
+        return runtime.foundation.fail(current_round.issues)
+    gate = runtime.decl_graph.validate_round_draft(
+        ctx.repo_root,
+        node_path=node.value,
+        round_id=current_round.value.round_id,
+    )
     if not gate.ok or gate.value is None:
         return runtime.foundation.fail(gate.issues)
     if isinstance(gate.value, GateReport) and not gate.value.passed:
@@ -1426,20 +1436,20 @@ def submit_current_decl_round(runtime: Any, ctx: ToolExecutionContext, args: Sub
         repo_key=ctx.repo.repo_key,
         node_path=node.value,
         scope_id=ctx.runtime.scope_id,
-        strategy_id=args.strategy_id,
-        round_id=args.round_id,
+        strategy_id=current_round.value.strategy_id,
+        round_id=current_round.value.round_id,
         repo_path=str(ctx.repo_root),
         contract_version=ctx.node.contract_version if ctx.node else None,
-        round_index=args.round_index,
+        round_index=current_round.value.round_index,
         summary=args.summary,
     )
     return _prepared(
         runtime,
         DeclRoundDispatchSubmission(
             **_dispatch_kwargs(ctx, tool_name="submit_current_decl_round", requests=[request], summary=args.summary),
-            strategy_id=args.strategy_id,
-            round_id=args.round_id,
-            round_index=args.round_index,
+            strategy_id=current_round.value.strategy_id,
+            round_id=current_round.value.round_id,
+            round_index=current_round.value.round_index,
         ),
         agent_view=gate.value.model_dump(mode="json") if hasattr(gate.value, "model_dump") else {},
     )

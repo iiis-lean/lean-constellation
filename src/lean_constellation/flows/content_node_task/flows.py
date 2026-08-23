@@ -510,6 +510,16 @@ def _content_plan_agent_step(
 
     brief = build_content_plan_context_brief(ctx, flow, input_model, state)
     brief_text = brief.render()
+    variables: dict[str, object] = {
+        "repo_key": input_model.repo_key,
+        "node_path": input_model.node_path,
+        "contract_version": input_model.contract_version,
+        "used_preparation_kinds": list(state.used_preparation_kinds),
+        "decl_round_count": state.decl_round_count,
+    }
+    callback_round_id = _completed_decl_round_id(ctx, flow, input_model, state) if callback else None
+    if callback_round_id is not None:
+        variables["round_id"] = callback_round_id
     return ContentPlanAgentStep(
         step_id=new_content_step_id("content_plan_callback" if callback else "content_plan"),
         flow_id=flow.flow_id,
@@ -520,13 +530,7 @@ def _content_plan_agent_step(
             home_id="ContentPlanAgent",
             create_agent_if_missing=True,
             bind_created_agent_to="flow",
-            variables={
-                "repo_key": input_model.repo_key,
-                "node_path": input_model.node_path,
-                "contract_version": input_model.contract_version,
-                "used_preparation_kinds": list(state.used_preparation_kinds),
-                "decl_round_count": state.decl_round_count,
-            },
+            variables=variables,
             prompt_mode="callback" if callback else "initial",
             prompt_override=(
                 None
@@ -543,6 +547,52 @@ def _content_plan_agent_step(
             max_auto_continue_turns=1,
         ),
     )
+
+
+def _completed_decl_round_id(
+    ctx: FlowContext,
+    flow: ContentNodeTaskFlow,
+    input_model: ContentNodeTaskInput,
+    state: ContentNodeTaskState,
+) -> str | None:
+    if state.waiting_child_kind != "decl_graph_round":
+        return None
+    child_flow_id = state.completed_child_flow_id
+    if child_flow_id is None:
+        raise TypeError("DeclGraph round callback is missing its completed child Flow identity")
+    flow_service = ctx.ark.flow_service
+    if flow_service is None:
+        raise TypeError("ark.flow_service is not registered")
+    child = flow_service.get_flow(child_flow_id)
+    if getattr(child, "flow_type", None) != "decl_graph_round":
+        raise TypeError("Content callback child is not a DeclGraph round Flow")
+    if (
+        getattr(child, "parent_flow_id", None) != flow.flow_id
+        or getattr(child, "parent_dispatch_step_id", None) != state.waiting_dispatch_step_id
+    ):
+        raise TypeError("DeclGraph round callback child does not match the current dispatch lineage")
+    child_status = getattr(child, "status", None)
+    if child_status not in {FlowStatus.COMPLETED, FlowStatus.FAILED}:
+        raise TypeError("DeclGraph round callback child is not terminal")
+    child_input = getattr(child, "input", None)
+    child_repo_key = getattr(child_input, "repo_key", None)
+    child_node_path = getattr(child_input, "node_path", None)
+    round_id = getattr(child_input, "round_id", None)
+    if child_repo_key != input_model.repo_key or child_node_path != input_model.node_path:
+        raise TypeError("DeclGraph round callback child does not belong to the current Content task")
+    if not isinstance(round_id, str) or not round_id:
+        raise TypeError("DeclGraph round callback child is missing its exact Round identity")
+    child_result = getattr(child, "result", None)
+    if child_status is FlowStatus.COMPLETED and child_result is None:
+        raise TypeError("Completed DeclGraph round callback child is missing its result")
+    if child_result is not None:
+        if (
+            getattr(child_result, "repo_key", None) != input_model.repo_key
+            or getattr(child_result, "node_path", None) != input_model.node_path
+            or getattr(child_result, "round_id", None) != round_id
+        ):
+            raise TypeError("DeclGraph round callback result identity does not match its child input")
+    return round_id
 
 
 def _content_plan_initial_prompt(ctx: FlowContext, input_model: ContentNodeTaskInput) -> str:

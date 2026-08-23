@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from collections.abc import Collection
 from typing import TYPE_CHECKING
 
 from lean_constellation.domain.common import utc_now_iso
@@ -110,13 +111,15 @@ class StrategyRoundComponent:
                 )
             )
         pending = self._unfinished_round(repo_root, node_path=node_path)
-        if pending is not None:
+        if not pending.ok:
+            return self.runtime.foundation.fail(pending.issues)
+        if pending.value is not None:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
                     "strategy_round_closeout_pending",
                     "A declaration round must be closed before its strategy can be closed.",
                     object_ref=strategy_id,
-                    current=f"{pending.round_id}:{pending.status.value}",
+                    current=f"{pending.value.round_id}:{pending.value.status.value}",
                 )
             )
         strategy.value.status = DeclStrategyStatus.FAILED if failed else DeclStrategyStatus.CLOSED
@@ -152,13 +155,15 @@ class StrategyRoundComponent:
                 )
             )
         pending = self._unfinished_round(repo_root, node_path=node_path)
-        if pending is not None:
+        if not pending.ok:
+            return self.runtime.foundation.fail(pending.issues)
+        if pending.value is not None:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
                     "round_closeout_pending",
                     "A Content node already has an unfinished declaration round.",
                     object_ref=node_path,
-                    current=f"{pending.round_id}:{pending.status.value}",
+                    current=f"{pending.value.round_id}:{pending.value.status.value}",
                 )
             )
         allocated = self.runtime.foundation.store.allocate_uuid(
@@ -167,12 +172,14 @@ class StrategyRoundComponent:
         )
         if not allocated.ok or allocated.value is None:
             return self.runtime.foundation.fail(allocated.issues)
-        round_index = self._next_round_index(repo_root, node_path=node_path)
+        next_round_index = self._next_round_index(repo_root, node_path=node_path)
+        if not next_round_index.ok or next_round_index.value is None:
+            return self.runtime.foundation.fail(next_round_index.issues)
         round_record = DeclGraphRound(
             round_id=allocated.value,
             node_path=node_path,
             strategy_id=strategy_id,
-            round_index=round_index,
+            round_index=next_round_index.value,
             objective=objective,
             revision_refs=revision_refs or [],
         )
@@ -215,13 +222,15 @@ class StrategyRoundComponent:
             node_path=node_path,
             exclude_round_id=round_id,
         )
-        if pending is not None:
+        if not pending.ok:
+            return self.runtime.foundation.fail(pending.issues)
+        if pending.value is not None:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
                     "round_closeout_pending",
                     "A Content node already has another unfinished declaration round.",
                     object_ref=node_path,
-                    current=f"{pending.round_id}:{pending.status.value}",
+                    current=f"{pending.value.round_id}:{pending.value.status.value}",
                 )
             )
         round_record.value.status = DeclRoundStatus.RUNNING
@@ -507,6 +516,195 @@ class StrategyRoundComponent:
             return self.runtime.foundation.fail(rounds.issues)
         return self.runtime.foundation.ok(sorted(rounds.value, key=lambda item: (item.round_index, item.round_id)))
 
+    def require_current_open_strategy(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+    ) -> ServiceResult[DeclGraphStrategy]:
+        strategies = self.list_strategies(repo_root, node_path=node_path)
+        if not strategies.ok or strategies.value is None:
+            return self.runtime.foundation.fail(strategies.issues)
+        candidates = [item for item in strategies.value if item.status is DeclStrategyStatus.OPEN]
+        return self._require_unique_strategy(
+            candidates,
+            node_path=node_path,
+            missing_kind="current_open_strategy_missing",
+            missing_message="The current Content node has no open declaration strategy.",
+            ambiguous_kind="current_open_strategy_ambiguous",
+            ambiguous_message="The current Content node has multiple open declaration strategies.",
+        )
+
+    def require_current_draft_round(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+    ) -> ServiceResult[DeclGraphRound]:
+        return self._require_current_round(
+            repo_root,
+            node_path=node_path,
+            statuses={DeclRoundStatus.DRAFT},
+            missing_kind="current_draft_round_missing",
+            missing_message="The current Content node has no draft declaration round.",
+            ambiguous_kind="current_draft_round_ambiguous",
+            ambiguous_message="The current Content node has multiple draft declaration rounds.",
+        )
+
+    def require_current_unfinished_round(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+    ) -> ServiceResult[DeclGraphRound]:
+        return self._require_current_round(
+            repo_root,
+            node_path=node_path,
+            statuses={
+                DeclRoundStatus.DRAFT,
+                DeclRoundStatus.RUNNING,
+                DeclRoundStatus.AWAITING_CLOSEOUT,
+            },
+            missing_kind="current_unfinished_round_missing",
+            missing_message="The current Content node has no unfinished declaration round.",
+            ambiguous_kind="current_unfinished_round_ambiguous",
+            ambiguous_message="The current Content node has multiple unfinished declaration rounds.",
+        )
+
+    def require_current_awaiting_closeout_round(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+    ) -> ServiceResult[DeclGraphRound]:
+        return self._require_current_round(
+            repo_root,
+            node_path=node_path,
+            statuses={DeclRoundStatus.AWAITING_CLOSEOUT},
+            missing_kind="current_awaiting_closeout_round_missing",
+            missing_message="The current Content node has no declaration round awaiting closeout.",
+            ambiguous_kind="current_awaiting_closeout_round_ambiguous",
+            ambiguous_message="The current Content node has multiple declaration rounds awaiting closeout.",
+        )
+
+    def resolve_round_for_closeout(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        exact_round_id: str | None,
+    ) -> ServiceResult[DeclGraphRound]:
+        if exact_round_id is None:
+            return self.require_current_awaiting_closeout_round(repo_root, node_path=node_path)
+        round_record = self.get_round(
+            repo_root,
+            node_path=node_path,
+            round_id=exact_round_id,
+        )
+        if not round_record.ok or round_record.value is None:
+            if round_record.issues and all(issue.kind == "missing_file" for issue in round_record.issues):
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "round_context_mismatch",
+                        "The exact callback Round does not belong to the current Content node.",
+                        object_ref=exact_round_id,
+                        expected=node_path,
+                    )
+                )
+            return self.runtime.foundation.fail(round_record.issues)
+        if round_record.value.status is not DeclRoundStatus.AWAITING_CLOSEOUT:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "round_context_lifecycle_mismatch",
+                    "The exact callback Round is not awaiting ContentPlan closeout.",
+                    object_ref=exact_round_id,
+                    current=round_record.value.status.value,
+                    expected=DeclRoundStatus.AWAITING_CLOSEOUT.value,
+                )
+            )
+        return self.runtime.foundation.ok(round_record.value)
+
+    def get_strategy_by_sequence(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        strategy_sequence: int,
+    ) -> ServiceResult[DeclGraphStrategy]:
+        strategies = self.list_strategies(repo_root, node_path=node_path)
+        if not strategies.ok or strategies.value is None:
+            return self.runtime.foundation.fail(strategies.issues)
+        ordered = self._ordered_strategies(strategies.value)
+        if strategy_sequence < 1 or strategy_sequence > len(ordered):
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "strategy_sequence_not_found",
+                    "No declaration strategy exists at the requested sequence.",
+                    object_ref=node_path,
+                    current=str(strategy_sequence),
+                )
+            )
+        return self.runtime.foundation.ok(ordered[strategy_sequence - 1])
+
+    def get_round_by_sequence(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_sequence: int,
+    ) -> ServiceResult[DeclGraphRound]:
+        rounds = self.list_rounds(repo_root, node_path=node_path)
+        if not rounds.ok or rounds.value is None:
+            return self.runtime.foundation.fail(rounds.issues)
+        candidates = [item for item in rounds.value if item.round_index == round_sequence]
+        if len(candidates) != 1:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "round_sequence_not_found" if not candidates else "round_sequence_ambiguous",
+                    (
+                        "No declaration round exists at the requested sequence."
+                        if not candidates
+                        else "Multiple declaration rounds use the requested sequence."
+                    ),
+                    object_ref=node_path,
+                    current=str(round_sequence),
+                )
+            )
+        return self.runtime.foundation.ok(candidates[0])
+
+    def strategy_sequence(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        strategy_id: str,
+    ) -> ServiceResult[int]:
+        strategies = self.list_strategies(repo_root, node_path=node_path)
+        if not strategies.ok or strategies.value is None:
+            return self.runtime.foundation.fail(strategies.issues)
+        for sequence, strategy in enumerate(self._ordered_strategies(strategies.value), start=1):
+            if strategy.strategy_id == strategy_id:
+                return self.runtime.foundation.ok(sequence)
+        return self.runtime.foundation.fail(
+            self.runtime.foundation.issue(
+                "strategy_sequence_not_found",
+                "The declaration strategy has no sequence in the current Content node.",
+                object_ref=strategy_id,
+            )
+        )
+
+    def round_sequence(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_id: str,
+    ) -> ServiceResult[int]:
+        round_record = self.get_round(repo_root, node_path=node_path, round_id=round_id)
+        if not round_record.ok or round_record.value is None:
+            return self.runtime.foundation.fail(round_record.issues)
+        return self.runtime.foundation.ok(round_record.value.round_index)
+
     def _write_strategy(
         self,
         repo_root: Path,
@@ -533,13 +731,13 @@ class StrategyRoundComponent:
             return self.runtime.foundation.fail(written.issues)
         return self.runtime.foundation.ok(round_record)
 
-    def _next_round_index(self, repo_root: Path, *, node_path: str) -> int:
+    def _next_round_index(self, repo_root: Path, *, node_path: str) -> ServiceResult[int]:
         rounds = self.list_rounds(repo_root, node_path=node_path)
         if not rounds.ok or rounds.value is None:
-            return 1
+            return self.runtime.foundation.fail(rounds.issues)
         if not rounds.value:
-            return 1
-        return max(round_record.round_index for round_record in rounds.value) + 1
+            return self.runtime.foundation.ok(1)
+        return self.runtime.foundation.ok(max(round_record.round_index for round_record in rounds.value) + 1)
 
     def _unfinished_round(
         self,
@@ -547,20 +745,87 @@ class StrategyRoundComponent:
         *,
         node_path: str,
         exclude_round_id: str | None = None,
-    ) -> DeclGraphRound | None:
+    ) -> ServiceResult[DeclGraphRound | None]:
         rounds = self.list_rounds(repo_root, node_path=node_path)
         if not rounds.ok or rounds.value is None:
-            return None
-        for round_record in rounds.value:
-            if round_record.round_id == exclude_round_id:
-                continue
-            if (
-                round_record.status
-                in {
-                    DeclRoundStatus.DRAFT,
-                    DeclRoundStatus.RUNNING,
-                    DeclRoundStatus.AWAITING_CLOSEOUT,
-                }
-            ):
-                return round_record
-        return None
+            return self.runtime.foundation.fail(rounds.issues)
+        candidates = [
+            round_record
+            for round_record in rounds.value
+            if round_record.round_id != exclude_round_id
+            and round_record.status
+            in {
+                DeclRoundStatus.DRAFT,
+                DeclRoundStatus.RUNNING,
+                DeclRoundStatus.AWAITING_CLOSEOUT,
+            }
+        ]
+        if len(candidates) > 1:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "current_unfinished_round_ambiguous",
+                    "The current Content node has multiple unfinished declaration rounds.",
+                    object_ref=node_path,
+                    current=", ".join(item.round_id for item in candidates),
+                )
+            )
+        return self.runtime.foundation.ok(candidates[0] if candidates else None)
+
+    def _require_current_round(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        statuses: Collection[DeclRoundStatus],
+        missing_kind: str,
+        missing_message: str,
+        ambiguous_kind: str,
+        ambiguous_message: str,
+    ) -> ServiceResult[DeclGraphRound]:
+        rounds = self.list_rounds(repo_root, node_path=node_path)
+        if not rounds.ok or rounds.value is None:
+            return self.runtime.foundation.fail(rounds.issues)
+        candidates = [item for item in rounds.value if item.status in statuses]
+        if not candidates:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(missing_kind, missing_message, object_ref=node_path)
+            )
+        if len(candidates) > 1:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    ambiguous_kind,
+                    ambiguous_message,
+                    object_ref=node_path,
+                    current=", ".join(item.round_id for item in candidates),
+                )
+            )
+        return self.runtime.foundation.ok(candidates[0])
+
+    def _require_unique_strategy(
+        self,
+        candidates: list[DeclGraphStrategy],
+        *,
+        node_path: str,
+        missing_kind: str,
+        missing_message: str,
+        ambiguous_kind: str,
+        ambiguous_message: str,
+    ) -> ServiceResult[DeclGraphStrategy]:
+        if not candidates:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(missing_kind, missing_message, object_ref=node_path)
+            )
+        if len(candidates) > 1:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    ambiguous_kind,
+                    ambiguous_message,
+                    object_ref=node_path,
+                    current=", ".join(item.strategy_id for item in candidates),
+                )
+            )
+        return self.runtime.foundation.ok(candidates[0])
+
+    @staticmethod
+    def _ordered_strategies(strategies: list[DeclGraphStrategy]) -> list[DeclGraphStrategy]:
+        return sorted(strategies, key=lambda item: (item.created_at, item.strategy_id))

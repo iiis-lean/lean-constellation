@@ -503,6 +503,14 @@ def _required_round_id(runtime, ctx, round_id: str | None) -> str:
     raise ValueError("round_id is required when current tool context has no decl-stage round.")
 
 
+def _closeout_round(runtime, ctx):
+    return runtime.decl_graph.resolve_round_for_closeout(
+        ctx.repo_root,
+        node_path=_node(ctx),
+        exact_round_id=ctx.runtime.round_id,
+    )
+
+
 def _ensure_graph(runtime, ctx, args: NoArgs):
     del args
     return runtime.decl_graph.ensure_decl_graph(ctx.repo_root, node_path=_node(ctx))
@@ -588,29 +596,38 @@ def _get_round(runtime, ctx, args: RoundIdArgs):
 
 
 def _write_change_summary(runtime, ctx, args: ChangeSummaryArgs):
+    current_round = _closeout_round(runtime, ctx)
+    if not current_round.ok or current_round.value is None:
+        return runtime.foundation.fail(current_round.issues)
     return runtime.decl_graph.write_decl_change_summary_view(
         ctx.repo_root,
         node_path=_node(ctx),
-        round_id=_required_round_id(runtime, ctx, args.round_id),
+        round_id=current_round.value.round_id,
         change_id=args.change_id,
         summary=args.summary,
     )
 
 
 def _write_round_summary(runtime, ctx, args: RoundSummaryArgs):
+    current_round = _closeout_round(runtime, ctx)
+    if not current_round.ok or current_round.value is None:
+        return runtime.foundation.fail(current_round.issues)
     return runtime.decl_graph.write_round_summary_view(
         ctx.repo_root,
         node_path=_node(ctx),
-        round_id=_required_round_id(runtime, ctx, args.round_id),
+        round_id=current_round.value.round_id,
         summary=args.summary,
     )
 
 
 def _mark_round_terminal(runtime, ctx, args: RoundTerminalArgs):
+    current_round = _closeout_round(runtime, ctx)
+    if not current_round.ok or current_round.value is None:
+        return runtime.foundation.fail(current_round.issues)
     closed = runtime.decl_graph.closeout_round_by_plan(
         ctx.repo_root,
         node_path=_node(ctx),
-        round_id=_required_round_id(runtime, ctx, args.round_id),
+        round_id=current_round.value.round_id,
         reason=args.reason,
         result_kind=args.result_kind,
         acknowledged_by=ctx.runtime.agent_id or "content_plan",
