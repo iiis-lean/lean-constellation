@@ -4,7 +4,8 @@ from pathlib import Path
 
 from agent_runtime_kit.flow.models import FlowStatus
 
-from lean_constellation.services.decl_graph import DeclRoundStatus, DeclStage, DeclState
+from lean_constellation.flows.content_node_task.decl_round.steps import DeclStageReviewerStepResult
+from lean_constellation.services.decl_graph import DeclReviewMarkRecord, DeclRoundStatus, DeclStage, DeclState
 from tests.unit.flows.decl_round._helpers import (
     NODE_PATH,
     advance_and_run,
@@ -23,6 +24,42 @@ from tests.unit_services_helpers import (
     write_proof_formal_for_test,
     write_statement_formal_for_test,
 )
+
+
+def test_decl_stage_reviewer_agent_fields_hide_nested_round_identity() -> None:
+    round_id = "round-secret"
+    result = DeclStageReviewerStepResult(
+        outcome="rejected",
+        stage="statement_nl",
+        round_id=round_id,
+        node_path=NODE_PATH,
+        accepted=False,
+        retry_required=True,
+        reviewed_decl_names=["main_result"],
+        failed_decl_names=["main_result"],
+        feedback=[
+            DeclReviewMarkRecord(
+                round_id=round_id,
+                node_path=NODE_PATH,
+                stage=DeclStage.STATEMENT_NL,
+                decl_name="main_result",
+                passed=False,
+                summary="Statement requires repair.",
+                required_changes=["Clarify the quantified domain."],
+            )
+        ],
+        summary="Statement review rejected.",
+    )
+
+    internal_fields = result.model_dump(mode="json")
+    agent_fields = result.agent_fields()
+
+    assert internal_fields["round_id"] == round_id
+    assert internal_fields["feedback"][0]["round_id"] == round_id
+    assert "round_id" not in agent_fields
+    assert "round_id" not in agent_fields["feedback"][0]
+    assert round_id not in result.render_for_agent(None)
+    assert "Statement requires repair." in result.render_for_agent(None)
 
 
 def test_decl_round_runs_full_theorem_stage_sequence(tmp_path: Path) -> None:

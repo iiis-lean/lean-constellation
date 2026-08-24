@@ -165,7 +165,7 @@ class DeclStageReviewerStepResult(LeanRenderableStepResult):
             "reviewed_decl_names": list(self.reviewed_decl_names),
             "failed_decl_names": list(self.failed_decl_names),
             "missing_decl_names": list(self.missing_decl_names),
-            "feedback": [item.model_dump(mode="json") for item in self.feedback],
+            "feedback": [item.model_dump(mode="json", exclude={"round_id"}) for item in self.feedback],
             "incomplete_reason": self.incomplete_reason,
         }
 
