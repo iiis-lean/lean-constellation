@@ -671,3 +671,14 @@ def test_bottom_up_completion_and_lean_gap_policy_has_single_owned_decisions() -
         for key in specs
         if key != "decl-strategy-planning"
     )
+
+
+def test_decl_round_update_objective_requires_an_observable_artifact_delta() -> None:
+    round_planning = build_skill_specs()["decl-round-change-planning"].body
+
+    assert "current artifact or semantic object" in round_planning
+    assert "observed defect" in round_planning
+    assert "observable delta" in round_planning
+    assert "accepted meaning, proof route, and dependency boundary" in round_planning
+    assert "Do not restate the stage interval as an itinerary" in round_planning
+    assert "repair_obligations" not in round_planning

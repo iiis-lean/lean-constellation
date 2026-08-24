@@ -259,6 +259,34 @@ def test_decl_worker_instructions_preserve_precise_blocker_evidence() -> None:
         assert "final theorem for another Content node" in text, agent_type
 
 
+def test_all_decl_stage_workers_require_current_artifact_delta_evidence() -> None:
+    for agent_type in (
+        "StatementNLWorkerAgent",
+        "StatementFormalWorkerAgent",
+        "ProofNLWorkerAgent",
+        "ProofFormalWorkerAgent",
+    ):
+        text = render_agent_instruction(agent_type)
+        assert "current round objective" in text, agent_type
+        assert "observable delta is present in the current artifact" in text, agent_type
+        assert "summary, capture receipt, or clean diagnostics" in text, agent_type
+
+
+def test_all_decl_stage_reviewers_recheck_current_layer_independently() -> None:
+    for agent_type in (
+        "StatementNLReviewerAgent",
+        "StatementFormalReviewerAgent",
+        "ProofNLReviewerAgent",
+        "ProofFormalReviewerAgent",
+    ):
+        text = render_agent_instruction(agent_type)
+        assert "current round objective" in text, agent_type
+        assert "related prior revision or rejection feedback" in text, agent_type
+        assert "recheck the complete current layer" in text, agent_type
+        assert "old passed mark" in text, agent_type
+        assert "only the current stage layer" in text, agent_type
+
+
 def test_native_content_guidance_does_not_add_node_use_categories_or_exact_statement_ownership() -> None:
     text = "\n".join(
         render_agent_instruction(agent_type)
@@ -520,6 +548,11 @@ def test_source_corpus_reviewer_is_independent_read_only_and_full_current() -> N
 def test_resource_curator_treats_requested_use_as_advisory_evidence() -> None:
     text = render_agent_instruction("ResourceCuratorAgent")
 
+    assert "same artifact" in text
+    assert "substantive requested content or scope" in text
+    assert "citation or bibliography entry" in text
+    assert "target itself is citation or BibTeX metadata" in text
+    assert "duplicate hint is navigation evidence" in text
     assert "formal-dependency as strong provider evidence, not an irreversible classification" in text
     assert "direct inspection shows that the actual target is narrow supporting material" in text
     assert "request may be a DOI, title, description, URL, or local clue" in text

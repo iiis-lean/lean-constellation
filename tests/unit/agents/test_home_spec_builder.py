@@ -149,6 +149,34 @@ def test_home_bootstrap_spec_projects_resources_to_provider_home_spec() -> None:
     assert ark_spec.required_env == ("DEEPSEEK_API_KEY",)
 
 
+def test_decl_stage_homes_share_current_evidence_contract() -> None:
+    for agent_type in (
+        "StatementNLWorkerAgent",
+        "StatementFormalWorkerAgent",
+        "ProofNLWorkerAgent",
+        "ProofFormalWorkerAgent",
+    ):
+        spec = build_agent_home_bootstrap_spec(
+            agent_type,
+            provider_type="codex",
+            mcp_http_base_url="http://127.0.0.1:8765",
+        )
+        assert "observable delta is present in the current artifact" in spec.developer_instructions
+
+    for agent_type in (
+        "StatementNLReviewerAgent",
+        "StatementFormalReviewerAgent",
+        "ProofNLReviewerAgent",
+        "ProofFormalReviewerAgent",
+    ):
+        spec = build_agent_home_bootstrap_spec(
+            agent_type,
+            provider_type="codex",
+            mcp_http_base_url="http://127.0.0.1:8765",
+        )
+        assert "recheck the complete current layer" in spec.developer_instructions
+
+
 def test_codex_and_opencode_repo_discovery_homes_use_the_same_mcp_tool_views() -> None:
     codex = build_agent_home_bootstrap_spec(
         "RepoResourceDiscoveryAgent",
@@ -216,3 +244,16 @@ def test_codex_and_opencode_source_builder_homes_share_material_contract() -> No
     assert "isolated temporary copy outside the Source draft" in reviewer.developer_instructions
     assert "never write Reviewer build products into the durable candidate or `_work/`" in reviewer.developer_instructions
     assert "pdf-faithful-transcription" not in reviewer.skill_specs
+
+
+def test_resource_curator_home_distinguishes_citation_from_content_coverage() -> None:
+    spec = build_agent_home_bootstrap_spec(
+        "ResourceCuratorAgent",
+        provider_type="codex",
+        mcp_http_base_url="http://127.0.0.1:8765",
+    )
+
+    assert "same artifact identity" in spec.developer_instructions
+    assert "substantive requested content or scope" in spec.developer_instructions
+    assert "citation or bibliography entry" in spec.developer_instructions
+    assert "target itself is citation or BibTeX metadata" in spec.developer_instructions

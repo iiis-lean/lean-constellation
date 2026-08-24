@@ -13,6 +13,7 @@ from lean_constellation.flows.resource_request.submissions import (
     LocalResourceCreatedSubmission,
     ResourceDuplicateSubmission,
 )
+from lean_constellation.services.material.source_corpus import SourceCorpusDuplicateView
 from tests.unit_services_helpers import make_runtime, valid_resource_readme
 
 
@@ -129,6 +130,43 @@ def test_resource_curation_preflight_duplicate_hint_continues_to_agent(tmp_path:
     assert flow.result.outcome == "duplicate"
     assert flow.result.existing_resource_key == resource_key
     assert flow.state.active_resource_draft_key is None
+
+
+def test_resource_curation_source_duplicate_hint_still_creates_curator_step(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime, lean_runtime = _runtime(tmp_path)
+    repo_root = tmp_path / "workspace" / "Repo"
+    repo_root.mkdir(parents=True)
+    target = "https://example.com/referenced-paper.pdf"
+
+    monkeypatch.setattr(
+        lean_runtime.material.source_corpus,
+        "check_target_in_source_corpus",
+        lambda repo_root, *, canonical_locator: lean_runtime.material.source_corpus.runtime.foundation.ok(
+            SourceCorpusDuplicateView(
+                duplicate=True,
+                canonical_locator=canonical_locator,
+                matching_paths=["article/references.bib"],
+                summary="Source corpus contains a possible matching citation.",
+            )
+        ),
+    )
+
+    flow_id = _start_resource_flow(runtime, repo_root, target_kind="web", target=target)
+    _advance_and_run(runtime, flow_id)
+
+    flow = runtime.flow_service.get_flow(flow_id)
+    assert flow.status is FlowStatus.RUNNING
+    assert flow.state.position.phase == "curator_agent"
+    assert flow.state.source_duplicate_hint is not None
+    assert flow.state.source_duplicate_hint.existing_source_path == "article/references.bib"
+    curator_step_id = runtime.flow_service.advance_flow(flow_id)
+    assert curator_step_id is not None
+    curator_step = runtime.step_service.store.get_step(curator_step_id)
+    assert curator_step.step_type == "resource_curator_agent_step"
+    assert runtime.agent_service.start_records == []
 
 
 def test_resource_curation_curator_step_uses_current_draft_workdir(tmp_path: Path) -> None:

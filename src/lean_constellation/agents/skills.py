@@ -1611,6 +1611,8 @@ statement_nl retains only the planned shell; statement_formal retains accepted S
 
 After opening an update, inspect the copied typed dependency lists and use the same dependency tools to add, remove, or correct the known frontier before validation. Preserve an actual edge whose provider is another planned change; never omit it to bypass round topology validation.
 
+Write the objective as an executable delta: identify the current artifact or semantic object, the observed defect, the observable delta required by the end of this round, and the accepted meaning, proof route, and dependency boundary that must remain unchanged. Do not restate the stage interval as an itinerary; the start-stage and target-state fields already own stage selection. When useful, quote an exact diagnostic or header shape, but do not prescribe an unverified code patch.
+
 Do not use an update change to silently change a previously accepted mathematical meaning.
 
 ## Target Satisfaction
