@@ -11,7 +11,11 @@ from urllib.parse import quote, urlparse
 from pydantic import Field
 
 from lean_constellation.domain.common import StrictModel
-from lean_constellation.services.external_clients.process import CommandRunner, SubprocessCommandRunner
+from lean_constellation.services.external_clients.process import (
+    CommandRunner,
+    ExternalCommandResult,
+    SubprocessCommandRunner,
+)
 
 
 class GitHubRepoClientConfig(StrictModel):
@@ -164,6 +168,9 @@ class LeanRepoCandidateProbe(StrictModel):
 
 
 class GitHubRepoClient:
+    _MACHINE_JSON_CAPTURE_CHARS = 16 * 1024 * 1024
+    _TRUNCATED_OUTPUT_SUFFIX = "\n...[truncated]"
+
     def __init__(
         self,
         config: GitHubRepoClientConfig | None = None,
@@ -193,6 +200,35 @@ class GitHubRepoClient:
             return self.normalize_github_url(value.removeprefix("github.com/"))
         raise ValueError(f"Unsupported GitHub URL or slug: {value}")
 
+    def _run_json_command(
+        self,
+        command: list[str],
+        *,
+        empty_payload: str,
+    ) -> tuple[ExternalCommandResult, object | None, str | None]:
+        result = self.runner.run(
+            command,
+            cwd=Path.cwd(),
+            timeout_seconds=self.config.timeout_seconds,
+            stdout_excerpt_chars=self._MACHINE_JSON_CAPTURE_CHARS,
+            stderr_excerpt_chars=self.config.stderr_excerpt_chars,
+        )
+        if not result.ok:
+            return result, None, None
+        output = result.stdout_excerpt or empty_payload
+        if output.endswith(self._TRUNCATED_OUTPUT_SUFFIX):
+            return result, None, "github_json_output_truncated"
+        try:
+            return result, json.loads(output), None
+        except json.JSONDecodeError:
+            return result, None, "invalid_json"
+
+    @staticmethod
+    def _json_issue_summary(subject: str, issue_code: str) -> str:
+        if issue_code == "github_json_output_truncated":
+            return f"{subject} exceeded the bounded machine JSON capture limit."
+        return f"{subject} returned invalid JSON."
+
     def search_repositories(self, query: str, limit: int = 10) -> GitHubRepoSearchResult:
         if limit < 1:
             raise ValueError("limit must be >= 1")
@@ -207,13 +243,7 @@ class GitHubRepoClient:
             "--json",
             "fullName,url,description,stargazersCount,pushedAt,defaultBranch,language",
         ]
-        result = self.runner.run(
-            command,
-            cwd=Path.cwd(),
-            timeout_seconds=self.config.timeout_seconds,
-            stdout_excerpt_chars=self.config.stdout_excerpt_chars,
-            stderr_excerpt_chars=self.config.stderr_excerpt_chars,
-        )
+        result, raw_items, json_issue = self._run_json_command(command, empty_payload="[]")
         if not result.ok:
             return GitHubRepoSearchResult(
                 ok=False,
@@ -221,10 +251,14 @@ class GitHubRepoClient:
                 summary=result.summary,
                 issue_code=result.issue_code or "github_search_failed",
             )
-        try:
-            raw_items = json.loads(result.stdout_excerpt or "[]")
-        except json.JSONDecodeError:
-            return GitHubRepoSearchResult(ok=False, query=query, summary="GitHub search returned invalid JSON", issue_code="invalid_json")
+        if json_issue:
+            return GitHubRepoSearchResult(
+                ok=False,
+                query=query,
+                summary=self._json_issue_summary("GitHub search", json_issue),
+                issue_code=json_issue,
+            )
+        raw_items = raw_items if isinstance(raw_items, list) else []
         candidates = [self._candidate_from_gh_json(item) for item in raw_items[:limit]]
         return GitHubRepoSearchResult(ok=True, query=query, candidates=candidates, summary=f"Found {len(candidates)} candidates")
 
@@ -239,13 +273,7 @@ class GitHubRepoClient:
             "--json",
             "nameWithOwner,url,description,stargazerCount,pushedAt,defaultBranchRef,repositoryTopics,licenseInfo,primaryLanguage,languages",
         ]
-        result = self.runner.run(
-            command,
-            cwd=Path.cwd(),
-            timeout_seconds=self.config.timeout_seconds,
-            stdout_excerpt_chars=self.config.stdout_excerpt_chars,
-            stderr_excerpt_chars=self.config.stderr_excerpt_chars,
-        )
+        result, item, json_issue = self._run_json_command(command, empty_payload="{}")
         if not result.ok:
             return GitHubRepoCandidate(
                 full_name=owner_repo,
@@ -253,15 +281,14 @@ class GitHubRepoClient:
                 clone_url=f"{html_url}.git",
                 evidence_summary=f"Repository inspect failed: {result.summary}",
             )
-        try:
-            item = json.loads(result.stdout_excerpt or "{}")
-        except json.JSONDecodeError:
+        if json_issue:
             return GitHubRepoCandidate(
                 full_name=owner_repo,
                 html_url=html_url,
                 clone_url=f"{html_url}.git",
-                evidence_summary="Repository inspect returned invalid JSON.",
+                evidence_summary=self._json_issue_summary("Repository inspect", json_issue),
             )
+        item = item if isinstance(item, dict) else {}
         return self._candidate_from_gh_json(item, fallback_url=html_url, fallback_full_name=owner_repo)
 
     def get_repository(self, git_url: str) -> GitHubRepoCandidate:
@@ -289,13 +316,7 @@ class GitHubRepoClient:
         command = [self.config.gh_bin, "api", endpoint]
         if recursive:
             command.extend(["--method", "GET", "-f", "recursive=1"])
-        result = self.runner.run(
-            command,
-            cwd=Path.cwd(),
-            timeout_seconds=self.config.timeout_seconds,
-            stdout_excerpt_chars=max(self.config.stdout_excerpt_chars, 200000),
-            stderr_excerpt_chars=self.config.stderr_excerpt_chars,
-        )
+        result, payload, json_issue = self._run_json_command(command, empty_payload="{}")
         if not result.ok:
             return GitHubRepositoryTreeView(
                 git_url=html_url,
@@ -305,16 +326,14 @@ class GitHubRepoClient:
                 summary=result.summary,
                 issue_code=result.issue_code or "github_tree_failed",
             )
-        try:
-            payload = json.loads(result.stdout_excerpt or "{}")
-        except json.JSONDecodeError:
+        if json_issue:
             return GitHubRepositoryTreeView(
                 git_url=html_url,
                 revision=revision,
                 recursive=recursive,
                 path_prefix=path_prefix,
-                summary="GitHub tree returned invalid JSON.",
-                issue_code="invalid_json",
+                summary=self._json_issue_summary("GitHub tree", json_issue),
+                issue_code=json_issue,
             )
         try:
             prefix = self._normalize_optional_repo_path(path_prefix)
@@ -419,13 +438,7 @@ class GitHubRepoClient:
         command = [self.config.gh_bin, "api", endpoint]
         if revision:
             command.extend(["--method", "GET", "-f", f"ref={revision}"])
-        result = self.runner.run(
-            command,
-            cwd=Path.cwd(),
-            timeout_seconds=self.config.timeout_seconds,
-            stdout_excerpt_chars=max(self.config.stdout_excerpt_chars, max_chars * 2),
-            stderr_excerpt_chars=self.config.stderr_excerpt_chars,
-        )
+        result, payload, json_issue = self._run_json_command(command, empty_payload="{}")
         if not result.ok:
             return GitHubRepositoryFileView(
                 git_url=html_url,
@@ -434,15 +447,13 @@ class GitHubRepoClient:
                 summary=result.summary,
                 issue_code=result.issue_code or "github_file_read_failed",
             )
-        try:
-            payload = json.loads(result.stdout_excerpt or "{}")
-        except json.JSONDecodeError:
+        if json_issue:
             return GitHubRepositoryFileView(
                 git_url=html_url,
                 path=safe_path,
                 revision=revision,
-                summary="GitHub file read returned invalid JSON.",
-                issue_code="invalid_json",
+                summary=self._json_issue_summary("GitHub file read", json_issue),
+                issue_code=json_issue,
             )
         if not isinstance(payload, dict) or payload.get("type") not in {None, "file"}:
             return GitHubRepositoryFileView(
@@ -513,13 +524,7 @@ class GitHubRepoClient:
         ]
         if safe_path:
             command.extend(["-f", f"path={safe_path}"])
-        result = self.runner.run(
-            command,
-            cwd=Path.cwd(),
-            timeout_seconds=self.config.timeout_seconds,
-            stdout_excerpt_chars=max(self.config.stdout_excerpt_chars, limit * 100),
-            stderr_excerpt_chars=self.config.stderr_excerpt_chars,
-        )
+        result, payload, json_issue = self._run_json_command(command, empty_payload="[]")
         if not result.ok:
             return GitHubCommitHistoryView(
                 git_url=html_url,
@@ -527,14 +532,12 @@ class GitHubRepoClient:
                 summary=result.summary,
                 issue_code=result.issue_code or "github_commit_history_failed",
             )
-        try:
-            payload = json.loads(result.stdout_excerpt or "[]")
-        except json.JSONDecodeError:
+        if json_issue:
             return GitHubCommitHistoryView(
                 git_url=html_url,
                 path=safe_path,
-                summary="GitHub commit history returned invalid JSON.",
-                issue_code="invalid_json",
+                summary=self._json_issue_summary("GitHub commit history", json_issue),
+                issue_code=json_issue,
             )
         commits: list[str] = []
         if isinstance(payload, list):
@@ -570,13 +573,7 @@ class GitHubRepoClient:
         if repo:
             normalized_repo = self._owner_repo_from_url(self.normalize_github_url(repo))
             command.extend(["--repo", normalized_repo])
-        result = self.runner.run(
-            command,
-            cwd=Path.cwd(),
-            timeout_seconds=self.config.timeout_seconds,
-            stdout_excerpt_chars=self.config.stdout_excerpt_chars,
-            stderr_excerpt_chars=self.config.stderr_excerpt_chars,
-        )
+        result, items, json_issue = self._run_json_command(command, empty_payload="[]")
         if not result.ok:
             return GitHubCodeSearchResult(
                 ok=False,
@@ -585,10 +582,15 @@ class GitHubRepoClient:
                 summary=result.summary,
                 issue_code=result.issue_code or "github_code_search_failed",
             )
-        try:
-            items = json.loads(result.stdout_excerpt or "[]")
-        except json.JSONDecodeError:
-            return GitHubCodeSearchResult(ok=False, query=query, repo=normalized_repo, summary="GitHub code search returned invalid JSON.", issue_code="invalid_json")
+        if json_issue:
+            return GitHubCodeSearchResult(
+                ok=False,
+                query=query,
+                repo=normalized_repo,
+                summary=self._json_issue_summary("GitHub code search", json_issue),
+                issue_code=json_issue,
+            )
+        items = items if isinstance(items, list) else []
         matches = [self._code_match_from_gh_json(item) for item in items[:limit] if isinstance(item, dict)]
         return GitHubCodeSearchResult(ok=True, query=query, repo=normalized_repo, matches=matches, summary=f"Found {len(matches)} code matches.")
 

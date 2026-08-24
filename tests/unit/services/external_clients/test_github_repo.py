@@ -6,7 +6,11 @@ from pathlib import Path
 
 import pytest
 
-from lean_constellation.services.external_clients import ExternalCommandResult, GitHubRepoClient
+from lean_constellation.services.external_clients import (
+    ExternalCommandResult,
+    GitHubRepoClient,
+    GitHubRepoClientConfig,
+)
 
 
 class FakeRunner:
@@ -493,6 +497,111 @@ def test_search_reports_command_failure_invalid_json_and_bad_limit() -> None:
             "owner/repo",
             max_tree_entries=0,
         )
+
+
+def test_code_search_parses_valid_json_larger_than_presentation_excerpt() -> None:
+    payload = json.dumps(
+        [
+            {
+                "path": f"Proof{index}.lean",
+                "url": f"https://github.com/owner/repo/blob/main/Proof{index}.lean",
+                "repository": {"fullName": "owner/repo"},
+                "textMatches": [{"fragment": "theorem largePayload : True := by trivial" * 20}],
+            }
+            for index in range(20)
+        ]
+    )
+    assert len(payload) > 8000
+
+    class LargeJsonRunner:
+        def __init__(self) -> None:
+            self.stdout_limits: list[int] = []
+
+        def run(self, command, *, cwd: Path, timeout_seconds: int, stdout_excerpt_chars: int, stderr_excerpt_chars: int):
+            self.stdout_limits.append(stdout_excerpt_chars)
+            return ExternalCommandResult(
+                ok=True,
+                command=list(command),
+                cwd=str(cwd),
+                exit_code=0,
+                stdout_excerpt=payload,
+            )
+
+    runner = LargeJsonRunner()
+    result = GitHubRepoClient(runner=runner).search_code("sumset language:Lean", limit=20)
+
+    assert result.ok is True
+    assert len(result.matches) == 20
+    assert runner.stdout_limits[0] >= len(payload)
+
+
+def test_github_machine_json_distinguishes_truncation_from_malformed() -> None:
+    class JsonFailureRunner:
+        def __init__(self, output: str) -> None:
+            self.output = output
+
+        def run(self, command, *, cwd: Path, timeout_seconds: int, stdout_excerpt_chars: int, stderr_excerpt_chars: int):
+            return ExternalCommandResult(
+                ok=True,
+                command=list(command),
+                cwd=str(cwd),
+                exit_code=0,
+                stdout_excerpt=self.output,
+            )
+
+    truncated = GitHubRepoClient(
+        runner=JsonFailureRunner('[{"path":"Proof.lean"}\n...[truncated]')
+    ).search_code("sumset")
+    malformed = GitHubRepoClient(runner=JsonFailureRunner("{bad")).search_code("sumset")
+
+    assert truncated.ok is False
+    assert truncated.issue_code == "github_json_output_truncated"
+    assert malformed.ok is False
+    assert malformed.issue_code == "invalid_json"
+
+
+def test_all_github_json_routes_use_one_machine_capture_limit() -> None:
+    class CaptureLimitRunner(FakeRunner):
+        def __init__(self) -> None:
+            super().__init__()
+            self.capture_limits: list[tuple[list[str], int]] = []
+
+        def run(self, command, *, cwd: Path, timeout_seconds: int, stdout_excerpt_chars: int, stderr_excerpt_chars: int):
+            self.capture_limits.append((list(command), stdout_excerpt_chars))
+            return super().run(
+                command,
+                cwd=cwd,
+                timeout_seconds=timeout_seconds,
+                stdout_excerpt_chars=stdout_excerpt_chars,
+                stderr_excerpt_chars=stderr_excerpt_chars,
+            )
+
+    runner = CaptureLimitRunner()
+    client = GitHubRepoClient(
+        config=GitHubRepoClientConfig(stdout_excerpt_chars=32 * 1024 * 1024),
+        runner=runner,
+    )
+    client.search_repositories("lean")
+    client.inspect_repository("owner/repo")
+    client.list_repository_tree("owner/repo", revision="main")
+    client.read_repository_file("owner/repo", "README.md", revision="main")
+    client.list_repository_commits("owner/repo")
+    client.search_code("theorem")
+
+    json_limits = [
+        limit
+        for command, limit in runner.capture_limits
+        if (
+            command[:3] in (["gh", "search", "repos"], ["gh", "repo", "view"], ["gh", "search", "code"])
+            or (
+                command[:2] == ["gh", "api"]
+                and "--jq" not in command
+            )
+        )
+    ]
+    assert len(json_limits) == 6
+    assert len(set(json_limits)) == 1
+    assert json_limits[0] == 16 * 1024 * 1024
 
 
 def test_inspect_repository_falls_back_on_command_failure_and_invalid_json() -> None:
