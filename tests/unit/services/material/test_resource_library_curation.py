@@ -2,6 +2,9 @@ from tests.unit_services_helpers import make_runtime
 
 from pathlib import Path
 
+import pytest
+
+from lean_constellation.services.external_clients import AcquiredArtifactResult, MaterialTarget
 from lean_constellation.services.material import ResourceMetadataInput, ResourceTargetView
 from lean_constellation.services.material.resource_curation import ResourceArtifactView
 
@@ -87,6 +90,123 @@ def test_resource_target_normalization_arxiv_url_and_local(tmp_path: Path) -> No
     assert local.value.canonical_locator.startswith("local_file:")
     assert not invalid.ok
     assert invalid.issues[0].kind == "invalid_resource_target"
+
+
+@pytest.mark.parametrize(
+    "version",
+    [None, "v3"],
+)
+def test_resource_target_normalization_legacy_arxiv_forms(version: str | None) -> None:
+    service = make_runtime().material
+    suffix = version or ""
+    forms = [
+        f"math/0702723{suffix}",
+        f"arxiv:math/0702723{suffix}",
+        f"https://arxiv.org/abs/math/0702723{suffix}",
+        f"https://arxiv.org/pdf/math/0702723{suffix}.pdf",
+        f"https://arxiv.org/e-print/math/0702723{suffix}",
+        f"https://arxiv.org/src/math/0702723{suffix}",
+    ]
+
+    normalized = [service.normalize_resource_target(form) for form in forms]
+
+    assert all(result.ok and result.value is not None for result in normalized)
+    values = [result.value for result in normalized if result.value is not None]
+    assert {(value.kind, value.target, value.version, value.canonical_locator) for value in values} == {
+        ("arxiv", "math/0702723", version, f"arxiv:math/0702723{suffix}")
+    }
+    resource_keys = {
+        service.resource_library.resource_key_for_target(value).value
+        for value in values
+    }
+    assert len(resource_keys) == 1
+
+
+def test_prepare_resource_target_rejects_explicit_arxiv_kind_mismatch() -> None:
+    prepared = make_runtime().material.prepare_resource_target(
+        target_kind="arxiv",
+        target="https://example.com/not-an-arxiv-paper",
+    )
+
+    assert not prepared.ok
+    assert prepared.issues[0].kind == "invalid_arxiv_target"
+
+
+def test_prepare_resource_target_reconciles_explicit_arxiv_version_once() -> None:
+    service = make_runtime().material
+
+    appended = service.prepare_resource_target(
+        target_kind="arxiv",
+        target="https://arxiv.org/abs/math/0702723",
+        arxiv_version="v3",
+    )
+    already_versioned = service.prepare_resource_target(
+        target_kind="arxiv",
+        target="https://arxiv.org/abs/math/0702723v3",
+        arxiv_version="v3",
+    )
+    mismatch = service.prepare_resource_target(
+        target_kind="arxiv",
+        target="https://arxiv.org/abs/math/0702723v2",
+        arxiv_version="v3",
+    )
+    upper_case = service.prepare_resource_target(
+        target_kind="arxiv",
+        target="https://arxiv.org/abs/math/0702723v3",
+        arxiv_version="V3",
+    )
+    invalid_empty = service.prepare_resource_target(
+        target_kind="arxiv",
+        target="https://arxiv.org/abs/math/0702723",
+        arxiv_version="",
+    )
+
+    assert appended.ok and appended.value is not None
+    assert already_versioned.ok and already_versioned.value is not None
+    assert appended.value == already_versioned.value
+    assert upper_case.ok and upper_case.value == already_versioned.value
+    assert appended.value.version == "v3"
+    assert appended.value.canonical_locator == "arxiv:math/0702723v3"
+    assert not mismatch.ok
+    assert mismatch.issues[0].kind == "invalid_arxiv_target"
+    assert not invalid_empty.ok
+    assert invalid_empty.issues[0].kind == "invalid_arxiv_target"
+
+
+def test_legacy_arxiv_target_uses_arxiv_source_acquisition_route(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service = make_runtime().material
+    calls: list[tuple[str, str, str | None]] = []
+
+    def fetch_arxiv_source(arxiv_id: str, version: str | None, *, output_root: Path) -> AcquiredArtifactResult:
+        calls.append(("arxiv", arxiv_id, version))
+        return AcquiredArtifactResult(
+            ok=True,
+            target=MaterialTarget(kind="arxiv", value=arxiv_id, version=version),
+            output_root=str(output_root),
+            summary="Fetched fake legacy arXiv source.",
+        )
+
+    def fetch_web_page(url: str, *, output_root: Path) -> AcquiredArtifactResult:
+        calls.append(("web", url, None))
+        return AcquiredArtifactResult(
+            ok=True,
+            target=MaterialTarget(kind="web_url", value=url),
+            output_root=str(output_root),
+            summary="Unexpected web route.",
+        )
+
+    monkeypatch.setattr(service.runtime.external.material, "fetch_arxiv_source", fetch_arxiv_source)
+    monkeypatch.setattr(service.runtime.external.material, "fetch_web_page", fetch_web_page)
+    prepared = service.prepare_resource_target(
+        target_kind="arxiv",
+        target="https://arxiv.org/abs/math/0702723v3",
+    )
+    assert prepared.ok and prepared.value is not None
+
+    acquired = service.resource_curation.acquire_material_artifact(prepared.value, temp_root=tmp_path)
+
+    assert acquired.ok and acquired.value is not None
+    assert calls == [("arxiv", "math/0702723", "v3")]
 
 
 def test_resource_duplicate_uses_canonical_locator_and_metadata_source_url(tmp_path: Path) -> None:
@@ -325,9 +445,25 @@ def test_resource_curation_decision_duplicate_source_duplicate_and_rejected(tmp_
     )
     resource_duplicate_result = service.resource_curation.build_curator_result(resource_duplicate_decision.value)
 
-    source_root = tmp_path / ".lean_constellation" / "source"
-    source_root.mkdir(parents=True, exist_ok=True)
-    (source_root / "arxiv:2401.00001.md").write_text("already in source corpus\n", encoding="utf-8")
+    source_input = tmp_path / "source-input"
+    source_input.mkdir()
+    (source_input / "README.md").write_text(
+        "# Corpus\n\n"
+        "Source provenance: local fixture.\n"
+        "Reading order: read the arXiv material file.\n"
+        "Main material: arxiv:2401.00001.md.\n"
+        "Known gaps and extraction limits: none.\n",
+        encoding="utf-8",
+    )
+    (source_input / "arxiv:2401.00001.md").write_text("already in source corpus\n", encoding="utf-8")
+    imported_source = service.import_local_source_corpus(
+        tmp_path,
+        source_dir=source_input,
+        entry_path="README.md",
+        overview="Source duplicate fixture.",
+        preparation_summary="Prepared current SourceCorpus truth for duplicate detection.",
+    )
+    assert imported_source.ok and imported_source.value is not None, imported_source.issues
     arxiv_target = service.normalize_resource_target("2401.00001")
     assert arxiv_target.ok and arxiv_target.value is not None
     source_duplicate_decision = service.resource_curation.decide_local_or_external(

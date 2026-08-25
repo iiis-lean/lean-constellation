@@ -11,6 +11,42 @@ import pytest
 from lean_constellation.services.external_clients import MaterialAcquisitionConfig, MaterialAcquisitionExtractionClient
 
 
+@pytest.mark.parametrize(
+    ("target", "identifier", "version"),
+    [
+        ("2401.00001v2", "2401.00001", "v2"),
+        ("arxiv:math/0702723v3", "math/0702723", "v3"),
+        ("https://arxiv.org/abs/math/0702723", "math/0702723", None),
+        ("https://arxiv.org/pdf/hep-th/9901001v2.pdf", "hep-th/9901001", "v2"),
+        ("https://arxiv.org/e-print/cond-mat/0601001", "cond-mat/0601001", None),
+        ("https://arxiv.org/src/2401.00001v2", "2401.00001", "v2"),
+    ],
+)
+def test_target_normalization_recognizes_modern_and_legacy_arxiv_identity(
+    target: str,
+    identifier: str,
+    version: str | None,
+) -> None:
+    normalized = MaterialAcquisitionExtractionClient().normalize_target(target)
+
+    assert normalized.kind == "arxiv"
+    assert normalized.value == identifier
+    assert normalized.version == version
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "https://example.com/arxiv.org/abs/math/0702723",
+        "https://arxiv.org/not-a-resource-route/math/0702723",
+    ],
+)
+def test_target_normalization_does_not_treat_arxiv_text_as_arxiv_identity(target: str) -> None:
+    normalized = MaterialAcquisitionExtractionClient().normalize_target(target)
+
+    assert normalized.kind == "web_url"
+
+
 def test_typed_resolver_uses_magic_and_acquisition_truth_before_suffix(tmp_path: Path) -> None:
     client = MaterialAcquisitionExtractionClient()
     archive = tmp_path / "2407.12253-source"

@@ -24,6 +24,11 @@ from lean_constellation.domain.common import StrictModel
 
 Downloader = Callable[[str, Path, dict[str, str], int], dict[str, str] | None]
 
+_ARXIV_HOSTS = frozenset({"arxiv.org", "www.arxiv.org", "export.arxiv.org"})
+_ARXIV_URL_ROUTES = frozenset({"abs", "pdf", "e-print", "src"})
+_ARXIV_MODERN_ID = re.compile(r"(?P<identifier>[0-9]{4}\.[0-9]{4,5})(?P<version>v[0-9]+)?", re.IGNORECASE)
+_ARXIV_LEGACY_ID = re.compile(r"(?P<identifier>[a-z][a-z0-9.-]*/[0-9]{7})(?P<version>v[0-9]+)?", re.IGNORECASE)
+
 
 class MaterialAcquisitionConfig(StrictModel):
     network_timeout_seconds: int = 120
@@ -700,12 +705,29 @@ class MaterialAcquisitionExtractionClient:
         return root
 
     def _parse_arxiv(self, value: str) -> tuple[str, str | None] | None:
-        match = re.search(r"arxiv\.org/(?:abs|pdf)/([0-9]{4}\.[0-9]{4,5})(v[0-9]+)?", value, re.IGNORECASE)
-        if match:
-            return match.group(1), match.group(2)
-        match = re.fullmatch(r"([0-9]{4}\.[0-9]{4,5})(v[0-9]+)?", value)
-        if match:
-            return match.group(1), match.group(2)
+        candidate = value.strip()
+        if candidate[:6].casefold() == "arxiv:":
+            candidate = candidate[6:]
+        else:
+            parsed = urlparse(candidate)
+            if parsed.scheme:
+                if parsed.scheme.casefold() not in {"http", "https"} or (parsed.hostname or "").casefold() not in _ARXIV_HOSTS:
+                    return None
+                path_parts = parsed.path.strip("/").split("/")
+                if len(path_parts) < 2 or path_parts[0].casefold() not in _ARXIV_URL_ROUTES:
+                    return None
+                route = path_parts[0].casefold()
+                candidate = "/".join(path_parts[1:])
+                if route == "pdf" and candidate.casefold().endswith(".pdf"):
+                    candidate = candidate[:-4]
+        for pattern in (_ARXIV_MODERN_ID, _ARXIV_LEGACY_ID):
+            match = pattern.fullmatch(candidate)
+            if match:
+                identifier = match.group("identifier")
+                if pattern is _ARXIV_LEGACY_ID:
+                    identifier = identifier.casefold()
+                version = match.group("version")
+                return identifier, version.casefold() if version else None
         return None
 
     def _safe_name(self, value: str) -> str:

@@ -142,6 +142,52 @@ class ResourceCurationComponent:
         normalized = self.resource_library.normalize_resource_target(normalized_input)
         if not normalized.ok or normalized.value is None:
             return self.runtime.foundation.fail(normalized.issues)
+        if target_kind == "arxiv":
+            if normalized.value.kind != "arxiv":
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "invalid_arxiv_target",
+                        "Explicit arXiv target did not normalize to an arXiv identity.",
+                        field="target",
+                        current=target,
+                        expected="A modern or legacy arXiv id or canonical arXiv URL.",
+                    )
+                )
+            if arxiv_version is not None:
+                explicit_version = arxiv_version.casefold()
+                version_number = explicit_version[1:]
+                if explicit_version[:1] != "v" or not version_number.isascii() or not version_number.isdigit():
+                    return self.runtime.foundation.fail(
+                        self.runtime.foundation.issue(
+                            "invalid_arxiv_target",
+                            "Explicit arXiv version must use vN form.",
+                            field="arxiv_version",
+                            current=arxiv_version,
+                            expected="v followed by one or more ASCII digits.",
+                        )
+                    )
+                if normalized.value.version is not None and normalized.value.version != explicit_version:
+                    return self.runtime.foundation.fail(
+                        self.runtime.foundation.issue(
+                            "invalid_arxiv_target",
+                            "Explicit arXiv version conflicts with the version embedded in the target.",
+                            field="arxiv_version",
+                            current=arxiv_version,
+                            expected=normalized.value.version,
+                        )
+                    )
+                if normalized.value.version is None:
+                    versioned = self.resource_library.normalize_resource_target(f"{normalized.value.target}{explicit_version}")
+                    if not versioned.ok or versioned.value is None or versioned.value.kind != "arxiv":
+                        return self.runtime.foundation.fail(
+                            self.runtime.foundation.issue(
+                                "invalid_arxiv_target",
+                                "Explicit arXiv version is invalid.",
+                                field="arxiv_version",
+                                current=arxiv_version,
+                            )
+                        )
+                    normalized = versioned
         return self.runtime.foundation.ok(normalized.value)
 
     def acquire_material_artifact(self, target: ResourceTargetView, *, temp_root: Path) -> ServiceResult[ResourceArtifactView]:
@@ -935,8 +981,7 @@ class ResourceCurationComponent:
         if target_kind == "web":
             return target
         if target_kind == "arxiv":
-            version = arxiv_version or ""
-            return f"{target}{version}"
+            return target
         if target_kind in {"local_file", "local_dir"}:
             return target
         raise ValueError(f"unsupported target_kind: {target_kind}")
