@@ -72,6 +72,16 @@ def test_coordinator_instruction_routes_closeout_then_repeated_next_actions() ->
     assert "declaration-count threshold" in text
     assert "consumer anchor" in text
     assert "without becoming an exact header" in text
+    assert "update the open contract objective and success criteria" in text
+    assert "before submitting node paths" in text
+
+
+def test_content_plan_instruction_reads_current_assignment_from_exact_contract() -> None:
+    text = render_agent_instruction("ContentPlanAgent")
+
+    assert "Read the current assignment from the exact contract" in text
+    assert "objective and success criteria define this contract-version action and closeout" in text
+    assert "Do not infer the assignment from the stable goal" in text
 
 
 def test_coordinator_exploration_instruction_describes_only_current_workflow() -> None:
@@ -509,7 +519,8 @@ def test_source_builder_preserves_supplied_targets_without_inventing_source_trut
 
     assert "structured material requests" in text
     assert "resolve it with available network and acquisition tools" in text
-    assert "Keep downloads, originals, OCR, screenshots, extraction scratch, previews" in text
+    assert "Keep downloads, originals, OCR, screenshots, extraction scratch" in text
+    assert "manually created previews" in text
     assert "do not summarize, extend the requested scope, invent role-sensitive material" in text
     assert "Everything outside `_work/` will be copied unchanged" in text
     assert "resolved download locations" in text

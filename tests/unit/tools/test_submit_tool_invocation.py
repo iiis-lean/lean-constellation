@@ -1084,12 +1084,28 @@ def test_second_successful_submit_is_rejected_before_gateway(tmp_path: Path) -> 
 
 
 def _prepare_valid_source_index(runtime, repo_root: Path) -> None:
-    source_root = repo_root / ".lean_constellation" / "source"
-    source_root.mkdir(parents=True)
-    (source_root / "README.md").write_text(
-        "Source overview\nThe main statement.\nThe proof outline.\n",
+    source_input = repo_root / "source-index-input"
+    source_input.mkdir(parents=True)
+    (source_input / "README.md").write_text(
+        "Source identity: SourceIndex submit fixture.\n"
+        "Source provenance: local unit-test fixture.\n"
+        "License/access: local test fixture.\n"
+        "Included scope: complete fixture. Excluded scope: none; omitted: none.\n"
+        "File inventory: README.md.\n"
+        "Reading order: README.md.\n"
+        "Main material: README.md contains the statement and proof outline.\n"
+        "Input-to-final mapping: fixture input maps to README.md.\n"
+        "Known gaps and extraction limits: none.\n",
         encoding="utf-8",
     )
+    imported = runtime.material.import_local_source_corpus(
+        repo_root,
+        source_dir=source_input,
+        entry_path="README.md",
+        overview="SourceIndex submit fixture.",
+        preparation_summary="Prepared current SourceCorpus truth for SourceIndex submit validation.",
+    )
+    assert imported.ok and imported.value is not None, imported.issues
     resolved = runtime.material.resolve_source_scope(repo_root, source_scope=SourceScope(mode="all"))
     assert resolved.ok and resolved.value is not None
     opened = runtime.material.open_source_index_update(
@@ -1716,10 +1732,19 @@ def test_submit_content_node_tasks_passes_open_contract_version(tmp_path: Path) 
         ),
     )
 
-    result = runtime.tool_facade.invoke_agent_tool(
+    rejected = runtime.tool_facade.invoke_agent_tool(
         raw,
         tool_name="submit_content_node_tasks",
         flat_args={"node_paths": ["Main.Core"], "summary": "Run core."},
+    )
+    assert rejected.ok and rejected.value is not None and rejected.value.ok is False
+    assert rejected.value.issues[0].kind == "tool_arguments_invalid"
+    assert gateway.accepted == []
+
+    result = runtime.tool_facade.invoke_agent_tool(
+        raw,
+        tool_name="submit_content_node_tasks",
+        flat_args={"node_paths": ["Main.Core"]},
     )
 
     assert result.ok
@@ -1728,6 +1753,7 @@ def test_submit_content_node_tasks_passes_open_contract_version(tmp_path: Path) 
     assert len(gateway.accepted) == 1
     submission = gateway.accepted[0]
     assert submission.submission_type == "coordinator_content_tasks"
+    assert submission.summary == "Dispatched content node tasks: Main.Core."
     assert submission.requests[0].params["contract_version"] == 1
 
 
@@ -1744,13 +1770,22 @@ def test_submit_content_node_tasks_rejects_a_material_ref_that_no_longer_preview
         objective="Run core task.",
         success_criteria="Core task completes.",
     ).ok
-    source_path = tmp_path / ".lean_constellation" / "source" / "article" / "core.md"
-    source_path.parent.mkdir(parents=True, exist_ok=True)
-    source_path.write_text("core statement\ncore proof\n", encoding="utf-8")
+    source_input = tmp_path / "source-input"
+    _write_submit_source_draft(source_input)
+    (source_input / "article" / "main.md").write_text("core statement\ncore proof\n", encoding="utf-8")
+    imported = runtime.material.import_local_source_corpus(
+        tmp_path,
+        source_dir=source_input,
+        entry_path="README.md",
+        overview="Content dispatch material-ref fixture.",
+        preparation_summary="Prepared current SourceCorpus truth for stale-ref validation.",
+    )
+    assert imported.ok and imported.value is not None, imported.issues
+    source_path = tmp_path / ".lean_constellation" / "source" / "article" / "main.md"
     assert runtime.node.material_ref.add_owned_source_ref(
         tmp_path,
         node_path="Main.Core",
-        path="article/core.md",
+        path="article/main.md",
         start_line=1,
         end_line=2,
         reason="Primary source contract.",
@@ -1770,7 +1805,7 @@ def test_submit_content_node_tasks_rejects_a_material_ref_that_no_longer_preview
     result = runtime.tool_facade.invoke_agent_tool(
         raw,
         tool_name="submit_content_node_tasks",
-        flat_args={"node_paths": ["Main.Core"], "summary": "Run core."},
+        flat_args={"node_paths": ["Main.Core"]},
     )
 
     assert result.ok and result.value is not None and result.value.ok is False
@@ -1813,7 +1848,7 @@ def test_submit_content_node_tasks_enforces_run_parallelism_before_dispatch(tmp_
     result = runtime.tool_facade.invoke_agent_tool(
         raw,
         tool_name="submit_content_node_tasks",
-        flat_args={"node_paths": ["Main.Left", "Main.Right"], "summary": "Run both."},
+        flat_args={"node_paths": ["Main.Left", "Main.Right"]},
     )
 
     assert result.ok and result.value is not None and result.value.ok is False

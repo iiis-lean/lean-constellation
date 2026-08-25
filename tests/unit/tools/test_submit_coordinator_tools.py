@@ -16,6 +16,9 @@ def test_coordinator_submit_tools_registered() -> None:
     )
     specs = submit_specs()
     assert specs["submit_content_node_tasks"].submit_behavior == SubmitBehavior.DISPATCH_CHILD_FLOWS
+    content_schema = specs["submit_content_node_tasks"].args_model.model_json_schema()
+    assert set(content_schema["properties"]) == {"node_paths"}
+    assert content_schema["required"] == ["node_paths"]
     assert specs["submit_resource_request"].submit_behavior == SubmitBehavior.DISPATCH_CHILD_FLOWS
     assert specs["submit_repo_ready"].description == (
         "Submit repository-ready intent; the following deterministic Coordinator Step runs the authoritative audit and applies publication policy."

@@ -23,12 +23,20 @@ class FakeSubmissionGateway:
 
 
 class FakeResourceFlowService:
-    def __init__(self, *, flow_id: str = "flow_resource", active_draft_id: str | None = "draft_active") -> None:
+    def __init__(
+        self,
+        *,
+        flow_id: str = "flow_resource",
+        active_draft_id: str | None = "draft_active",
+        target_kind: str = "web",
+        target: str = "https://example.com/current",
+        arxiv_version: str | None = None,
+    ) -> None:
         self.flow_id = flow_id
         self.flow = SimpleNamespace(
             flow_type="resource_curation",
             input=SimpleNamespace(
-                target=SimpleNamespace(kind="web", target="https://example.com/current", arxiv_version=None),
+                target=SimpleNamespace(kind=target_kind, target=target, arxiv_version=arxiv_version),
             ),
             state=SimpleNamespace(active_resource_draft_key=active_draft_id),
         )
@@ -50,6 +58,59 @@ def test_resource_submit_tools_registered() -> None:
     )
     specs = submit_specs()
     assert specs["submit_resource_request"].submit_behavior == SubmitBehavior.DISPATCH_CHILD_FLOWS
+    assert "arxiv_version" in specs["submit_resource_request"].args_model.model_json_schema()["properties"]
+    for tool_name in {
+        "submit_resource_duplicate",
+        "submit_local_resource_created",
+        "submit_external_repo_required",
+        "submit_resource_rejected",
+    }:
+        assert "arxiv_version" not in specs[tool_name].args_model.model_json_schema()["properties"]
+
+
+def test_resource_curator_terminal_submit_uses_request_arxiv_version(tmp_path: Path) -> None:
+    for version in (None, "v3"):
+        gateway = FakeSubmissionGateway()
+        runtime = create_test_runtime_services(providers=LeanProviderOverrides(submission_gateway=gateway))
+        runtime.ark.flow_service = FakeResourceFlowService(
+            target_kind="arxiv",
+            target="math/0702723",
+            arxiv_version=version,
+        )
+        assert register_submit_tooling(runtime).ok
+
+        result = runtime.tool_facade.invoke_agent_tool(
+            _resource_curator_raw(tmp_path),
+            tool_name="submit_resource_rejected",
+            flat_args={"reason": "Not useful for this consumer."},
+        )
+
+        assert result.ok and result.value is not None and result.value.ok is True
+        assert len(gateway.accepted) == 1
+        submission = gateway.accepted[0]
+        assert submission.target_kind == "arxiv"
+        assert submission.target == "math/0702723"
+        assert submission.arxiv_version == version
+
+
+def test_resource_curator_terminal_submit_rejects_removed_arxiv_version(tmp_path: Path) -> None:
+    gateway = FakeSubmissionGateway()
+    runtime = create_test_runtime_services(providers=LeanProviderOverrides(submission_gateway=gateway))
+    runtime.ark.flow_service = FakeResourceFlowService(
+        target_kind="arxiv",
+        target="math/0702723",
+    )
+    assert register_submit_tooling(runtime).ok
+
+    result = runtime.tool_facade.invoke_agent_tool(
+        _resource_curator_raw(tmp_path),
+        tool_name="submit_resource_rejected",
+        flat_args={"reason": "Not useful.", "arxiv_version": "v3"},
+    )
+
+    assert result.ok and result.value is not None and result.value.ok is False
+    assert result.value.issues[0].kind == "tool_arguments_invalid"
+    assert gateway.accepted == []
 
 
 def test_resource_request_submit_injects_runtime_repo_context(tmp_path: Path) -> None:

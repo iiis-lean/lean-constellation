@@ -59,6 +59,15 @@ def test_coordinator_home_carries_concise_contract_field_semantics() -> None:
     assert "exact Content terminal depth in task_completion_mode" in contract_design
     assert "stable repository purpose from the current run objective" in decomposition
     assert "Content terminal depth stays in task_completion_mode" in decomposition
+    assert "update the open contract objective and success criteria" in coordinator.developer_instructions
+    assert "before submitting node paths" in coordinator.developer_instructions
+
+    content_plan = build_agent_home_bootstrap_spec(
+        "ContentPlanAgent",
+        mcp_http_base_url="http://127.0.0.1:8765",
+    )
+    assert "Read the current assignment from the exact contract" in content_plan.developer_instructions
+    assert "Do not infer the assignment from the stable goal" in content_plan.developer_instructions
 
 
 def test_home_bootstrap_spec_embeds_provider_home_spec() -> None:

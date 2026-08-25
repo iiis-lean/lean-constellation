@@ -124,7 +124,6 @@ class SubmitResourceRequestArgs(SummarySubmitArgs):
 
 class SubmitResourceDuplicateArgs(StrictModel):
     summary: str | None = Field(default=None, description="Optional concise summary for this duplicate submission.")
-    arxiv_version: str | None = Field(default=None, description="Optional arXiv version for the duplicate target.")
     existing_kind: Literal["resource", "source"] = Field(description="Whether the duplicate is an accepted resource or original source material.")
     duplicate_reason: str = Field(description="Why the existing material is the same target.")
     existing_resource_key: str | None = Field(default=None, description="Existing resource key when existing_kind is resource.")
@@ -133,7 +132,6 @@ class SubmitResourceDuplicateArgs(StrictModel):
 
 
 class SubmitLocalResourceCreatedArgs(SummarySubmitArgs):
-    arxiv_version: str | None = Field(default=None, description="Optional arXiv version for the finalized target.")
     draft_id: str = Field(description="Resource draft id to finalize.")
     classification_reason: str = Field(description="Why this target is supporting material owned by the current repo.")
     resource_role: str = Field(description="Narrow role the finalized Resource serves for the current repo.")
@@ -143,7 +141,6 @@ class SubmitLocalResourceCreatedArgs(SummarySubmitArgs):
 
 
 class SubmitExternalRepoRequiredArgs(ReasonSubmitArgs):
-    arxiv_version: str | None = Field(default=None, description="Optional arXiv version for the external provider target.")
     source_description: str = Field(description="Source description to pass to a provider repo requirement.")
     classification_reason: str = Field(description="Why this target belongs to an independent provider boundary.")
     relation_to_current_repo_or_node: str = Field(description="How the provider result will be consumed here.")
@@ -158,11 +155,10 @@ class SubmitExternalRepoRequiredArgs(ReasonSubmitArgs):
 
 
 class SubmitResourceRejectedArgs(ReasonSubmitArgs):
-    arxiv_version: str | None = Field(default=None, description="Optional arXiv version for the rejected target.")
     details: list[str] = Field(default_factory=list, description="Concrete reasons or evidence supporting the rejection.")
 
 
-class SubmitContentNodeTasksArgs(SummarySubmitArgs):
+class SubmitContentNodeTasksArgs(StrictModel):
     node_paths: list[str] = Field(description="Runnable content node paths to dispatch.")
 
 

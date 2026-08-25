@@ -861,8 +861,6 @@ def _resource_target(runtime: Any, target_kind: str, target: str, arxiv_version:
 def _current_resource_target_context(
     runtime: Any,
     ctx: ToolExecutionContext,
-    *,
-    arxiv_version: str | None,
 ) -> ServiceResult[Any]:
     if not ctx.runtime.flow_id:
         return runtime.foundation.fail(runtime.foundation.issue("resource_curation_context_missing", "Resource curator submit requires current flow context."))
@@ -880,16 +878,6 @@ def _current_resource_target_context(
     request_target = getattr(input_model, "target", None)
     if request_target is None:
         return runtime.foundation.fail(runtime.foundation.issue("resource_curation_input_missing", "ResourceCurationFlow has no target input."))
-    if arxiv_version is not None and arxiv_version != request_target.arxiv_version:
-        return runtime.foundation.fail(
-            runtime.foundation.issue(
-                "resource_request_target_mismatch",
-                "Submitted arxiv_version does not match the current resource curation request.",
-                field="arxiv_version",
-                current=arxiv_version,
-                expected=request_target.arxiv_version,
-            )
-        )
     normalized = _resource_target(runtime, request_target.kind, request_target.target, request_target.arxiv_version)
     if not normalized.ok or normalized.value is None:
         return runtime.foundation.fail(normalized.issues)
@@ -909,7 +897,7 @@ def _active_resource_draft_id_for_submit(runtime: Any, ctx: ToolExecutionContext
 
 
 def submit_resource_duplicate(runtime: Any, ctx: ToolExecutionContext, args: SubmitResourceDuplicateArgs) -> ServiceResult[PreparedSubmissionView]:
-    target_context = _current_resource_target_context(runtime, ctx, arxiv_version=args.arxiv_version)
+    target_context = _current_resource_target_context(runtime, ctx)
     if not target_context.ok or target_context.value is None:
         return runtime.foundation.fail(target_context.issues)
     request_target, normalized_target = target_context.value
@@ -942,7 +930,7 @@ def submit_resource_duplicate(runtime: Any, ctx: ToolExecutionContext, args: Sub
 
 
 def submit_local_resource_created(runtime: Any, ctx: ToolExecutionContext, args: SubmitLocalResourceCreatedArgs) -> ServiceResult[PreparedSubmissionView]:
-    target_context = _current_resource_target_context(runtime, ctx, arxiv_version=args.arxiv_version)
+    target_context = _current_resource_target_context(runtime, ctx)
     if not target_context.ok or target_context.value is None:
         return runtime.foundation.fail(target_context.issues)
     request_target, normalized_target = target_context.value
@@ -995,7 +983,7 @@ def submit_local_resource_created(runtime: Any, ctx: ToolExecutionContext, args:
 
 
 def submit_external_repo_required(runtime: Any, ctx: ToolExecutionContext, args: SubmitExternalRepoRequiredArgs) -> ServiceResult[PreparedSubmissionView]:
-    target_context = _current_resource_target_context(runtime, ctx, arxiv_version=args.arxiv_version)
+    target_context = _current_resource_target_context(runtime, ctx)
     if not target_context.ok or target_context.value is None:
         return runtime.foundation.fail(target_context.issues)
     request_target, normalized_target = target_context.value
@@ -1039,7 +1027,7 @@ def submit_external_repo_required(runtime: Any, ctx: ToolExecutionContext, args:
 
 
 def submit_resource_rejected(runtime: Any, ctx: ToolExecutionContext, args: SubmitResourceRejectedArgs) -> ServiceResult[PreparedSubmissionView]:
-    target_context = _current_resource_target_context(runtime, ctx, arxiv_version=args.arxiv_version)
+    target_context = _current_resource_target_context(runtime, ctx)
     if not target_context.ok or target_context.value is None:
         return runtime.foundation.fail(target_context.issues)
     request_target, normalized_target = target_context.value
@@ -1130,7 +1118,12 @@ def submit_content_node_tasks(runtime: Any, ctx: ToolExecutionContext, args: Sub
     return _prepared(
         runtime,
         CoordinatorContentTasksSubmission(
-            **_dispatch_kwargs(ctx, tool_name="submit_content_node_tasks", requests=requests, summary=args.summary),
+            **_dispatch_kwargs(
+                ctx,
+                tool_name="submit_content_node_tasks",
+                requests=requests,
+                summary=f"Dispatched content node tasks: {', '.join(args.node_paths)}.",
+            ),
             node_paths=args.node_paths,
         ),
         agent_view={
