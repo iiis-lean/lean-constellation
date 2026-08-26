@@ -484,6 +484,35 @@ def test_formal_stage_instructions_match_stage_specific_tool_boundaries() -> Non
     assert "check_statement_formal_policy" not in proof_reviewer
 
 
+def test_decl_stage_instructions_route_local_history_prepare_without_inheriting_acceptance() -> None:
+    statement_nl_worker = render_agent_instruction("StatementNLWorkerAgent")
+    statement_formal_worker = render_agent_instruction("StatementFormalWorkerAgent")
+    proof_nl_worker = render_agent_instruction("ProofNLWorkerAgent")
+    proof_formal_worker = render_agent_instruction("ProofFormalWorkerAgent")
+
+    assert "change.base_revision" in statement_nl_worker
+    assert "prepare_statement_nl_from_revision" in statement_nl_worker
+    assert "current Statement bundle is empty" in statement_nl_worker
+    assert "exact committed source revision" in statement_formal_worker
+    assert "current file remains pristine" in statement_formal_worker
+    assert "prepare_proof_nl_from_revision" in proof_nl_worker
+    assert "current Proof bundle is empty" in proof_nl_worker
+    assert "exact committed source revision" in proof_formal_worker
+    assert "current file remains pristine" in proof_formal_worker
+
+    for agent_type in (
+        "StatementNLReviewerAgent",
+        "StatementFormalReviewerAgent",
+        "ProofNLReviewerAgent",
+        "ProofFormalReviewerAgent",
+    ):
+        reviewer = render_agent_instruction(agent_type)
+        assert "historical artifact remains comparison evidence" in reviewer
+        assert "recheck the complete current layer" in reviewer
+        assert "prepare_statement_nl_from_revision" not in reviewer
+        assert "prepare_proof_nl_from_revision" not in reviewer
+
+
 def test_statement_nl_worker_instruction_allows_narrow_node_dependency_maintenance() -> None:
     text = render_agent_instruction("StatementNLWorkerAgent")
 

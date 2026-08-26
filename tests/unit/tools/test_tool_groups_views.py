@@ -42,7 +42,7 @@ def test_application_registry_is_orthogonal_and_fully_exposed() -> None:
     views = build_application_tool_views(groups)
     group_by_key = {group.key: group for group in groups}
 
-    assert len(specs) == 263
+    assert len(specs) == 266
     assert all(len(spec.tool_groups) == 1 for spec in specs)
     assert all(group.tool_names for group in groups)
     assert all(view.extra_tool_names == [] for view in views)
@@ -411,6 +411,23 @@ def test_formal_reviewer_views_do_not_expose_worker_file_write_tools() -> None:
     assert "remove_decl_file_for_delete" not in statement_worker.value
     assert "sync_decl_file_after_revision_reset" not in proof_worker.value
     assert "remove_decl_file_for_delete" not in proof_worker.value
+
+
+def test_nl_history_prepare_tools_are_worker_only() -> None:
+    runtime = create_test_runtime_services(register_application_tools=True)
+    statement_worker = runtime.tool_facade.tool_view.tool_names_for_view("statement_nl_worker")
+    proof_worker = runtime.tool_facade.tool_view.tool_names_for_view("proof_nl_worker")
+    statement_reviewer = runtime.tool_facade.tool_view.tool_names_for_view("statement_nl_reviewer")
+    proof_reviewer = runtime.tool_facade.tool_view.tool_names_for_view("proof_nl_reviewer")
+
+    assert statement_worker.ok and statement_worker.value is not None
+    assert proof_worker.ok and proof_worker.value is not None
+    assert statement_reviewer.ok and statement_reviewer.value is not None
+    assert proof_reviewer.ok and proof_reviewer.value is not None
+    assert "prepare_statement_nl_from_revision" in statement_worker.value
+    assert "prepare_proof_nl_from_revision" in proof_worker.value
+    assert "prepare_statement_nl_from_revision" not in statement_reviewer.value
+    assert "prepare_proof_nl_from_revision" not in proof_reviewer.value
 
 
 def test_group_queries_return_registered_tools() -> None:

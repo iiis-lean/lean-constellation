@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
+from lean_constellation.domain.repo import ProofAvailability
 from lean_constellation.domain.refs import DeclRef
 from lean_constellation.domain.common import utc_now_iso
 from lean_constellation.services.decl_graph.decl_catalog import DeclCatalogComponent
@@ -15,11 +16,18 @@ from lean_constellation.services.decl_graph.models import (
     DeclNaturalLanguageSection,
     DeclOriginRef,
     DeclRevision,
+    DeclRevisionStatus,
     DeclRoundStatus,
     DeclState,
     RepoDeclDep,
 )
 from lean_constellation.services.decl_graph.strategy_round import StrategyRoundComponent
+from lean_constellation.services.decl_graph.origin_validation import validate_nl_origin
+from lean_constellation.services.decl_graph.proof_nl_validation import (
+    validate_proof_deps,
+    validate_proof_origin_ref,
+)
+from lean_constellation.services.decl_graph.statement_nl_validation import validate_statement_deps
 from lean_constellation.services.foundation import ServiceResult, WriteMode
 
 if TYPE_CHECKING:
@@ -91,6 +99,124 @@ class StageMutationComponent:
         revision.value.statement.deps = deps
         revision.value.updated_at = utc_now_iso()
         return self._write_revision(repo_root, node_path=node_path, decl_name=decl_name, revision=revision.value)
+
+    def prepare_statement_nl_from_revision(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_id: str,
+        decl_name: str,
+        source_revision: int,
+    ) -> ServiceResult[DeclRevision]:
+        """Atomically prepare an empty current Statement NL candidate from committed history."""
+
+        current = self._revision_for_stage(
+            repo_root,
+            node_path=node_path,
+            round_id=round_id,
+            decl_name=decl_name,
+        )
+        if not current.ok or current.value is None:
+            return self.runtime.foundation.fail(current.issues)
+        head = self._require_current_round_head(
+            repo_root,
+            node_path=node_path,
+            decl_name=decl_name,
+            revision=current.value,
+        )
+        if not head.ok:
+            return self.runtime.foundation.fail(head.issues)
+        if current.value.state != DeclState.PLANNED:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "statement_nl_prepare_state_invalid",
+                    "Historical Statement NL preparation requires the current revision at planned state.",
+                    object_ref=decl_name,
+                    current=current.value.state.value,
+                    expected=DeclState.PLANNED.value,
+                )
+            )
+        if current.value.statement.nl is not None or current.value.statement.deps:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "statement_nl_prepare_target_not_empty",
+                    "Historical Statement NL preparation cannot overwrite a current candidate.",
+                    object_ref=decl_name,
+                )
+            )
+        source = self._committed_source_revision(
+            repo_root,
+            node_path=node_path,
+            decl_name=decl_name,
+            source_revision=source_revision,
+        )
+        if not source.ok or source.value is None:
+            return self.runtime.foundation.fail(source.issues)
+        if source.value.statement.nl is None or not (source.value.statement.nl.text or "").strip():
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "statement_nl_prepare_source_missing",
+                    "The source revision has no Statement NL candidate to prepare.",
+                    object_ref=f"{node_path}:{decl_name}@{source_revision}",
+                )
+            )
+
+        candidate = current.value.model_copy(deep=True)
+        statement_nl = source.value.statement.nl.model_copy(deep=True)
+        dependencies = [item.model_copy(deep=True) for item in source.value.statement.deps]
+        self._rebind_same_node_dependencies(
+            repo_root,
+            node_path=node_path,
+            decl_name=decl_name,
+            dependencies=dependencies,
+        )
+        issues = []
+        for origin in statement_nl.origin:
+            issue = validate_nl_origin(
+                self.runtime,
+                repo_root,
+                origin=origin,
+                decl_name=decl_name,
+                stage="statement",
+            )
+            if issue is not None:
+                issues.append(issue)
+        visibility_cache: dict[tuple[str, str], object] = {}
+        dependency_validation = validate_statement_deps(
+            self.runtime,
+            repo_root,
+            node_path=node_path,
+            round_id=round_id,
+            decl_name=decl_name,
+            deps=dependencies,
+            visibility_cache=visibility_cache,
+        )
+        if not dependency_validation.ok:
+            issues.extend(dependency_validation.issues)
+        else:
+            issues.extend(
+                self._validate_prepared_public_dependencies(
+                    repo_root,
+                    node_path=node_path,
+                    decl_name=decl_name,
+                    dependencies=dependencies,
+                    stage="statement",
+                    visibility_cache=visibility_cache,
+                )
+            )
+        if issues:
+            return self.runtime.foundation.fail(issues)
+
+        candidate.statement.nl = statement_nl
+        candidate.statement.deps = dependencies
+        candidate.updated_at = utc_now_iso()
+        return self._write_revision(
+            repo_root,
+            node_path=node_path,
+            decl_name=decl_name,
+            revision=candidate,
+        )
 
     def set_statement_nl(
         self,
@@ -419,6 +545,151 @@ class StageMutationComponent:
         proof.deps = deps
         revision.value.updated_at = utc_now_iso()
         return self._write_revision(repo_root, node_path=node_path, decl_name=decl_name, revision=revision.value)
+
+    def prepare_proof_nl_from_revision(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_id: str,
+        decl_name: str,
+        source_revision: int,
+    ) -> ServiceResult[DeclRevision]:
+        """Atomically prepare an empty current Proof NL candidate from committed history."""
+
+        theorem_like = self._require_theorem_like(
+            repo_root,
+            node_path=node_path,
+            decl_name=decl_name,
+        )
+        if not theorem_like.ok:
+            return self.runtime.foundation.fail(theorem_like.issues)
+        current = self._revision_for_stage(
+            repo_root,
+            node_path=node_path,
+            round_id=round_id,
+            decl_name=decl_name,
+        )
+        if not current.ok or current.value is None:
+            return self.runtime.foundation.fail(current.issues)
+        head = self._require_current_round_head(
+            repo_root,
+            node_path=node_path,
+            decl_name=decl_name,
+            revision=current.value,
+        )
+        if not head.ok:
+            return self.runtime.foundation.fail(head.issues)
+        if current.value.state != DeclState.DECLARED:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "proof_nl_prepare_state_invalid",
+                    "Historical Proof NL preparation requires the current revision at declared state.",
+                    object_ref=decl_name,
+                    current=current.value.state.value,
+                    expected=DeclState.DECLARED.value,
+                )
+            )
+        if current.value.statement.formal is None or not (current.value.statement.formal.code or "").strip():
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "statement_formal_missing",
+                    "Accepted statement formal code must exist before Proof NL preparation.",
+                    object_ref=decl_name,
+                )
+            )
+        current_proof = current.value.proof
+        if current_proof is not None and (
+            (
+                current_proof.nl is not None
+                and (
+                    bool((current_proof.nl.text or "").strip())
+                    or bool(current_proof.nl.origin)
+                )
+            )
+            or current_proof.deps
+            or current_proof.formal is not None
+        ):
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "proof_nl_prepare_target_not_empty",
+                    "Historical Proof NL preparation cannot overwrite a current candidate.",
+                    object_ref=decl_name,
+                )
+            )
+        source = self._committed_source_revision(
+            repo_root,
+            node_path=node_path,
+            decl_name=decl_name,
+            source_revision=source_revision,
+        )
+        if not source.ok or source.value is None:
+            return self.runtime.foundation.fail(source.issues)
+        source_proof = source.value.proof
+        if source_proof is None or source_proof.nl is None or not (source_proof.nl.text or "").strip():
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "proof_nl_prepare_source_missing",
+                    "The source revision has no Proof NL candidate to prepare.",
+                    object_ref=f"{node_path}:{decl_name}@{source_revision}",
+                )
+            )
+
+        candidate = current.value.model_copy(deep=True)
+        proof_nl = source_proof.nl.model_copy(deep=True)
+        dependencies = [item.model_copy(deep=True) for item in source_proof.deps]
+        self._rebind_same_node_dependencies(
+            repo_root,
+            node_path=node_path,
+            decl_name=decl_name,
+            dependencies=dependencies,
+        )
+        issues = []
+        for origin in proof_nl.origin:
+            validated = validate_proof_origin_ref(
+                self.runtime,
+                repo_root,
+                origin=origin,
+                decl_name=decl_name,
+            )
+            if not validated.ok:
+                issues.extend(validated.issues)
+        visibility_cache: dict[tuple[str, str], object] = {}
+        dependency_validation = validate_proof_deps(
+            self.runtime,
+            repo_root,
+            node_path=node_path,
+            round_id=round_id,
+            decl_name=decl_name,
+            deps=dependencies,
+            visibility_cache=visibility_cache,
+        )
+        if not dependency_validation.ok:
+            issues.extend(dependency_validation.issues)
+        else:
+            issues.extend(
+                self._validate_prepared_public_dependencies(
+                    repo_root,
+                    node_path=node_path,
+                    decl_name=decl_name,
+                    dependencies=dependencies,
+                    stage="proof",
+                    visibility_cache=visibility_cache,
+                )
+            )
+        if issues:
+            return self.runtime.foundation.fail(issues)
+
+        proof = candidate._ensure_proof()
+        proof.nl = proof_nl
+        proof.deps = dependencies
+        candidate.updated_at = utc_now_iso()
+        return self._write_revision(
+            repo_root,
+            node_path=node_path,
+            decl_name=decl_name,
+            revision=candidate,
+        )
 
     def set_proof_nl(
         self,
@@ -778,6 +1049,218 @@ class StageMutationComponent:
                 )
             )
         return self.runtime.foundation.ok(None)
+
+    def _committed_source_revision(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        decl_name: str,
+        source_revision: int,
+    ) -> ServiceResult[DeclRevision]:
+        source = self.decl_catalog.get_decl_revision(
+            repo_root,
+            node_path=node_path,
+            name=decl_name,
+            revision=source_revision,
+        )
+        if not source.ok or source.value is None:
+            return self.runtime.foundation.fail(source.issues)
+        if source.value.status != DeclRevisionStatus.COMMITTED:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "decl_prepare_source_not_committed",
+                    "Historical preparation requires an exact committed source revision.",
+                    object_ref=f"{node_path}:{decl_name}@{source_revision}",
+                    current=source.value.status.value,
+                    expected=DeclRevisionStatus.COMMITTED.value,
+                )
+            )
+        return self.runtime.foundation.ok(source.value)
+
+    def _require_current_round_head(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        decl_name: str,
+        revision: DeclRevision,
+    ) -> ServiceResult[None]:
+        decl = self.decl_catalog.get_decl(
+            repo_root,
+            node_path=node_path,
+            name=decl_name,
+        )
+        if not decl.ok or decl.value is None:
+            return self.runtime.foundation.fail(decl.issues)
+        if decl.value.current_revision != revision.revision:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "decl_prepare_target_not_current_head",
+                    "Historical preparation must target the current open round revision.",
+                    object_ref=decl_name,
+                    current=str(decl.value.current_revision),
+                    expected=str(revision.revision),
+                )
+            )
+        return self.runtime.foundation.ok(None)
+
+    def _rebind_same_node_dependencies(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        decl_name: str,
+        dependencies: list[DeclDep],
+    ) -> None:
+        for dep in dependencies:
+            if not isinstance(dep, RepoDeclDep) or dep.ref.repo is not None:
+                continue
+            effective_node = (
+                node_path
+                if dep.ref.node in {"", "Main"} and node_path != "Main"
+                else dep.ref.node
+            )
+            if effective_node != node_path or dep.ref.name == decl_name:
+                continue
+            provider = self.decl_catalog.get_decl(
+                repo_root,
+                node_path=node_path,
+                name=dep.ref.name,
+            )
+            if provider.ok and provider.value is not None:
+                dep.ref.node = node_path
+                dep.ref.revision = provider.value.current_revision
+
+    def _validate_prepared_public_dependencies(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        decl_name: str,
+        dependencies: list[DeclDep],
+        stage: Literal["statement", "proof"],
+        visibility_cache: dict[tuple[str, str], object],
+    ) -> list[object]:
+        """Fail closed when a historical public dependency anchor is stale."""
+
+        local: list[tuple[DeclRef, tuple[str, str]]] = []
+        external: list[tuple[DeclRef, tuple[str, str]]] = []
+        for dependency in dependencies:
+            if not isinstance(dependency, RepoDeclDep):
+                continue
+            ref = dependency.ref
+            if ref.repo is not None:
+                repo_key = self.runtime.foundation.layout.ensure_safe_key(ref.repo)
+                external.append((ref, ("repo", repo_key)))
+                continue
+            effective_node = (
+                node_path
+                if ref.node in {"", "Main"} and node_path != "Main"
+                else ref.node
+            )
+            if effective_node == node_path:
+                continue
+            local.append(
+                (
+                    ref.model_copy(update={"node": effective_node}),
+                    ("node", effective_node),
+                )
+            )
+        if not local and not external:
+            return []
+
+        resolver = self.runtime.decl_graph.ref_compatibility
+        operation_context = resolver.create_operation_context()
+        resolved: list[tuple[DeclRef, tuple[str, str], object]] = []
+        if local:
+            local_result = resolver.resolve_decl_refs_batch(
+                repo_root,
+                refs=[ref for ref, _cache_key in local],
+                required_availability=ProofAvailability.DECLARED,
+                operation_context=operation_context,
+            )
+            if not local_result.ok or local_result.value is None:
+                return list(local_result.issues)
+            resolved.extend(
+                (ref, cache_key, item)
+                for (ref, cache_key), item in zip(
+                    local,
+                    local_result.value,
+                    strict=True,
+                )
+            )
+        if external:
+            external_result = resolver.resolve_public_decl_refs_batch(
+                repo_root,
+                refs=[ref for ref, _cache_key in external],
+                required_availability=ProofAvailability.DECLARED,
+                operation_context=operation_context,
+            )
+            if not external_result.ok or external_result.value is None:
+                return list(external_result.issues)
+            resolved.extend(
+                (ref, cache_key, item)
+                for (ref, cache_key), item in zip(
+                    external,
+                    external_result.value,
+                    strict=True,
+                )
+            )
+
+        issues = []
+        for ref, cache_key, item in resolved:
+            resolved_revision = getattr(item, "resolved_revision", None)
+            if not getattr(item, "compatible", False) or resolved_revision is None:
+                issues.append(
+                    self.runtime.foundation.issue(
+                        f"{stage}_dep_prepare_incompatible",
+                        "Historical dependency anchor is not compatible with the current public boundary.",
+                        object_ref=self._prepared_dependency_label(ref),
+                        current=getattr(item, "reason", None),
+                        expected="compatible current public declaration",
+                    )
+                )
+                continue
+            public = visibility_cache.get(cache_key)
+            values = getattr(public, "value", None) if getattr(public, "ok", False) else None
+            candidate = next(
+                (
+                    public_item
+                    for public_item in values or []
+                    if public_item.ref.node == ref.node
+                    and public_item.ref.name == ref.name
+                    and (
+                        public_item.resolved_revision or public_item.ref.revision
+                    )
+                    == resolved_revision
+                ),
+                None,
+            )
+            if (
+                candidate is None
+                or not getattr(candidate, "ready", False)
+                or getattr(candidate, "stale", True)
+            ):
+                issues.append(
+                    self.runtime.foundation.issue(
+                        f"{stage}_dep_prepare_not_ready",
+                        "Historical dependency is not ready on the exact current public boundary.",
+                        object_ref=self._prepared_dependency_label(ref),
+                        current=(
+                            "missing"
+                            if candidate is None
+                            else f"ready={candidate.ready}, stale={candidate.stale}"
+                        ),
+                        expected=f"revision={resolved_revision}, ready=True, stale=False",
+                    )
+                )
+        return issues
+
+    @staticmethod
+    def _prepared_dependency_label(ref: DeclRef) -> str:
+        prefix = f"{ref.repo}:" if ref.repo is not None else ""
+        return f"{prefix}{ref.node}:{ref.name}@{ref.revision}"
 
     def _write_revision(
         self,

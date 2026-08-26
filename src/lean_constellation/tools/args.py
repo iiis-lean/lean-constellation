@@ -834,6 +834,36 @@ class DeclNameArgs(StrictModel):
     decl_name: str = Field(description="Declaration name in the current content node.")
 
 
+class DeclStageContentReadArgs(DeclNameArgs):
+    revision: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Optional exact revision of the same current-node declaration; omit to read "
+            "the current revision."
+        ),
+    )
+
+
+class DeclPrepareFromRevisionArgs(DeclNameArgs):
+    source_revision: int = Field(
+        ge=1,
+        description="Exact committed revision of the same declaration used to prepare the current empty candidate.",
+    )
+
+
+class DeclFormalPrepareArgs(DeclNameArgs):
+    source_revision: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Optional exact committed revision of the same declaration whose stage-specific "
+            "formal source should seed the pristine current working file; omit for the normal "
+            "deterministic prepare behavior."
+        ),
+    )
+
+
 class DeclRevisionArgs(DeclNameArgs):
     revision: int = Field(ge=1, description="Revision number to inspect.")
 
@@ -843,6 +873,14 @@ class DeclInspectArgs(DeclNameArgs):
 
 
 class DeclFormalReadArgs(DeclNameArgs):
+    revision: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Optional exact revision of the same current-node declaration; omit to read "
+            "the current revision."
+        ),
+    )
     include_docstring: bool = Field(
         default=False,
         description="Whether the returned formal Lean source should retain its managed declaration docstring.",

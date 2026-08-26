@@ -149,8 +149,14 @@ class LeanProjectionService:
         *,
         node_path: str,
         decl_name: str,
+        source_revision: int | None = None,
     ) -> ServiceResult[LeanFileView]:
-        return self.decl_file.prepare_statement_formal_file(repo_root, node_path=node_path, decl_name=decl_name)
+        return self.decl_file.prepare_statement_formal_file(
+            repo_root,
+            node_path=node_path,
+            decl_name=decl_name,
+            source_revision=source_revision,
+        )
 
     def refresh_decl_managed_projection(
         self,
@@ -180,8 +186,14 @@ class LeanProjectionService:
         *,
         node_path: str,
         decl_name: str,
+        source_revision: int | None = None,
     ) -> ServiceResult[LeanFileView]:
-        return self.decl_file.prepare_proof_formal_file(repo_root, node_path=node_path, decl_name=decl_name)
+        return self.decl_file.prepare_proof_formal_file(
+            repo_root,
+            node_path=node_path,
+            decl_name=decl_name,
+            source_revision=source_revision,
+        )
 
     def capture_proof_formal(
         self,

@@ -617,6 +617,19 @@ class DeclStageWriteReceipt(_CompactMutationReceipt):
     managed_projection: DeclManagedProjectionEffect | None = None
 
 
+class DeclStagePrepareReceipt(_CompactMutationReceipt):
+    """Receipt for preparing one current NL candidate from committed history."""
+
+    decl_name: str
+    revision: int
+    source_revision: int
+    stage: Literal["statement_nl", "proof_nl"]
+    copied_origin_count: int
+    copied_dependency_count: int
+    changed: bool
+    managed_projection: DeclManagedProjectionEffect | None = None
+
+
 class DeclTextMutationReceipt(_CompactMutationReceipt):
     """Compact receipt for one Statement NL or Proof NL text update."""
 

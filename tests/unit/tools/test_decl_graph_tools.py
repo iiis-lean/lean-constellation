@@ -8,6 +8,8 @@ from lean_constellation.tools.args import (
     ChangeSummaryArgs,
     CurrentDeclVisibilityRevisionArgs,
     DeclCreateArgs,
+    DeclFormalReadArgs,
+    DeclStageContentReadArgs,
     DeclUpdateArgs,
     NodeDeclVisibilityRevisionArgs,
     NoArgs,
@@ -120,6 +122,28 @@ def test_decl_planning_tool_schemas_expose_actual_transition_fields_only() -> No
                     **legacy_payload,
                 }
             )
+
+
+def test_decl_stage_content_read_schemas_expose_optional_exact_revision() -> None:
+    assert DeclStageContentReadArgs.model_validate({"decl_name": "main_result"}).revision is None
+    assert DeclStageContentReadArgs.model_validate(
+        {"decl_name": "main_result", "revision": 2}
+    ).revision == 2
+    assert DeclFormalReadArgs.model_validate({"decl_name": "main_result"}).revision is None
+    assert DeclFormalReadArgs.model_validate(
+        {"decl_name": "main_result", "revision": 3, "include_docstring": True}
+    ).revision == 3
+
+    specs = {spec.name: spec for spec in build_application_tool_specs()}
+    for name in ("read_statement_nl", "read_proof_nl", "read_formal"):
+        revision = specs[name].args_model.model_json_schema()["properties"]["revision"]
+        assert revision["default"] is None
+        assert revision["anyOf"][0]["minimum"] == 1
+        assert "exact revision" in revision["description"]
+
+    for model in (DeclStageContentReadArgs, DeclFormalReadArgs):
+        with pytest.raises(ValidationError):
+            model.model_validate({"decl_name": "main_result", "revision": 0})
 
 
 def test_decl_round_agent_schemas_reject_random_ids_and_use_optional_sequences() -> None:

@@ -23,11 +23,11 @@ EXPECTED_SURFACE_COUNTS = {
     "NodeDirDependencyReconAgent": (7, 14, 1, 1, 2),
     "MathlibReconAgent": (7, 22, 1, 1, 5),
     "ResourceReconAgent": (8, 22, 2, 3, 6),
-    "StatementNLWorkerAgent": (20, 53, 1, 2, 5),
+    "StatementNLWorkerAgent": (20, 54, 1, 2, 5),
     "StatementNLReviewerAgent": (18, 43, 1, 1, 3),
     "StatementFormalWorkerAgent": (24, 53, 1, 2, 7),
     "StatementFormalReviewerAgent": (19, 44, 1, 1, 3),
-    "ProofNLWorkerAgent": (25, 61, 1, 2, 7),
+    "ProofNLWorkerAgent": (25, 62, 1, 2, 7),
     "ProofNLReviewerAgent": (22, 48, 1, 1, 3),
     "ProofFormalWorkerAgent": (27, 62, 1, 2, 8),
     "ProofFormalReviewerAgent": (21, 47, 1, 1, 3),
@@ -50,11 +50,11 @@ EXPECTED_APPLICATION_SURFACE_HASHES = {
     "NodeDirDependencyReconAgent": "78424e9c83a6d31e464f5bcfaa583279a967ed718f7783ed820bd5ea5419709c",
     "MathlibReconAgent": "2106d09b06fa7140322909262cdb5a533b4ba881b13bb74ee1932e714a000220",
     "ResourceReconAgent": "02a24ca89792c62f0048e410363e3cbe50f3adb1e07c1ba853dbdacb50ed97b8",
-    "StatementNLWorkerAgent": "ff76c27527bfc03c0f624c2079d0ee8bc6975691cb631cefb70a12bcdf4bc86e",
+    "StatementNLWorkerAgent": "49de22ad13ddeadad786eaaeafa5521e766538d9925c6d0add6f014443a2242c",
     "StatementNLReviewerAgent": "811e80e3382d93e44f4fcc5777e2572856489ac6332d7f467413aba31275dc18",
     "StatementFormalWorkerAgent": "076a0713389bd1ee00e668aca6b3e236803085c1c5a9bbe1c306c396e243f425",
     "StatementFormalReviewerAgent": "2f138ac5b6b413969ff8ec81645d85aed4d8f090b7a5d1410c4c83fde7f67917",
-    "ProofNLWorkerAgent": "6a168beaf86c3cd1616bb1000bd52a5f3df77c322c8ae630bde6e382ca9bd395",
+    "ProofNLWorkerAgent": "b8fcfb82b313159ae8497a82701feea0061febee1c4b248c2f9c6029a58b86e0",
     "ProofNLReviewerAgent": "5e9698c61cd57f7fd0485476c5b02059b95042221b573b23db89f3063379bef8",
     "ProofFormalWorkerAgent": "e34179c14a3ff2c564aaec7ab6ef6d59d863825ea32b9e1fc5b319c766854fe3",
     "ProofFormalReviewerAgent": "374e489be28c239d3e7c356e223f8e3a78d63e006ea60a84abb415d0b2ba6f25",
@@ -105,6 +105,8 @@ def test_decl_stage_surfaces_keep_reviewer_and_worker_file_boundaries() -> None:
     proof_reviewer_tools = {tool.name for tool in reports["ProofFormalReviewerAgent"].application_tools}
     proof_nl_worker_tools = {tool.name for tool in reports["ProofNLWorkerAgent"].application_tools}
     proof_nl_reviewer_tools = {tool.name for tool in reports["ProofNLReviewerAgent"].application_tools}
+    statement_nl_worker_tools = {tool.name for tool in reports["StatementNLWorkerAgent"].application_tools}
+    statement_nl_reviewer_tools = {tool.name for tool in reports["StatementNLReviewerAgent"].application_tools}
 
     assert "capture_statement_formal_file" in statement_worker_tools
     assert "capture_statement_formal_file" not in statement_reviewer_tools
@@ -148,6 +150,8 @@ def test_decl_stage_surfaces_keep_reviewer_and_worker_file_boundaries() -> None:
     assert "record_statement_formal_review_passed" in statement_reviewer_tools
     assert "record_statement_formal_review_rejected" in statement_reviewer_tools
     assert "record_decl_review" not in statement_reviewer_tools
+    assert "prepare_statement_nl_from_revision" in statement_nl_worker_tools
+    assert "prepare_statement_nl_from_revision" not in statement_nl_reviewer_tools
     assert {
         "set_proof_nl",
         "add_proof_source_origin",
@@ -164,6 +168,8 @@ def test_decl_stage_surfaces_keep_reviewer_and_worker_file_boundaries() -> None:
     assert "record_proof_nl_review_passed" in proof_nl_reviewer_tools
     assert "record_proof_nl_review_rejected" in proof_nl_reviewer_tools
     assert "record_decl_review" not in proof_nl_reviewer_tools
+    assert "prepare_proof_nl_from_revision" in proof_nl_worker_tools
+    assert "prepare_proof_nl_from_revision" not in proof_nl_reviewer_tools
     assert "inspect_current_stage_review_status" in proof_nl_reviewer_tools
     assert {
         "list_proof_dependencies",

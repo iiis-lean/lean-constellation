@@ -17,7 +17,9 @@ from lean_constellation.services.decl_graph.origin_validation import validate_nl
 from lean_constellation.services.mathlib.service import MathlibDependencyRequest
 from lean_constellation.services.tool_facade import ToolCapability, ToolSpec
 from lean_constellation.tools.args import (
+    DeclFormalPrepareArgs,
     DeclNameArgs,
+    DeclPrepareFromRevisionArgs,
     DeclStageFileCheckArgs,
     NoArgs,
     MathlibDeclDependenciesAddArgs,
@@ -290,6 +292,24 @@ def _set_statement_nl(runtime, ctx, args: StatementNlSetArgs):
         nl=args.text,
     )
     return written
+
+
+def _prepare_statement_nl_from_revision(runtime, ctx, args: DeclPrepareFromRevisionArgs):
+    allowed = _assert_stage(
+        runtime,
+        ctx,
+        expected_stage="statement_nl",
+        decl_name=args.decl_name,
+    )
+    if not allowed.ok:
+        return allowed
+    return runtime.decl_graph.prepare_statement_nl_from_revision(
+        ctx.repo_root,
+        node_path=_node(ctx),
+        round_id=_round_id(ctx),
+        decl_name=args.decl_name,
+        source_revision=args.source_revision,
+    )
 
 
 def _add_statement_source_origin(runtime, ctx, args: StatementSourceOriginAddArgs):
@@ -687,6 +707,24 @@ def _set_proof_nl(runtime, ctx, args: ProofNlSetArgs):
         nl=args.text,
     )
     return written
+
+
+def _prepare_proof_nl_from_revision(runtime, ctx, args: DeclPrepareFromRevisionArgs):
+    allowed = _assert_stage(
+        runtime,
+        ctx,
+        expected_stage="proof_nl",
+        decl_name=args.decl_name,
+    )
+    if not allowed.ok:
+        return allowed
+    return runtime.decl_graph.prepare_proof_nl_from_revision(
+        ctx.repo_root,
+        node_path=_node(ctx),
+        round_id=_round_id(ctx),
+        decl_name=args.decl_name,
+        source_revision=args.source_revision,
+    )
 
 
 def _add_proof_source_origin(runtime, ctx, args: ProofSourceOriginAddArgs):
@@ -1181,11 +1219,16 @@ def _decl_state_rank(state: DeclState) -> int:
     }[state]
 
 
-def _prepare_statement_file(runtime, ctx, args: DeclNameArgs):
+def _prepare_statement_file(runtime, ctx, args: DeclFormalPrepareArgs):
     allowed = _assert_stage(runtime, ctx, expected_stage="statement_formal", decl_name=args.decl_name)
     if not allowed.ok:
         return allowed
-    return runtime.lean_projection.prepare_statement_formal_stage_file(ctx.repo_root, node_path=_node(ctx), decl_name=args.decl_name)
+    return runtime.lean_projection.prepare_statement_formal_stage_file(
+        ctx.repo_root,
+        node_path=_node(ctx),
+        decl_name=args.decl_name,
+        source_revision=args.source_revision,
+    )
 
 
 def _capture_statement_file(runtime, ctx, args: DeclNameArgs):
@@ -1195,11 +1238,16 @@ def _capture_statement_file(runtime, ctx, args: DeclNameArgs):
     return runtime.lean_projection.capture_statement_formal(ctx.repo_root, node_path=_node(ctx), decl_name=args.decl_name)
 
 
-def _prepare_proof_file(runtime, ctx, args: DeclNameArgs):
+def _prepare_proof_file(runtime, ctx, args: DeclFormalPrepareArgs):
     allowed = _assert_stage(runtime, ctx, expected_stage="proof_formal", decl_name=args.decl_name)
     if not allowed.ok:
         return allowed
-    return runtime.lean_projection.prepare_proof_formal_stage_file(ctx.repo_root, node_path=_node(ctx), decl_name=args.decl_name)
+    return runtime.lean_projection.prepare_proof_formal_stage_file(
+        ctx.repo_root,
+        node_path=_node(ctx),
+        decl_name=args.decl_name,
+        source_revision=args.source_revision,
+    )
 
 
 def _capture_proof_file(runtime, ctx, args: DeclNameArgs):
@@ -1721,6 +1769,16 @@ def build_tool_specs() -> list[ToolSpec]:
             handler=_set_statement_nl,
         ),
         handler_tool(
+            name="prepare_statement_nl_from_revision",
+            description="Prepare the current empty Statement NL candidate from one exact committed revision of the same declaration; copied origins and dependencies are revalidated against current truth.",
+            args_model=DeclPrepareFromRevisionArgs,
+            capability=ToolCapability.WRITE,
+            result_view="decl_stage_prepare",
+            groups={AppGroup.DECL_STAGE_STATEMENT_NL_WRITE},
+            roles=worker_roles,
+            handler=_prepare_statement_nl_from_revision,
+        ),
+        handler_tool(
             name="add_statement_source_origin",
             description="Add one typed source-origin range supporting the statement NL candidate in the current Statement NL stage.",
             args_model=StatementSourceOriginAddArgs,
@@ -1831,6 +1889,16 @@ def build_tool_specs() -> list[ToolSpec]:
             handler=_set_proof_nl,
         ),
         handler_tool(
+            name="prepare_proof_nl_from_revision",
+            description="Prepare the current empty Proof NL candidate from one exact committed revision of the same theorem; copied origins and dependencies are revalidated against current truth.",
+            args_model=DeclPrepareFromRevisionArgs,
+            capability=ToolCapability.WRITE,
+            result_view="decl_stage_prepare",
+            groups={AppGroup.DECL_STAGE_PROOF_NL_WRITE},
+            roles=worker_roles,
+            handler=_prepare_proof_nl_from_revision,
+        ),
+        handler_tool(
             name="add_proof_source_origin",
             description="Add one typed source-origin range supporting the proof route in the current Proof NL stage.",
             args_model=ProofSourceOriginAddArgs,
@@ -1932,8 +2000,8 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="prepare_statement_formal_file",
-            description="Create or restore the managed statement formal file; this can replace uncaptured edits.",
-            args_model=DeclNameArgs,
+            description="Create or restore the managed statement formal file, optionally from one exact historical statement capture when the current file is still pristine.",
+            args_model=DeclFormalPrepareArgs,
             capability=ToolCapability.WRITE,
             result_view="lean_file",
             groups={AppGroup.DECL_STAGE_STATEMENT_FORMAL_FILE_WRITE},
@@ -1952,8 +2020,8 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="prepare_proof_formal_file",
-            description="Create or restore the managed proof formal file from the accepted statement capture; this can replace uncaptured edits.",
-            args_model=DeclNameArgs,
+            description="Create or restore the managed proof formal file, optionally from one exact historical proof capture when the current file is still pristine.",
+            args_model=DeclFormalPrepareArgs,
             capability=ToolCapability.WRITE,
             result_view="lean_file",
             groups={AppGroup.DECL_STAGE_PROOF_FORMAL_FILE_WRITE},

@@ -35,7 +35,7 @@ from tests.unit_services_helpers import (
     write_proof_formal_for_test,
     write_statement_formal_for_test,
 )
-from tests.unit.flows.decl_round._helpers import seed_committed_theorem
+from tests.unit.flows.decl_round._helpers import NODE_PATH, seed_committed_theorem, setup_content_node
 
 
 def _raw(
@@ -1815,6 +1815,119 @@ def test_read_formal_defaults_to_complete_source_without_docstring(tmp_path: Pat
         )
     )
     assert "# lean-constellation target: `long_theorem`" in with_docstring["code"]
+
+
+def test_current_node_stage_reads_select_one_exact_historical_revision(tmp_path: Path) -> None:
+    runtime = create_test_runtime_services(register_application_tools=True)
+    setup_content_node(runtime, tmp_path)
+    seed_committed_theorem(runtime, tmp_path, decl_name="historical_result")
+
+    strategy = runtime.decl_graph.ensure_open_strategy(
+        tmp_path,
+        node_path=NODE_PATH,
+        objective="Revise the statement.",
+    )
+    assert strategy.ok and strategy.value is not None
+    round_record = runtime.decl_graph.create_round_draft(
+        tmp_path,
+        node_path=NODE_PATH,
+        strategy_id=strategy.value.strategy_id,
+        objective="Revise the statement.",
+    )
+    assert round_record.ok and round_record.value is not None
+    opened = runtime.decl_graph.open_decl_update(
+        tmp_path,
+        node_path=NODE_PATH,
+        round_id=round_record.value.round_id,
+        name="historical_result",
+        objective="Use a revised statement.",
+        target_state=DeclState.PROVED,
+        start_stage="statement_nl",
+    )
+    assert opened.ok and opened.value is not None
+    assert runtime.decl_graph.start_round(
+        tmp_path,
+        node_path=NODE_PATH,
+        round_id=round_record.value.round_id,
+    ).ok
+    assert runtime.decl_graph.write_statement_nl(
+        tmp_path,
+        node_path=NODE_PATH,
+        round_id=round_record.value.round_id,
+        decl_name="historical_result",
+        nl="The revised result also states True.",
+    ).ok
+
+    reviewer = _raw(
+        tmp_path,
+        view="proof_formal_reviewer",
+        agent_type="ProofFormalReviewerAgent",
+        role="reviewer",
+        node_path=NODE_PATH,
+        stage="proof_formal",
+        round_id=round_record.value.round_id,
+        batch_decls=["historical_result"],
+    )
+    current_statement = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(
+            reviewer,
+            tool_name="read_statement_nl",
+            flat_args={"decl_name": "historical_result"},
+        )
+    )
+    historical_statement = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(
+            reviewer,
+            tool_name="read_statement_nl",
+            flat_args={"decl_name": "historical_result", "revision": 1},
+        )
+    )
+    historical_proof = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(
+            reviewer,
+            tool_name="read_proof_nl",
+            flat_args={"decl_name": "historical_result", "revision": 1},
+        )
+    )
+    current_formal = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(
+            reviewer,
+            tool_name="read_formal",
+            flat_args={"decl_name": "historical_result"},
+        )
+    )
+    historical_formal = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(
+            reviewer,
+            tool_name="read_formal",
+            flat_args={"decl_name": "historical_result", "revision": 1},
+        )
+    )
+
+    assert current_statement["revision"] == 2
+    assert current_statement["text"] == "The revised result also states True."
+    assert historical_statement["revision"] == 1
+    assert historical_statement["text"] == "The old result states True."
+    assert historical_proof["revision"] == 1
+    assert historical_proof["text"] == "Use triviality."
+    assert current_formal["available"] is False
+    assert current_formal["revision"] == 2
+    assert "requested declaration revision" in current_formal["summary"]
+    assert historical_formal["available"] is True
+    assert historical_formal["revision"] == 1
+    assert historical_formal["stage"] == "proof"
+    assert historical_formal["path"] is None
+    assert historical_formal["code"] == "theorem historical_result : True := by trivial"
+    assert historical_formal["check"]["status"] == "passed"
+
+    missing = _unwrap_tool_failure(
+        runtime.tool_facade.invoke_agent_tool(
+            reviewer,
+            tool_name="read_statement_nl",
+            flat_args={"decl_name": "historical_result", "revision": 99},
+        )
+    )
+    assert missing[0].kind == "missing_file"
 
 
 def test_public_decl_boundary_tools_invoke_node_access_resolver(tmp_path: Path) -> None:

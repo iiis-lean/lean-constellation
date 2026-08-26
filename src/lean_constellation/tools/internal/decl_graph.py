@@ -14,6 +14,7 @@ from lean_constellation.tools.args import (
     DeclNameArgs,
     DeclNamesArgs,
     DeclRestoreArgs,
+    DeclStageContentReadArgs,
     NodeDeclInspectArgs,
     NodeDeclListArgs,
     NodeDeclVisibilityRevisionArgs,
@@ -236,13 +237,13 @@ def _load_decl_revision(runtime, repo_root, *, node_path: str, decl_name: str, r
     return decl, loaded
 
 
-def _read_statement_nl(runtime, ctx, args: DeclNameArgs):
+def _read_statement_nl(runtime, ctx, args: DeclStageContentReadArgs):
     decl, loaded = _load_decl_revision(
         runtime,
         ctx.repo_root,
         node_path=_node(ctx),
         decl_name=args.decl_name,
-        revision=None,
+        revision=args.revision,
     )
     if not decl.ok or decl.value is None:
         return runtime.foundation.fail(decl.issues)
@@ -253,7 +254,7 @@ def _read_statement_nl(runtime, ctx, args: DeclNameArgs):
         return runtime.foundation.fail(
             runtime.foundation.issue(
                 "decl_statement_nl_missing",
-                "The current declaration revision has no Statement NL content.",
+                "The requested declaration revision has no Statement NL content.",
                 object_ref=f"{_node(ctx)}:{args.decl_name}",
             )
         )
@@ -269,13 +270,13 @@ def _read_statement_nl(runtime, ctx, args: DeclNameArgs):
     )
 
 
-def _read_proof_nl(runtime, ctx, args: DeclNameArgs):
+def _read_proof_nl(runtime, ctx, args: DeclStageContentReadArgs):
     decl, loaded = _load_decl_revision(
         runtime,
         ctx.repo_root,
         node_path=_node(ctx),
         decl_name=args.decl_name,
-        revision=None,
+        revision=args.revision,
     )
     if not decl.ok or decl.value is None:
         return runtime.foundation.fail(decl.issues)
@@ -286,7 +287,7 @@ def _read_proof_nl(runtime, ctx, args: DeclNameArgs):
         return runtime.foundation.fail(
             runtime.foundation.issue(
                 "decl_proof_nl_missing",
-                "The current declaration revision has no Proof NL content.",
+                "The requested declaration revision has no Proof NL content.",
                 object_ref=f"{_node(ctx)}:{args.decl_name}",
             )
         )
@@ -356,7 +357,7 @@ def _read_formal(runtime, ctx, args: DeclFormalReadArgs):
         ctx.repo_root,
         node_path=_node(ctx),
         decl_name=args.decl_name,
-        revision=None,
+        revision=args.revision,
     )
     if not decl.ok or decl.value is None:
         return runtime.foundation.fail(decl.issues)
@@ -380,13 +381,14 @@ def _read_formal(runtime, ctx, args: DeclFormalReadArgs):
                 "lean_decl_name": loaded.value.lean_decl_name,
                 "code": None,
                 "check": None,
-                "summary": "No formal Lean artifact has been captured for the current declaration revision.",
+                "summary": "No formal Lean artifact has been captured for the requested declaration revision.",
             }
         )
     read = runtime.lean_projection.decl_file.read_decl_owned_lean_file(
         ctx.repo_root,
         node_path=_node(ctx),
         decl_name=args.decl_name,
+        revision=args.revision,
     )
     if not read.ok or read.value is None:
         return runtime.foundation.fail(read.issues)
@@ -1486,8 +1488,8 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="read_statement_nl",
-            description="Read the complete Statement NL text, origins, and typed Statement dependencies for one current-node declaration.",
-            args_model=DeclNameArgs,
+            description="Read complete Statement NL text, origins, and typed dependencies from the current or one exact historical revision of a current-node declaration.",
+            args_model=DeclStageContentReadArgs,
             capability=ToolCapability.READ,
             result_view="decl_statement_nl",
             groups={AppGroup.DECL_STAGE_STATEMENT_NL_READ},
@@ -1506,8 +1508,8 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="read_proof_nl",
-            description="Read the complete Proof NL text, origins, and typed Proof dependencies for one current-node declaration.",
-            args_model=DeclNameArgs,
+            description="Read complete Proof NL text, origins, and typed dependencies from the current or one exact historical revision of a current-node declaration.",
+            args_model=DeclStageContentReadArgs,
             capability=ToolCapability.READ,
             result_view="decl_proof_nl",
             groups={AppGroup.DECL_STAGE_PROOF_NL_READ},
@@ -1526,7 +1528,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="read_formal",
-            description="Read the latest available Statement or Proof Formal Lean source for one current-node declaration; managed docstrings are omitted by default.",
+            description="Read the available Statement or Proof Formal Lean source from the current or one exact historical revision of a current-node declaration; managed docstrings are omitted by default.",
             args_model=DeclFormalReadArgs,
             capability=ToolCapability.READ,
             result_view="decl_formal",

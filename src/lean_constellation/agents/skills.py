@@ -1876,8 +1876,8 @@ The revision/reason remains structured truth and is not copied into the docstrin
             "decl-owned-lean-file-capture-check",
             "Use this skill when a formal worker edits a tracked declaration file or when a reviewer needs to understand formal capture semantics.",
             (
-                "Use the current stage's prepare tool only to generate or recover the legal declaration-owned working file when the scaffold, marker, docstring, or file structure is missing or damaged.",
-                "Treat prepare as destructive for uncaptured working-file edits.",
+                "Use the current stage's prepare tool to generate or recover the legal declaration-owned working file. For a local repair, an explicit source revision may reuse only the exact committed same-stage capture while the current file is still pristine.",
+                "Treat prepare as destructive for uncaptured working-file edits; after any prepare, re-read the current file and complete the ordinary capture and review path.",
                 "Read the prepared file first. Keep the managed imports and managed docstring unchanged; helpers go before the target docstring, and the marker-adjacent primary declaration follows it as the last principal declaration.",
                 "A native `Decl.name` is only the flat module filename key. Do not manually set the Lean full name; statement capture discovers it from the marker-adjacent declaration and confirms it with Lean. Proof capture requires the same full name and theorem header.",
                 "After a dependency or Mathlib mutation reports that rereading is required, reload the file before further edits because managed imports/docstrings may have changed.",
@@ -1922,7 +1922,7 @@ The revision/reason remains structured truth and is not copied into the docstrin
                 "Start from the accepted statement and declared objective.",
                 "Map variables, assumptions, definitions, and conclusions to Lean deliberately.",
                 "Search dependencies in visible project context and Mathlib before adding imports, dependencies, or hints.",
-                "Prepare the declaration-owned file with `prepare_statement_formal_file` only to recover missing or damaged scaffold, marker, docstring, or file structure. Do not call it casually after valid uncaptured edits because it rewrites the working file.",
+                "Prepare the declaration-owned file with `prepare_statement_formal_file` to recover its legal structure. For a local repair, pass the exact committed source revision only while the current file is pristine; then re-read and edit the prepared current file. Never use historical Statement code as inherited acceptance.",
                 "Preserve managed imports/docstring; place small local helpers before the target docstring and the primary declaration immediately after it. Keep reusable helpers as separate tracked Decls.",
                 "Reuse the exact tracked dependency for any canonical type, index, instance, equivalence, dependent family, or construction named by the plan. Do not regenerate a mathematically equal local version; block for planning when the required canonical Decl is missing or incompatible.",
                 "If target metadata identifies a qualified contract interface, place the declaration in the namespace required by that interface; capture must discover that exact Lean full name.",
@@ -1967,7 +1967,7 @@ The revision/reason remains structured truth and is not copied into the docstrin
             "Use this skill for Proof Formal workers after proof NL has been accepted.",
             (
                 "Start from the accepted formal statement, reviewed proof route, proof origins/deps, current decl history, and prior feedback.",
-                "Inspect the prepared proof formal file first. Use `prepare_proof_formal_file` only to repair missing or damaged scaffold, marker, docstring, theorem header, or file structure; it rewrites from accepted statement formal capture and discards uncaptured proof edits.",
+                "Inspect the prepared proof formal file first. For a local repair, `prepare_proof_formal_file` may reuse the exact committed Proof capture named by the source revision argument only while the current file is pristine; then re-read and edit the prepared current file. Without a source revision it restores from the accepted current Statement capture. Neither mode inherits acceptance, and both discard uncaptured proof edits.",
                 "Preserve the registered Lean full name and theorem header. Put small proof-local helpers before the target docstring; block for planning when a helper is major, reusable, or mathematically meaningful enough to be tracked as a declaration.",
                 "Reuse exact canonical project dependencies for shared types, indices, instances, equivalences, dependent families, and constructed objects. A proof-local `letI` may install a named canonical instance definition, but must not rebuild a competing construction when later declarations need the same term.",
                 "Use `run_lean_file_diagnostics` and `check_proof_formal_policy` while iterating; proof formal completed work must satisfy strict proof policy.",

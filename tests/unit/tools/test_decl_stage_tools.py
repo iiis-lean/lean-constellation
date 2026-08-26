@@ -21,6 +21,8 @@ from tests.unit.services.lean_projection.test_formal_stage_sync import (
     _write_statement_target,
 )
 from lean_constellation.tools.args import (
+    DeclFormalPrepareArgs,
+    DeclPrepareFromRevisionArgs,
     DeclStageFileCheckArgs,
     MathlibDeclDependencyAddArgs,
     MathlibDeclDependencyInput,
@@ -58,6 +60,10 @@ from lean_constellation.tools.internal.decl_stage import (
     _record_proof_nl_review_rejected,
     _record_statement_nl_review_passed,
     _record_statement_nl_review_rejected,
+    _prepare_proof_nl_from_revision,
+    _prepare_proof_file,
+    _prepare_statement_nl_from_revision,
+    _prepare_statement_file,
     _add_proof_mathlib_dependencies,
     _add_proof_repo_dependencies,
     _assert_proof_decl_dep_visible,
@@ -78,6 +84,7 @@ from tests.unit.tools._family_helpers import assert_group_contains, assert_tools
 
 def test_decl_stage_tools_are_registered() -> None:
     expected = {
+        "prepare_statement_nl_from_revision",
         "set_statement_nl",
         "add_statement_source_origin",
         "add_statement_resource_origin",
@@ -90,6 +97,7 @@ def test_decl_stage_tools_are_registered() -> None:
         "add_statement_mathlib_dependencies",
         "remove_statement_dep",
         "clear_statement_deps",
+        "prepare_proof_nl_from_revision",
         "set_proof_nl",
         "add_proof_source_origin",
         "add_proof_resource_origin",
@@ -124,6 +132,152 @@ def test_decl_stage_tools_are_registered() -> None:
     }
 
     assert_tools_registered(expected)
+
+
+def test_decl_stage_prepare_tools_use_existing_worker_groups_and_exact_source_revision_schema() -> None:
+    assert_group_contains(
+        "decl_stage_statement_nl_write",
+        {"prepare_statement_nl_from_revision"},
+    )
+    assert_group_contains(
+        "decl_stage_proof_nl_write",
+        {"prepare_proof_nl_from_revision"},
+    )
+    schema = DeclPrepareFromRevisionArgs.model_json_schema()
+    assert schema["required"] == ["decl_name", "source_revision"]
+    assert schema["properties"]["source_revision"]["minimum"] == 1
+
+
+def test_decl_stage_prepare_handlers_enforce_stage_and_batch(monkeypatch, tmp_path: Path) -> None:
+    runtime = create_test_runtime_services(register_application_tools=True)
+    statement_calls: list[dict[str, object]] = []
+    proof_calls: list[dict[str, object]] = []
+
+    def prepare_statement(_repo_root, **kwargs):  # noqa: ANN001
+        statement_calls.append(kwargs)
+        return runtime.foundation.ok({"stage": "statement_nl", "source_revision": kwargs["source_revision"]})
+
+    def prepare_proof(_repo_root, **kwargs):  # noqa: ANN001
+        proof_calls.append(kwargs)
+        return runtime.foundation.ok({"stage": "proof_nl", "source_revision": kwargs["source_revision"]})
+
+    monkeypatch.setattr(runtime.decl_graph, "prepare_statement_nl_from_revision", prepare_statement)
+    monkeypatch.setattr(runtime.decl_graph, "prepare_proof_nl_from_revision", prepare_proof)
+    args = DeclPrepareFromRevisionArgs(decl_name="main_result", source_revision=3)
+
+    statement = _prepare_statement_nl_from_revision(
+        runtime,
+        _formal_ctx(tmp_path, stage="statement_nl", round_id="round_1"),
+        args,
+    )
+    proof = _prepare_proof_nl_from_revision(
+        runtime,
+        _formal_ctx(tmp_path, stage="proof_nl", round_id="round_2"),
+        args,
+    )
+
+    assert statement.ok and statement.value == {"stage": "statement_nl", "source_revision": 3}
+    assert proof.ok and proof.value == {"stage": "proof_nl", "source_revision": 3}
+    assert statement_calls == [
+        {
+            "node_path": "Main.Topic.Core",
+            "round_id": "round_1",
+            "decl_name": "main_result",
+            "source_revision": 3,
+        }
+    ]
+    assert proof_calls == [
+        {
+            "node_path": "Main.Topic.Core",
+            "round_id": "round_2",
+            "decl_name": "main_result",
+            "source_revision": 3,
+        }
+    ]
+
+    wrong_stage = _prepare_statement_nl_from_revision(
+        runtime,
+        _formal_ctx(tmp_path, stage="proof_nl"),
+        args,
+    )
+    out_of_batch = _prepare_proof_nl_from_revision(
+        runtime,
+        _formal_ctx(tmp_path, stage="proof_nl", batch_decls=["other_result"]),
+        args,
+    )
+    reviewer = _prepare_proof_nl_from_revision(
+        runtime,
+        _review_ctx(tmp_path, stage="proof_nl", round_id="round_1"),
+        args,
+    )
+
+    for rejected in (wrong_stage, out_of_batch, reviewer):
+        assert not rejected.ok
+        assert rejected.issues[0].kind == "decl_stage_mutation_rejected"
+    assert len(statement_calls) == 1
+    assert len(proof_calls) == 1
+
+
+def test_formal_prepare_handlers_forward_optional_exact_source_revision(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    runtime = create_test_runtime_services(register_application_tools=True)
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def prepare_statement(_repo_root, **kwargs):  # noqa: ANN001
+        calls.append(("statement", kwargs))
+        return runtime.foundation.ok({"stage": "statement", **kwargs})
+
+    def prepare_proof(_repo_root, **kwargs):  # noqa: ANN001
+        calls.append(("proof", kwargs))
+        return runtime.foundation.ok({"stage": "proof", **kwargs})
+
+    monkeypatch.setattr(
+        runtime.lean_projection,
+        "prepare_statement_formal_stage_file",
+        prepare_statement,
+    )
+    monkeypatch.setattr(
+        runtime.lean_projection,
+        "prepare_proof_formal_stage_file",
+        prepare_proof,
+    )
+    args = DeclFormalPrepareArgs(decl_name="main_result", source_revision=4)
+
+    statement = _prepare_statement_file(
+        runtime,
+        _formal_ctx(tmp_path, stage="statement_formal", round_id="round_1"),
+        args,
+    )
+    proof = _prepare_proof_file(
+        runtime,
+        _formal_ctx(tmp_path, stage="proof_formal", round_id="round_2"),
+        args,
+    )
+
+    assert statement.ok and proof.ok
+    assert calls == [
+        (
+            "statement",
+            {
+                "node_path": "Main.Topic.Core",
+                "decl_name": "main_result",
+                "source_revision": 4,
+            },
+        ),
+        (
+            "proof",
+            {
+                "node_path": "Main.Topic.Core",
+                "decl_name": "main_result",
+                "source_revision": 4,
+            },
+        ),
+    ]
+    schema = DeclFormalPrepareArgs.model_json_schema()
+    assert schema["required"] == ["decl_name"]
+    assert schema["properties"]["source_revision"]["anyOf"][0]["minimum"] == 1
 
 
 def test_decl_stage_clear_schemas_do_not_expose_unused_reason() -> None:

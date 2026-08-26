@@ -159,31 +159,34 @@ def test_home_bootstrap_spec_projects_resources_to_provider_home_spec() -> None:
 
 
 def test_decl_stage_homes_share_current_evidence_contract() -> None:
-    for agent_type in (
-        "StatementNLWorkerAgent",
-        "StatementFormalWorkerAgent",
-        "ProofNLWorkerAgent",
-        "ProofFormalWorkerAgent",
-    ):
-        spec = build_agent_home_bootstrap_spec(
-            agent_type,
-            provider_type="codex",
-            mcp_http_base_url="http://127.0.0.1:8765",
-        )
-        assert "observable delta is present in the current artifact" in spec.developer_instructions
+    for provider_type in ("codex", "opencode"):
+        for agent_type in (
+            "StatementNLWorkerAgent",
+            "StatementFormalWorkerAgent",
+            "ProofNLWorkerAgent",
+            "ProofFormalWorkerAgent",
+        ):
+            spec = build_agent_home_bootstrap_spec(
+                agent_type,
+                provider_type=provider_type,
+                mcp_http_base_url="http://127.0.0.1:8765",
+            )
+            assert "change.base_revision" in spec.developer_instructions
+            assert "observable delta is present in the current artifact" in spec.developer_instructions
 
-    for agent_type in (
-        "StatementNLReviewerAgent",
-        "StatementFormalReviewerAgent",
-        "ProofNLReviewerAgent",
-        "ProofFormalReviewerAgent",
-    ):
-        spec = build_agent_home_bootstrap_spec(
-            agent_type,
-            provider_type="codex",
-            mcp_http_base_url="http://127.0.0.1:8765",
-        )
-        assert "recheck the complete current layer" in spec.developer_instructions
+        for agent_type in (
+            "StatementNLReviewerAgent",
+            "StatementFormalReviewerAgent",
+            "ProofNLReviewerAgent",
+            "ProofFormalReviewerAgent",
+        ):
+            spec = build_agent_home_bootstrap_spec(
+                agent_type,
+                provider_type=provider_type,
+                mcp_http_base_url="http://127.0.0.1:8765",
+            )
+            assert "historical artifact remains comparison evidence" in spec.developer_instructions
+            assert "recheck the complete current layer" in spec.developer_instructions
 
 
 def test_codex_and_opencode_repo_discovery_homes_use_the_same_mcp_tool_views() -> None:

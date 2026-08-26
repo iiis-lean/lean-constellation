@@ -438,9 +438,14 @@ def test_decl_stage_common_skills_keep_stage_specific_tools_out_of_shared_skill(
     assert "capture_statement_formal_file" not in shared
     assert "capture_proof_formal_file" not in shared
     assert "uncaptured working-file edits" in shared
+    assert "exact committed same-stage capture" in shared
+    assert "ordinary capture and review path" in shared
 
     statement = specs["lean-statement-formalization"].body
     assert "prepare_statement_formal_file" in statement
+    assert "exact committed source revision" in statement
+    assert "current file is pristine" in statement
+    assert "Never use historical Statement code as inherited acceptance" in statement
     assert "check_statement_formal_policy" not in statement
     assert "capture_statement_formal_file" in statement
     assert "check_formal_stage_consistency" in statement
@@ -454,6 +459,9 @@ def test_decl_stage_common_skills_keep_stage_specific_tools_out_of_shared_skill(
 
     proof = specs["lean-proof-formalization"].body
     assert "prepare_proof_formal_file" in proof
+    assert "exact committed Proof capture" in proof
+    assert "accepted current Statement capture" in proof
+    assert "Neither mode inherits acceptance" in proof
     assert "check_proof_formal_policy" in proof
     assert "capture_proof_formal_file" in proof
     assert "reread_required=true" in proof

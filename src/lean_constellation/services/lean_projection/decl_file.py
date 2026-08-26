@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+import os
 from pathlib import Path
+import tempfile
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from pydantic import Field
@@ -139,6 +141,16 @@ class DeclFileRevisionProvider(Protocol):
     def get_current_decl_revision(self, repo_root: Path, *, node_path: str, decl_name: str) -> ServiceResult[DeclFileRevisionView]:
         ...
 
+    def get_decl_file_revision(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        decl_name: str,
+        revision: int,
+    ) -> ServiceResult[DeclFileRevisionView]:
+        ...
+
     def save_statement_formal_capture(
         self,
         repo_root: Path,
@@ -179,6 +191,17 @@ class _MissingDeclFileRevisionProvider:
 
     def get_current_decl_revision(self, repo_root: Path, *, node_path: str, decl_name: str) -> ServiceResult[DeclFileRevisionView]:
         del repo_root
+        return self._missing(node_path=node_path, decl_name=decl_name)
+
+    def get_decl_file_revision(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        decl_name: str,
+        revision: int,
+    ) -> ServiceResult[DeclFileRevisionView]:
+        del repo_root, revision
         return self._missing(node_path=node_path, decl_name=decl_name)
 
     def save_statement_formal_capture(
@@ -412,7 +435,14 @@ class DeclFileComponent:
             require_complete=require_complete,
         )
 
-    def prepare_statement_formal_file(self, repo_root: Path, *, node_path: str, decl_name: str) -> ServiceResult[LeanFileView]:
+    def prepare_statement_formal_file(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        decl_name: str,
+        source_revision: int | None = None,
+    ) -> ServiceResult[LeanFileView]:
         revision = self._load_revision(repo_root, node_path=node_path, decl_name=decl_name)
         if not revision.ok or revision.value is None:
             return self.runtime.foundation.fail(revision.issues)
@@ -450,16 +480,59 @@ class DeclFileComponent:
             node_path=node_path,
             dependency_projections=dependencies.value,
         )
-        text = self._render_or_refresh_file(
-            Path(path_view.value.path),
-            imports=imports,
-            docstring=docstring.value,
-        )
+        path = Path(path_view.value.path)
+        if source_revision is None:
+            text = self._render_or_refresh_file(
+                path,
+                imports=imports,
+                docstring=docstring.value,
+            )
+        else:
+            source_code = self._historical_formal_source(
+                repo_root,
+                node_path=node_path,
+                decl_name=decl_name,
+                revision=source_revision,
+                stage="statement",
+            )
+            if not source_code.ok or source_code.value is None:
+                return self.runtime.foundation.fail(source_code.issues)
+            baseline = self.managed_file.render_new(
+                imports=imports,
+                docstring=docstring.value,
+            )
+            pristine = self._require_pristine_formal_file(
+                path,
+                expected=baseline,
+                node_path=node_path,
+                decl_name=decl_name,
+            )
+            if not pristine.ok:
+                return self.runtime.foundation.fail(pristine.issues)
+            text = self.managed_file.refresh(
+                source_code.value,
+                imports=imports,
+                docstring=docstring.value,
+            )
         if not text.ok or text.value is None:
             return self.runtime.foundation.fail(text.issues)
-        return self._write_file_view(Path(path_view.value.path), text.value, path_view.value, "statement", changed_summary="Prepared statement formal Lean file.")
+        return self._write_file_view(
+            path,
+            text.value,
+            path_view.value,
+            "statement",
+            changed_summary="Prepared statement formal Lean file.",
+            atomic=source_revision is not None,
+        )
 
-    def prepare_proof_formal_file(self, repo_root: Path, *, node_path: str, decl_name: str) -> ServiceResult[LeanFileView]:
+    def prepare_proof_formal_file(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        decl_name: str,
+        source_revision: int | None = None,
+    ) -> ServiceResult[LeanFileView]:
         revision = self._load_revision(repo_root, node_path=node_path, decl_name=decl_name)
         if not revision.ok or revision.value is None:
             return self.runtime.foundation.fail(revision.issues)
@@ -535,7 +608,40 @@ class DeclFileComponent:
         path_view = self.derive_decl_file_path(repo_root, node_path=node_path, decl_name=decl_name, kind=kind)
         if not path_view.ok or path_view.value is None:
             return self.runtime.foundation.fail(path_view.issues)
-        return self._write_file_view(Path(path_view.value.path), replaced.value, path_view.value, "proof", changed_summary="Prepared proof formal Lean file from statement capture.")
+        path = Path(path_view.value.path)
+        if source_revision is not None:
+            source_code = self._historical_formal_source(
+                repo_root,
+                node_path=node_path,
+                decl_name=decl_name,
+                revision=source_revision,
+                stage="proof",
+            )
+            if not source_code.ok or source_code.value is None:
+                return self.runtime.foundation.fail(source_code.issues)
+            pristine = self._require_pristine_formal_file(
+                path,
+                expected=replaced.value,
+                node_path=node_path,
+                decl_name=decl_name,
+            )
+            if not pristine.ok:
+                return self.runtime.foundation.fail(pristine.issues)
+            replaced = self.managed_file.refresh(
+                source_code.value,
+                imports=imports,
+                docstring=docstring.value,
+            )
+            if not replaced.ok or replaced.value is None:
+                return self.runtime.foundation.fail(replaced.issues)
+        return self._write_file_view(
+            path,
+            replaced.value,
+            path_view.value,
+            "proof",
+            changed_summary="Prepared proof formal Lean file from statement capture.",
+            atomic=source_revision is not None,
+        )
 
     def refresh_decl_managed_projection(
         self,
@@ -1202,6 +1308,88 @@ class DeclFileComponent:
     def _load_revision(self, repo_root: Path, *, node_path: str, decl_name: str) -> ServiceResult[DeclFileRevisionView]:
         return self.revision_provider.get_current_decl_revision(Path(repo_root), node_path=node_path, decl_name=decl_name)
 
+    def _historical_formal_source(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        decl_name: str,
+        revision: int,
+        stage: DeclFileStage,
+    ) -> ServiceResult[str]:
+        source = self.revision_provider.get_decl_file_revision(
+            Path(repo_root),
+            node_path=node_path,
+            decl_name=decl_name,
+            revision=revision,
+        )
+        if not source.ok or source.value is None:
+            return self.runtime.foundation.fail(source.issues)
+        if source.value.version_status != "committed":
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "decl_formal_prepare_source_not_committed",
+                    "Historical formal preparation requires an exact committed source revision.",
+                    object_ref=f"{node_path}:{decl_name}@{revision}",
+                    current=source.value.version_status,
+                    expected="committed",
+                )
+            )
+        code = self._formal_code(source.value, stage)
+        if code is None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    f"{stage}_formal_prepare_source_missing",
+                    f"The source revision has no {stage} formal capture to prepare.",
+                    object_ref=f"{node_path}:{decl_name}@{revision}",
+                    field=f"{stage}.formal.code",
+                )
+            )
+        return self.runtime.foundation.ok(code)
+
+    def _require_pristine_formal_file(
+        self,
+        path: Path,
+        *,
+        expected: str,
+        node_path: str,
+        decl_name: str,
+    ) -> ServiceResult[None]:
+        if not path.exists():
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "decl_formal_prepare_current_file_modified",
+                    "Historical formal preparation requires the current deterministic prepared file.",
+                    object_ref=f"{node_path}:{decl_name}",
+                    current="missing",
+                    expected="pristine deterministic prepared file",
+                    details={"path": str(path)},
+                )
+            )
+        try:
+            current = path.read_bytes()
+        except OSError as exc:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "decl_file_read_failed",
+                    f"Failed to read Decl-owned Lean file: {exc}",
+                    object_ref=f"{node_path}:{decl_name}",
+                    details={"path": str(path)},
+                )
+            )
+        if current != expected.encode("utf-8"):
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "decl_formal_prepare_current_file_modified",
+                    "Historical formal preparation cannot replace an edited current working file.",
+                    object_ref=f"{node_path}:{decl_name}",
+                    current="modified",
+                    expected="pristine deterministic prepared file",
+                    details={"path": str(path)},
+                )
+            )
+        return self.runtime.foundation.ok(None)
+
     def _render_or_refresh_file(
         self,
         path: Path,
@@ -1499,8 +1687,13 @@ class DeclFileComponent:
         stage: DeclFileStage,
         *,
         changed_summary: str,
+        atomic: bool = False,
     ) -> ServiceResult[LeanFileView]:
-        write = self._write_text_if_changed(path, text)
+        write = (
+            self._write_text_atomic_if_changed(path, text)
+            if atomic
+            else self._write_text_if_changed(path, text)
+        )
         if not write.ok or write.value is None:
             return self.runtime.foundation.fail(write.issues)
         return self.runtime.foundation.ok(
@@ -1532,6 +1725,41 @@ class DeclFileComponent:
                     details={"path": str(path)},
                 )
             )
+
+    def _write_text_atomic_if_changed(
+        self,
+        path: Path,
+        text: str,
+    ) -> ServiceResult[bool]:
+        temp_path: Path | None = None
+        contents = text.encode("utf-8")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            old = path.read_bytes() if path.exists() else None
+            if old == contents:
+                return self.runtime.foundation.ok(False)
+            descriptor, raw_path = tempfile.mkstemp(
+                prefix=f".{path.name}.prepare-",
+                dir=path.parent,
+            )
+            temp_path = Path(raw_path)
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(contents)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temp_path, path)
+            return self.runtime.foundation.ok(True)
+        except OSError as exc:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "decl_file_write_failed",
+                    f"Failed to write Decl-owned Lean file: {exc}",
+                    details={"path": str(path)},
+                )
+            )
+        finally:
+            if temp_path is not None:
+                temp_path.unlink(missing_ok=True)
 
     def _read_lean_file(self, path: Path, *, object_ref: str) -> ServiceResult[str]:
         if not path.exists():

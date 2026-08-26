@@ -31,6 +31,7 @@ from lean_constellation.services.decl_graph.models import (
     DeclLifecycle,
     DeclManagedProjectionEffect,
     DeclOriginMutationReceipt,
+    DeclStagePrepareReceipt,
     DeclReviewMarkRecord,
     DeclReviewMarkView,
     DeclReadinessReport,
@@ -1490,6 +1491,33 @@ class DeclGraphService:
             ),
         )
 
+    def prepare_statement_nl_from_revision(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_id: str,
+        decl_name: str,
+        source_revision: int,
+    ) -> ServiceResult[DeclStagePrepareReceipt]:
+        return self._mutate_stage_truth_only(
+            repo_root,
+            node_path=node_path,
+            decl_name=decl_name,
+            mutate=lambda: self.stage_mutation.prepare_statement_nl_from_revision(
+                repo_root,
+                node_path=node_path,
+                round_id=round_id,
+                decl_name=decl_name,
+                source_revision=source_revision,
+            ),
+            finalize=self._stage_prepare_receipt(
+                decl_name=decl_name,
+                source_revision=source_revision,
+                stage="statement_nl",
+            ),
+        )
+
     def set_statement_nl(
         self,
         repo_root: Path,
@@ -1725,6 +1753,33 @@ class DeclGraphService:
             mutate=lambda: self.stage_mutation.write_proof_nl_typed(repo_root, **kwargs),
             finalize=self._stage_write_receipt(
                 decl_name=kwargs["decl_name"],
+            ),
+        )
+
+    def prepare_proof_nl_from_revision(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_id: str,
+        decl_name: str,
+        source_revision: int,
+    ) -> ServiceResult[DeclStagePrepareReceipt]:
+        return self._mutate_stage_truth_only(
+            repo_root,
+            node_path=node_path,
+            decl_name=decl_name,
+            mutate=lambda: self.stage_mutation.prepare_proof_nl_from_revision(
+                repo_root,
+                node_path=node_path,
+                round_id=round_id,
+                decl_name=decl_name,
+                source_revision=source_revision,
+            ),
+            finalize=self._stage_prepare_receipt(
+                decl_name=decl_name,
+                source_revision=source_revision,
+                stage="proof_nl",
             ),
         )
 
@@ -2163,6 +2218,21 @@ class DeclGraphService:
     def get_current_decl_revision(self, repo_root: Path, *, node_path: str, decl_name: str) -> ServiceResult[DeclFileRevisionView]:
         return self.readiness.get_current_decl_revision(repo_root, node_path=node_path, decl_name=decl_name)
 
+    def get_decl_file_revision(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        decl_name: str,
+        revision: int,
+    ) -> ServiceResult[DeclFileRevisionView]:
+        return self.readiness.get_decl_file_revision(
+            repo_root,
+            node_path=node_path,
+            decl_name=decl_name,
+            revision=revision,
+        )
+
     def save_statement_formal_capture(
         self,
         repo_root: Path,
@@ -2320,6 +2390,37 @@ class DeclGraphService:
                     changed_files=changed_files,
                     reread_required=reread_required,
                 ),
+            )
+
+        return finalize
+
+    @staticmethod
+    def _stage_prepare_receipt(
+        *,
+        decl_name: str,
+        source_revision: int,
+        stage: Literal["statement_nl", "proof_nl"],
+    ):
+        def finalize(
+            before: DeclRevision,
+            after: DeclRevision,
+            projection_stage: str | None,
+            projection_changed: bool,
+            changed_files: list[str],
+            reread_required: bool,
+        ) -> DeclStagePrepareReceipt:
+            del projection_stage, projection_changed, changed_files, reread_required
+            section = after.statement if stage == "statement_nl" else after.proof
+            origins = section.nl.origin if section is not None and section.nl is not None else []
+            dependencies = section.deps if section is not None else []
+            return DeclStagePrepareReceipt(
+                decl_name=decl_name,
+                revision=after.revision,
+                source_revision=source_revision,
+                stage=stage,
+                copied_origin_count=len(origins),
+                copied_dependency_count=len(dependencies),
+                changed=_business_changed(before, after),
             )
 
         return finalize

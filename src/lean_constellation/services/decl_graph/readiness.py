@@ -377,6 +377,33 @@ class DeclReadinessComponent:
         decl, revision = current.value
         return self.runtime.foundation.ok(self._decl_file_revision_view(decl, revision))
 
+    def get_decl_file_revision(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        decl_name: str,
+        revision: int,
+    ) -> ServiceResult[DeclFileRevisionView]:
+        decl = self.decl_catalog.get_decl(
+            repo_root,
+            node_path=node_path,
+            name=decl_name,
+        )
+        if not decl.ok or decl.value is None:
+            return self.runtime.foundation.fail(decl.issues)
+        loaded = self.decl_catalog.get_decl_revision(
+            repo_root,
+            node_path=node_path,
+            name=decl_name,
+            revision=revision,
+        )
+        if not loaded.ok or loaded.value is None:
+            return self.runtime.foundation.fail(loaded.issues)
+        return self.runtime.foundation.ok(
+            self._decl_file_revision_view(decl.value, loaded.value)
+        )
+
     def save_statement_formal_capture(
         self,
         repo_root: Path,

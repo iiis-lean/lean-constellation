@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -14,6 +15,7 @@ from lean_constellation.services.external_clients import (
 )
 from lean_constellation.services.foundation import FoundationService, ServiceResult
 from lean_constellation.services.lean_projection import DeclFileComponent, LeanCheckView
+from lean_constellation.services.lean_projection import decl_file as decl_file_module
 
 
 class FakeToolkit:
@@ -45,7 +47,7 @@ class FakeLake:
 
 
 class FakeRevisionProvider:
-    def __init__(self, foundation: FoundationService, revisions: dict[tuple[str, str], dict[str, Any]]) -> None:
+    def __init__(self, foundation: FoundationService, revisions: dict[tuple[object, ...], dict[str, Any]]) -> None:
         self.foundation = foundation
         self.revisions = revisions
 
@@ -55,6 +57,26 @@ class FakeRevisionProvider:
         if revision is None:
             return self.foundation.fail(self.foundation.issue("decl_revision_missing", "DeclRevision not found."))
         return self.foundation.ok(DeclFileRevisionView.model_validate(revision))
+
+    def get_decl_file_revision(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        decl_name: str,
+        revision: int,
+    ) -> ServiceResult[DeclFileRevisionView]:
+        del repo_root
+        value = self.revisions.get((node_path, decl_name, revision))
+        if value is None:
+            current = self.revisions.get((node_path, decl_name))
+            if current is not None and current.get("revision") == revision:
+                value = current
+        if value is None:
+            return self.foundation.fail(
+                self.foundation.issue("decl_revision_missing", "DeclRevision not found.")
+            )
+        return self.foundation.ok(DeclFileRevisionView.model_validate(value))
 
     def save_statement_formal_capture(self, repo_root: Path, *, node_path: str, decl_name: str, code: str, check: LeanCheckView, lean_decl_name: str) -> ServiceResult[DeclFileRevisionView]:
         del repo_root
@@ -93,7 +115,7 @@ def _revision(kind: str = "theorem", *, name: str = "main_result", module: str |
     }
 
 
-def _component(revisions: dict[tuple[str, str], dict[str, Any]], diagnostics: list[dict[str, Any]] | None = None, *, failing_save: bool = False) -> DeclFileComponent:
+def _component(revisions: dict[tuple[object, ...], dict[str, Any]], diagnostics: list[dict[str, Any]] | None = None, *, failing_save: bool = False) -> DeclFileComponent:
     runtime = make_runtime(
         external_overrides={"lean_mcp_toolkit": FakeToolkit(diagnostics), "lake": FakeLake()},
         workspace_config=WorkspaceConfig(docstring_projection=DocstringProjectionConfig.full()),
@@ -104,6 +126,20 @@ def _component(revisions: dict[tuple[str, str], dict[str, Any]], diagnostics: li
 
 def _append_statement_target(path: Path, *, source_name: str = "actualResult", body: str = "by\n  sorry") -> None:
     path.write_text(path.read_text(encoding="utf-8") + f"theorem {source_name} : True := {body}\n", encoding="utf-8")
+
+
+def _captured_formal_code(template: str, *, source_name: str) -> str:
+    return (
+        template.replace(
+            "import Main.Topic.Core.Prelude",
+            "import Historical.Prelude",
+        ).replace(
+            "The main result is true.",
+            "Historical managed documentation.",
+        )
+        + f"private lemma {source_name}Helper : True := by trivial\n\n"
+        + f"theorem {source_name} : True := by trivial\n"
+    )
 
 
 def _prepare_with_target(component: DeclFileComponent, repo_root: Path) -> Path:
@@ -427,6 +463,277 @@ def test_proof_prepare_preserves_statement_header_and_capture_requires_identity(
     changed = component.capture_proof_formal_file(tmp_path, node_path="Main.Topic.Core", decl_name="main_result")
     assert not changed.ok
     assert changed.issues[0].kind in {"theorem_header_changed", "proof_lean_decl_name_changed"}
+
+
+def test_historical_statement_prepare_uses_current_managed_truth_and_preserves_revision_truth(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    current = _revision()
+    current["revision"] = 2
+    source = _revision()
+    source["version_status"] = "committed"
+    revisions = {
+        ("Main.Topic.Core", "main_result"): current,
+        ("Main.Topic.Core", "main_result", 1): source,
+    }
+    component = _component(revisions)
+    baseline = component.prepare_statement_formal_file(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        decl_name="main_result",
+    )
+    assert baseline.ok and baseline.value is not None, baseline.issues
+    template = Path(baseline.value.path).read_text(encoding="utf-8")
+    source["statement"]["formal"] = {
+        "code": _captured_formal_code(template, source_name="historicalStatement")
+    }
+    current_before = json.dumps(current, sort_keys=True)
+    source_before = json.dumps(source, sort_keys=True)
+    replacements: list[tuple[Path, Path]] = []
+    original_replace = decl_file_module.os.replace
+
+    def record_replace(source_path, target_path):  # noqa: ANN001, ANN202
+        replacements.append((Path(source_path), Path(target_path)))
+        return original_replace(source_path, target_path)
+
+    monkeypatch.setattr(decl_file_module.os, "replace", record_replace)
+
+    prepared = component.prepare_statement_formal_file(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        decl_name="main_result",
+        source_revision=1,
+    )
+
+    assert prepared.ok and prepared.value is not None, prepared.issues
+    text = Path(prepared.value.path).read_text(encoding="utf-8")
+    assert "historicalStatementHelper" in text
+    assert "theorem historicalStatement" in text
+    assert "Historical.Prelude" not in text
+    assert "Historical managed documentation." not in text
+    assert "The main result is true." in text
+    assert len(replacements) == 1
+    assert replacements[0][0].parent == Path(prepared.value.path).parent
+    assert replacements[0][1] == Path(prepared.value.path)
+    assert not list(Path(prepared.value.path).parent.glob(f".{Path(prepared.value.path).name}.prepare-*"))
+    assert json.dumps(current, sort_keys=True) == current_before
+    assert json.dumps(source, sort_keys=True) == source_before
+
+
+def test_historical_proof_prepare_uses_proof_capture_not_statement_capture(
+    tmp_path: Path,
+) -> None:
+    current = _revision()
+    current["revision"] = 2
+    current["state"] = "declared"
+    source = _revision()
+    source["version_status"] = "committed"
+    revisions = {
+        ("Main.Topic.Core", "main_result"): current,
+        ("Main.Topic.Core", "main_result", 1): source,
+    }
+    component = _component(revisions)
+    statement_baseline = component.prepare_statement_formal_file(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        decl_name="main_result",
+    )
+    assert statement_baseline.ok and statement_baseline.value is not None, statement_baseline.issues
+    template = Path(statement_baseline.value.path).read_text(encoding="utf-8")
+    current["statement"]["formal"] = {
+        "code": _captured_formal_code(template, source_name="currentStatement")
+    }
+    source["statement"]["formal"] = {
+        "code": _captured_formal_code(template, source_name="historicalStatement")
+    }
+    source["proof"]["formal"] = {
+        "code": _captured_formal_code(template, source_name="historicalProof")
+    }
+    baseline = component.prepare_proof_formal_file(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        decl_name="main_result",
+    )
+    assert baseline.ok and baseline.value is not None, baseline.issues
+    current_before = json.dumps(current, sort_keys=True)
+    source_before = json.dumps(source, sort_keys=True)
+
+    prepared = component.prepare_proof_formal_file(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        decl_name="main_result",
+        source_revision=1,
+    )
+
+    assert prepared.ok and prepared.value is not None, prepared.issues
+    text = Path(prepared.value.path).read_text(encoding="utf-8")
+    assert "historicalProofHelper" in text
+    assert "theorem historicalProof" in text
+    assert "historicalStatement" not in text
+    assert "## Proof outline\n\nUse triviality." in text
+    assert json.dumps(current, sort_keys=True) == current_before
+    assert json.dumps(source, sort_keys=True) == source_before
+
+
+def test_historical_formal_prepare_rejects_modified_file_and_invalid_source_without_writing(
+    tmp_path: Path,
+) -> None:
+    cases = (
+        ("modified", "statement", "decl_formal_prepare_current_file_modified"),
+        ("open_source", "statement", "decl_formal_prepare_source_not_committed"),
+        ("missing_proof", "proof", "proof_formal_prepare_source_missing"),
+    )
+    for index, (case, stage, expected_issue) in enumerate(cases):
+        case_root = tmp_path / str(index)
+        current = _revision()
+        current["revision"] = 2
+        current["state"] = "declared" if stage == "proof" else "specified"
+        source = _revision()
+        source["version_status"] = "open" if case == "open_source" else "committed"
+        revisions = {
+            ("Main.Topic.Core", "main_result"): current,
+            ("Main.Topic.Core", "main_result", 1): source,
+        }
+        component = _component(revisions)
+        statement_baseline = component.prepare_statement_formal_file(
+            case_root,
+            node_path="Main.Topic.Core",
+            decl_name="main_result",
+        )
+        assert statement_baseline.ok and statement_baseline.value is not None, statement_baseline.issues
+        template = Path(statement_baseline.value.path).read_text(encoding="utf-8")
+        current["statement"]["formal"] = {
+            "code": _captured_formal_code(template, source_name="currentStatement")
+        }
+        source["statement"]["formal"] = {
+            "code": _captured_formal_code(template, source_name="historicalStatement")
+        }
+        if case != "missing_proof":
+            source["proof"]["formal"] = {
+                "code": _captured_formal_code(template, source_name="historicalProof")
+            }
+        baseline = (
+            component.prepare_proof_formal_file(
+                case_root,
+                node_path="Main.Topic.Core",
+                decl_name="main_result",
+            )
+            if stage == "proof"
+            else statement_baseline
+        )
+        assert baseline.ok and baseline.value is not None, baseline.issues
+        path = Path(baseline.value.path)
+        if case == "modified":
+            path.write_text(path.read_text(encoding="utf-8") + "-- worker edit\n", encoding="utf-8")
+        file_before = path.read_bytes()
+        current_before = json.dumps(current, sort_keys=True)
+        source_before = json.dumps(source, sort_keys=True)
+
+        prepared = (
+            component.prepare_proof_formal_file(
+                case_root,
+                node_path="Main.Topic.Core",
+                decl_name="main_result",
+                source_revision=1,
+            )
+            if stage == "proof"
+            else component.prepare_statement_formal_file(
+                case_root,
+                node_path="Main.Topic.Core",
+                decl_name="main_result",
+                source_revision=1,
+            )
+        )
+
+        assert not prepared.ok
+        assert prepared.issues[0].kind == expected_issue
+        assert path.read_bytes() == file_before
+        assert json.dumps(current, sort_keys=True) == current_before
+        assert json.dumps(source, sort_keys=True) == source_before
+
+
+def test_historical_formal_prepare_rejects_crlf_byte_drift_without_writing(
+    tmp_path: Path,
+) -> None:
+    current = _revision()
+    current["revision"] = 2
+    source = _revision()
+    source["version_status"] = "committed"
+    revisions = {
+        ("Main.Topic.Core", "main_result"): current,
+        ("Main.Topic.Core", "main_result", 1): source,
+    }
+    component = _component(revisions)
+    baseline = component.prepare_statement_formal_file(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        decl_name="main_result",
+    )
+    assert baseline.ok and baseline.value is not None, baseline.issues
+    path = Path(baseline.value.path)
+    template = path.read_text(encoding="utf-8")
+    source["statement"]["formal"] = {
+        "code": _captured_formal_code(template, source_name="historicalStatement")
+    }
+    path.write_bytes(path.read_bytes().replace(b"\n", b"\r\n"))
+    before = path.read_bytes()
+
+    prepared = component.prepare_statement_formal_file(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        decl_name="main_result",
+        source_revision=1,
+    )
+
+    assert not prepared.ok
+    assert prepared.issues[0].kind == "decl_formal_prepare_current_file_modified"
+    assert path.read_bytes() == before
+
+
+def test_historical_formal_prepare_atomic_replace_failure_preserves_current_file(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    current = _revision()
+    current["revision"] = 2
+    source = _revision()
+    source["version_status"] = "committed"
+    revisions = {
+        ("Main.Topic.Core", "main_result"): current,
+        ("Main.Topic.Core", "main_result", 1): source,
+    }
+    component = _component(revisions)
+    baseline = component.prepare_statement_formal_file(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        decl_name="main_result",
+    )
+    assert baseline.ok and baseline.value is not None, baseline.issues
+    path = Path(baseline.value.path)
+    source["statement"]["formal"] = {
+        "code": _captured_formal_code(
+            path.read_text(encoding="utf-8"),
+            source_name="historicalStatement",
+        )
+    }
+    before = path.read_bytes()
+
+    def fail_replace(_source_path, _target_path):  # noqa: ANN001, ANN202
+        raise OSError("injected replace failure")
+
+    monkeypatch.setattr(decl_file_module.os, "replace", fail_replace)
+    prepared = component.prepare_statement_formal_file(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        decl_name="main_result",
+        source_revision=1,
+    )
+
+    assert not prepared.ok
+    assert prepared.issues[0].kind == "decl_file_write_failed"
+    assert path.read_bytes() == before
+    assert not list(path.parent.glob(f".{path.name}.prepare-*"))
 
 
 def test_snapshot_sync_reset_and_delete_use_canonical_file(tmp_path: Path) -> None:
