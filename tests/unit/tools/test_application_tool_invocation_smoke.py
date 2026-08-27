@@ -1034,6 +1034,106 @@ def test_source_index_write_tools_authorize_flow_context_and_reject_nonowner_ste
     )
     assert updated["overview"] == "Owned update."
 
+    block = runtime.material.create_source_block(
+        tmp_path,
+        parent_id="root",
+        kind="proof",
+        title="Repairable proof",
+        summary="Proof relation for tool invocation.",
+    )
+    assert block.ok and block.value is not None
+    added = runtime.material.add_source_block_ref(
+        tmp_path,
+        block_id=block.value.block_id,
+        path="README.md",
+        start_line=1,
+        end_line=1,
+        role="primary",
+    )
+    assert added.ok and added.value is not None
+    ref_id = added.value.refs[0].ref_id
+    builder_raw = _raw(
+        tmp_path,
+        view="source_index_builder",
+        agent_type="SourceIndexBuilderAgent",
+    )
+    linked = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(
+            builder_raw,
+            tool_name="create_source_link",
+            flat_args={
+                "source_block_id": block.value.block_id,
+                "target_hint": "Initial target.",
+                "link_kind": "supports",
+                "evidence_ref_ids": [ref_id],
+            },
+        )
+    )
+    assert linked["operation"] == "create"
+
+    updated_ref = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(
+            builder_raw,
+            tool_name="update_source_block_ref",
+            flat_args={
+                "block_id": block.value.block_id,
+                "ref_id": ref_id,
+                "path": "README.md",
+                "start_line": 2,
+                "end_line": 2,
+                "role": "proof",
+            },
+        )
+    )
+    assert updated_ref["operation"] == "update"
+    assert updated_ref["ref_id"] == ref_id
+    assert (updated_ref["start_line"], updated_ref["end_line"]) == (2, 2)
+
+    updated_link = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(
+            builder_raw,
+            tool_name="update_source_link",
+            flat_args={
+                "link_id": linked["link_id"],
+                "target_hint": "Correct target.",
+                "link_kind": "proves",
+                "evidence_ref_ids": [ref_id],
+            },
+        )
+    )
+    assert updated_link["operation"] == "update"
+    assert updated_link["target_hint"] == "Correct target."
+    assert updated_link["link_kind"] == "proves"
+
+    in_use = _unwrap_tool_failure(
+        runtime.tool_facade.invoke_agent_tool(
+            builder_raw,
+            tool_name="remove_source_block_ref",
+            flat_args={"block_id": block.value.block_id, "ref_id": ref_id},
+        )
+    )
+    assert in_use[0].kind == "source_ref_in_use"
+    assert in_use[0].current == linked["link_id"]
+
+    removed_link = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(
+            builder_raw,
+            tool_name="remove_source_link",
+            flat_args={"link_id": linked["link_id"]},
+        )
+    )
+    assert removed_link["operation"] == "remove"
+    assert removed_link["link_id"] == linked["link_id"]
+    removed_ref = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(
+            builder_raw,
+            tool_name="remove_source_block_ref",
+            flat_args={"block_id": block.value.block_id, "ref_id": ref_id},
+        )
+    )
+    assert removed_ref["operation"] == "remove"
+    assert removed_ref["ref_id"] == ref_id
+
     review_context = _unwrap_tool_result(
         runtime.tool_facade.invoke_agent_tool(
             _raw(
@@ -1051,6 +1151,20 @@ def test_source_index_write_tools_authorize_flow_context_and_reject_nonowner_ste
     assert review_context["reviewer_feedback"] == "Tighten the theorem range."
     assert "active_update_id" not in review_context
     assert "baseline_digest" not in review_context
+
+    reviewer_write = _unwrap_tool_failure(
+        runtime.tool_facade.invoke_agent_tool(
+            _raw(
+                tmp_path,
+                view="source_index_reviewer",
+                agent_type="SourceIndexReviewerAgent",
+                role="reviewer",
+            ),
+            tool_name="remove_source_link",
+            flat_args={"link_id": linked["link_id"]},
+        )
+    )
+    assert reviewer_write[0].kind == "tool_not_in_view"
 
     validated = _unwrap_tool_result(
         runtime.tool_facade.invoke_agent_tool(
@@ -1096,6 +1210,22 @@ def test_source_index_write_tools_authorize_flow_context_and_reject_nonowner_ste
         )
     )
     assert issues[0].kind == "source_index_step_context_mismatch"
+
+    new_handler_issues = _unwrap_tool_failure(
+        runtime.tool_facade.invoke_agent_tool(
+            _raw(tmp_path, view="source_index_builder", agent_type="SourceIndexBuilderAgent"),
+            tool_name="update_source_block_ref",
+            flat_args={
+                "block_id": block.value.block_id,
+                "ref_id": ref_id,
+                "path": "README.md",
+                "start_line": 1,
+                "end_line": 1,
+                "role": "primary",
+            },
+        )
+    )
+    assert new_handler_issues[0].kind == "source_index_step_context_mismatch"
 
 
 def test_source_and_resource_text_search_tools_enforce_material_boundary(tmp_path: Path) -> None:

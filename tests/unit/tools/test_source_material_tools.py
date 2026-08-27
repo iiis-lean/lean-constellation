@@ -21,9 +21,12 @@ def test_source_material_tools_are_registered() -> None:
         "create_source_block",
         "update_source_block",
         "add_source_block_ref",
+        "update_source_block_ref",
         "remove_source_block_ref",
         "mark_block_refs_done",
         "create_source_link",
+        "update_source_link",
+        "remove_source_link",
         "mark_block_links_done",
         "mark_block_completed",
         "set_file_survey_status",
@@ -73,7 +76,14 @@ def test_source_material_groups_expose_expected_tools() -> None:
     )
     assert_group_contains(
         "source_index_draft_write",
-        {"create_source_block", "create_source_link", "set_file_indexing_status"},
+        {
+            "create_source_block",
+            "update_source_block_ref",
+            "create_source_link",
+            "update_source_link",
+            "remove_source_link",
+            "set_file_indexing_status",
+        },
     )
     assert_group_contains(
         "source_index_navigation_read",
@@ -103,6 +113,31 @@ def test_source_extraction_schema_preserves_typed_acquisition_truth() -> None:
     assert {"artifact_ref", "acquisition_kind", "mime_type", "extraction_kind"} <= set(
         schema["properties"]
     )
+
+
+def test_source_index_repair_tools_expose_flat_typed_schemas() -> None:
+    specs = {spec.name: spec for spec in build_application_tool_specs()}
+
+    assert set(specs["update_source_block_ref"].args_model.model_json_schema()["properties"]) == {
+        "block_id",
+        "path",
+        "start_line",
+        "end_line",
+        "role",
+        "ref_id",
+    }
+    assert set(specs["update_source_link"].args_model.model_json_schema()["properties"]) == {
+        "link_id",
+        "link_kind",
+        "evidence_ref_ids",
+        "target_block_id",
+        "target_hint",
+    }
+    assert set(specs["remove_source_link"].args_model.model_json_schema()["properties"]) == {
+        "link_id"
+    }
+    assert "in place" in specs["update_source_block_ref"].description
+    assert "incorrect or redundant" in specs["remove_source_link"].description
 
 
 def test_source_index_update_context_is_limited_to_build_review_roles() -> None:

@@ -338,14 +338,22 @@ def test_source_index_instructions_match_builder_reviewer_boundaries() -> None:
     assert "validate_source_range" in builder
     assert "preview_source_ref" in builder
     assert "mark_block_refs_done" in builder
+    assert "update_source_block_ref" in builder
+    assert "remove_source_block_ref" in builder
     assert "mark_block_links_done" in builder
+    assert "update_source_link" in builder
+    assert "remove_source_link" in builder
     assert "mark_block_completed" in builder
     assert "submit_source_index_builder_round" in builder
     assert "If submit succeeds, stop" in builder
     assert "Do not prepare or rewrite source corpus material" in builder
+    assert "leaving it in place and creating a replacement" in builder
+    assert "recheck the full current draft" in builder
 
     assert "create_source_block" not in reviewer
     assert "add_source_block_ref" not in reviewer
+    assert "update_source_block_ref" not in reviewer
+    assert "remove_source_link" not in reviewer
     assert "set_source_index_overview" not in reviewer
     assert "get_source_index" in reviewer
     assert "get_source_index_coverage" in reviewer

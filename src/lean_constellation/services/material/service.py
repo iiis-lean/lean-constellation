@@ -1078,6 +1078,14 @@ class MaterialService:
             evidence_ref_ids=evidence_ref_ids,
         )
 
+    def remove_source_link(
+        self,
+        repo_root: Path,
+        *,
+        link_id: str,
+    ) -> ServiceResult[SourceLinkView]:
+        return self.source_index.remove_source_link(repo_root, link_id=link_id)
+
     def mark_block_completed(self, repo_root: Path, *, block_id: str) -> ServiceResult[GateReport]:
         return self.source_index.mark_block_completed(repo_root, block_id=block_id)
 

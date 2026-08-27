@@ -20,12 +20,15 @@ from lean_constellation.tools.args import (
     SourceBlockListArgs,
     SourceBlockRefArgs,
     SourceBlockRefRemoveArgs,
+    SourceBlockRefUpdateArgs,
     SourceBlockUpdateArgs,
     SourceCorpusCheckArgs,
     SourceCorpusScanArgs,
     SourceIndexOverviewArgs,
     SourceIndexFileListArgs,
     SourceLinkCreateArgs,
+    SourceLinkRemoveArgs,
+    SourceLinkUpdateArgs,
     SourceMaterialAcquireArgs,
     SourceMaterialImportArgs,
     SourceMaterialNormalizeArgs,
@@ -120,7 +123,7 @@ class SourceBlockMutationReceipt(StrictModel):
 
 
 class SourceBlockRefMutationReceipt(StrictModel):
-    operation: Literal["add", "remove"]
+    operation: Literal["add", "update", "remove"]
     block_id: str
     ref_id: str
     path: str
@@ -131,7 +134,7 @@ class SourceBlockRefMutationReceipt(StrictModel):
 
 
 class SourceLinkMutationReceipt(StrictModel):
-    operation: Literal["create"]
+    operation: Literal["create", "update", "remove"]
     link_id: str
     source_block_id: str
     target_block_id: str | None = None
@@ -544,12 +547,50 @@ def _remove_source_block_ref(runtime, ctx: ToolExecutionContext, args: SourceBlo
     )
 
 
+def _update_source_block_ref(runtime, ctx: ToolExecutionContext, args: SourceBlockRefUpdateArgs):
+    authorized = _authorize_source_index_write(runtime, ctx)
+    if not authorized.ok:
+        return runtime.foundation.fail(authorized.issues)
+    updated = runtime.material.update_source_block_ref(
+        ctx.repo_root, **args.model_dump(exclude_unset=True)
+    )
+    if not updated.ok or updated.value is None:
+        return runtime.foundation.fail(updated.issues)
+    ref = next((item for item in updated.value.refs if item.ref_id == args.ref_id), None)
+    if ref is None:
+        return runtime.foundation.fail(
+            runtime.foundation.issue(
+                "source_ref_receipt_missing",
+                "Updated SourceIndex ref was not present in the updated block.",
+                object_ref=args.ref_id,
+            )
+        )
+    return runtime.foundation.ok(
+        SourceBlockRefMutationReceipt(
+            operation="update",
+            block_id=args.block_id,
+            ref_id=ref.ref_id,
+            path=ref.path,
+            start_line=ref.start_line,
+            end_line=ref.end_line,
+            role=ref.role,
+            summary="Updated SourceIndex block ref.",
+        ),
+        warnings=updated.issues,
+    )
+
+
 def _create_source_link(runtime, ctx: ToolExecutionContext, args: SourceLinkCreateArgs):
     authorized = _authorize_source_index_write(runtime, ctx)
     if not authorized.ok:
         return runtime.foundation.fail(authorized.issues)
     created = runtime.material.create_source_link(
-        ctx.repo_root, **args.model_dump(exclude_unset=True)
+        ctx.repo_root,
+        source_block_id=args.source_block_id,
+        target_block_id=args.target_block_id,
+        target_hint=args.target_hint,
+        link_kind=args.link_kind,
+        evidence_ref_ids=args.evidence_ref_ids,
     )
     if not created.ok or created.value is None:
         return runtime.foundation.fail(created.issues)
@@ -565,6 +606,59 @@ def _create_source_link(runtime, ctx: ToolExecutionContext, args: SourceLinkCrea
             summary="Created SourceIndex link.",
         ),
         warnings=created.issues,
+    )
+
+
+def _update_source_link(runtime, ctx: ToolExecutionContext, args: SourceLinkUpdateArgs):
+    authorized = _authorize_source_index_write(runtime, ctx)
+    if not authorized.ok:
+        return runtime.foundation.fail(authorized.issues)
+    updated = runtime.material.update_source_link(
+        ctx.repo_root,
+        link_id=args.link_id,
+        target_block_id=args.target_block_id,
+        target_hint=args.target_hint,
+        link_kind=args.link_kind,
+        evidence_ref_ids=args.evidence_ref_ids,
+    )
+    if not updated.ok or updated.value is None:
+        return runtime.foundation.fail(updated.issues)
+    return runtime.foundation.ok(
+        SourceLinkMutationReceipt(
+            operation="update",
+            link_id=updated.value.link_id,
+            source_block_id=updated.value.source_block_id,
+            target_block_id=updated.value.target_block_id,
+            target_hint=updated.value.target_hint,
+            link_kind=updated.value.link_kind,
+            evidence_ref_ids=updated.value.evidence_ref_ids,
+            summary="Updated SourceIndex link.",
+        ),
+        warnings=updated.issues,
+    )
+
+
+def _remove_source_link(runtime, ctx: ToolExecutionContext, args: SourceLinkRemoveArgs):
+    authorized = _authorize_source_index_write(runtime, ctx)
+    if not authorized.ok:
+        return runtime.foundation.fail(authorized.issues)
+    removed = runtime.material.remove_source_link(
+        ctx.repo_root, **args.model_dump(exclude_unset=True)
+    )
+    if not removed.ok or removed.value is None:
+        return runtime.foundation.fail(removed.issues)
+    return runtime.foundation.ok(
+        SourceLinkMutationReceipt(
+            operation="remove",
+            link_id=removed.value.link_id,
+            source_block_id=removed.value.source_block_id,
+            target_block_id=removed.value.target_block_id,
+            target_hint=removed.value.target_hint,
+            link_kind=removed.value.link_kind,
+            evidence_ref_ids=removed.value.evidence_ref_ids,
+            summary="Removed SourceIndex link.",
+        ),
+        warnings=removed.issues,
     )
 
 
@@ -719,8 +813,18 @@ def build_source_index_tool_specs() -> list[ToolSpec]:
             handler=_add_source_block_ref,
         ),
         handler_tool(
+            name="update_source_block_ref",
+            description="Update the exact range or role of a draft-local source ref in place; linked evidence follows the updated ref.",
+            args_model=SourceBlockRefUpdateArgs,
+            capability=ToolCapability.WRITE,
+            result_view="source_block_ref_mutation_receipt",
+            groups={AppGroup.SOURCE_INDEX_DRAFT_WRITE},
+            roles=builder_roles,
+            handler=_update_source_block_ref,
+        ),
+        handler_tool(
             name="remove_source_block_ref",
-            description="Remove a draft-local source range ref from a SourceIndex block.",
+            description="Remove an unused draft-local source ref; update or remove every link that still uses it first.",
             args_model=SourceBlockRefRemoveArgs,
             capability=ToolCapability.WRITE,
             result_view="source_block_ref_mutation_receipt",
@@ -747,6 +851,26 @@ def build_source_index_tool_specs() -> list[ToolSpec]:
             groups={AppGroup.SOURCE_INDEX_DRAFT_WRITE},
             roles=builder_roles,
             handler=_create_source_link,
+        ),
+        handler_tool(
+            name="update_source_link",
+            description="Update a draft-local SourceIndex link target, kind, hint, and evidence refs in place.",
+            args_model=SourceLinkUpdateArgs,
+            capability=ToolCapability.WRITE,
+            result_view="source_link_mutation_receipt",
+            groups={AppGroup.SOURCE_INDEX_DRAFT_WRITE},
+            roles=builder_roles,
+            handler=_update_source_link,
+        ),
+        handler_tool(
+            name="remove_source_link",
+            description="Remove an incorrect or redundant draft-local SourceIndex link.",
+            args_model=SourceLinkRemoveArgs,
+            capability=ToolCapability.WRITE,
+            result_view="source_link_mutation_receipt",
+            groups={AppGroup.SOURCE_INDEX_DRAFT_WRITE},
+            roles=builder_roles,
+            handler=_remove_source_link,
         ),
         handler_tool(
             name="mark_block_links_done",

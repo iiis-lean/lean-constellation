@@ -394,6 +394,40 @@ def test_fresh_native_preparation_dispatches_reusable_children_and_resumes_after
     assert parent.state.root_interface_child_result.outcome == "ready"
 
 
+def test_native_parent_consumes_blocked_source_index_child_on_next_logic(tmp_path: Path) -> None:
+    runtime, lean_runtime, _ = _runtime(tmp_path)
+    repo_root = tmp_path / "workspace" / "Provider"
+    _prepare_native_repo(lean_runtime, repo_root, allow_interface_supplement=False)
+    parent_id, source_child_id = _run_to_source_child_waiting(runtime, repo_root)
+    parent_before = runtime.flow_service.get_flow(parent_id)
+    assert parent_before.status is FlowStatus.WAITING
+    assert parent_before.state.position.phase == "waiting_source_index_child"
+
+    _complete_child_flow(
+        runtime,
+        source_child_id,
+        SourceIndexBuildResult(
+            outcome="blocked",
+            repo_key="Provider",
+            resolved_file_paths=["README.md"],
+            reason="SourceIndexBuilderAgent did not submit a builder round.",
+            summary="SourceIndex child was blocked.",
+        ),
+    )
+    still_waiting = runtime.flow_service.get_flow(parent_id)
+    assert still_waiting.status is FlowStatus.WAITING
+    assert still_waiting.result is None
+
+    assert runtime.flow_service.advance_flow(parent_id) is None
+
+    terminal = runtime.flow_service.get_flow(parent_id)
+    assert terminal.status is FlowStatus.COMPLETED
+    assert terminal.result.outcome == "blocked"
+    assert terminal.result.blocked_reason == "SourceIndexBuilderAgent did not submit a builder round."
+    children = runtime.flow_service.store.list_child_flows(parent_flow_id=parent_id)
+    assert [child.flow_type for child in children] == ["source_index_build"]
+
+
 def test_fresh_native_parent_runs_real_source_child_into_real_root_validation(tmp_path: Path) -> None:
     runtime, lean_runtime, _ = _runtime(tmp_path)
     repo_root = tmp_path / "workspace" / "Provider"

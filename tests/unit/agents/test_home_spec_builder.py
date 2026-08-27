@@ -208,6 +208,42 @@ def test_codex_and_opencode_repo_discovery_homes_use_the_same_mcp_tool_views() -
     assert codex.provider_home_spec.provider_options.mcp_servers == tuple(opencode.mcp_servers)
 
 
+def test_codex_and_opencode_source_index_homes_share_repair_surface() -> None:
+    for agent_type in ("SourceIndexBuilderAgent", "SourceIndexReviewerAgent"):
+        codex = build_agent_home_bootstrap_spec(
+            agent_type,
+            provider_type="codex",
+            mcp_http_base_url="http://127.0.0.1:8765",
+        )
+        opencode = build_agent_home_bootstrap_spec(
+            agent_type,
+            provider_type="opencode",
+            mcp_http_base_url="http://127.0.0.1:8765",
+        )
+
+        assert codex.developer_instructions == opencode.developer_instructions
+        assert codex.tool_view_config == opencode.tool_view_config
+        assert codex.mcp_servers == opencode.mcp_servers
+
+    builder = build_agent_home_bootstrap_spec(
+        "SourceIndexBuilderAgent",
+        provider_type="codex",
+        mcp_http_base_url="http://127.0.0.1:8765",
+    )
+    reviewer = build_agent_home_bootstrap_spec(
+        "SourceIndexReviewerAgent",
+        provider_type="codex",
+        mcp_http_base_url="http://127.0.0.1:8765",
+    )
+    for tool_name in (
+        "update_source_block_ref",
+        "update_source_link",
+        "remove_source_link",
+    ):
+        assert tool_name in builder.developer_instructions
+        assert tool_name not in reviewer.developer_instructions
+
+
 def test_codex_and_opencode_source_builder_homes_share_material_contract() -> None:
     for agent_type in (
         "SourceCorpusBuilderAgent",

@@ -993,13 +993,24 @@ class SourceIndexComponent:
         block = self._block_or_issue(index.value, block_id)
         if not block.ok or block.value is None:
             return self.runtime.foundation.fail(block.issues)
-        removed_refs = [ref.material_ref for ref in block.value.refs if ref.ref_id == ref_id]
-        original = len(block.value.refs)
-        block.value.refs = [ref for ref in block.value.refs if ref.ref_id != ref_id]
-        if len(block.value.refs) == original:
+        ref = next((item for item in block.value.refs if item.ref_id == ref_id), None)
+        if ref is None:
             return self.runtime.foundation.fail(self.runtime.foundation.issue("source_ref_missing", f"Source ref not found: {ref_id}"))
-        for link in index.value.links.values():
-            link.evidence_refs = [item for item in link.evidence_refs if item not in removed_refs]
+        affected_link_ids = sorted(
+            link.link_id
+            for link in index.value.links.values()
+            if link.source_block_id == block_id and ref.material_ref in link.evidence_refs
+        )
+        if affected_link_ids:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "source_ref_in_use",
+                    "Remove or update links that use this source ref before removing the ref.",
+                    object_ref=ref_id,
+                    current=", ".join(affected_link_ids),
+                )
+            )
+        block.value.refs = [item for item in block.value.refs if item.ref_id != ref_id]
         block.value.lifecycle_status = "draft"
         block.value.updated_at = utc_now_iso()
         self._touch(index.value, "Removed source block ref.")
@@ -1076,7 +1087,8 @@ class SourceIndexComponent:
         ref.material_ref = updated
         ref.role = role
         for link in index.value.links.values():
-            link.evidence_refs = [updated if item == previous else item for item in link.evidence_refs]
+            if link.source_block_id == block_id:
+                link.evidence_refs = [updated if item == previous else item for item in link.evidence_refs]
         block.value.lifecycle_status = "draft"
         block.value.updated_at = utc_now_iso()
         self._touch(index.value, "Updated source block ref.")
@@ -1261,6 +1273,34 @@ class SourceIndexComponent:
         if not saved.ok or saved.value is None:
             return self.runtime.foundation.fail(saved.issues)
         return self.runtime.foundation.ok(self._to_link_view(saved.value, link))
+
+    def remove_source_link(
+        self,
+        repo_root: Path,
+        *,
+        link_id: str,
+    ) -> ServiceResult[SourceLinkView]:
+        index = self._load_mutable(repo_root)
+        if not index.ok or index.value is None:
+            return self.runtime.foundation.fail(index.issues)
+        link = index.value.links.get(link_id)
+        if link is None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("source_link_missing", f"Link missing: {link_id}")
+            )
+        source = self._block_or_issue(index.value, link.source_block_id)
+        if not source.ok or source.value is None:
+            return self.runtime.foundation.fail(source.issues)
+        removed_view = self._to_link_view(index.value, link)
+        del index.value.links[link_id]
+        source.value.link_ids = [item for item in source.value.link_ids if item != link_id]
+        source.value.lifecycle_status = "refs_done"
+        source.value.updated_at = utc_now_iso()
+        self._touch(index.value, "Removed source link.")
+        saved = self._save_model(repo_root, index.value)
+        if not saved.ok or saved.value is None:
+            return self.runtime.foundation.fail(saved.issues)
+        return self.runtime.foundation.ok(removed_view)
 
     def mark_block_links_done(self, repo_root: Path, *, block_id: str) -> ServiceResult[GateReport]:
         index = self._load_mutable(repo_root)

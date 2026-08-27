@@ -291,6 +291,22 @@ def test_review_round_exhaustion_returns_blocked(tmp_path: Path) -> None:
     assert terminal.result.reason == "Reject round 2."
 
 
+def test_builder_without_submission_returns_business_blocked(tmp_path: Path) -> None:
+    runtime, lean_runtime, _ = _runtime(tmp_path)
+    repo_root = tmp_path / "Repo"
+    _prepare_source(lean_runtime, repo_root)
+    flow_id = runtime.start_flow("source_index_build", _params(repo_root))
+    _advance_to_builder(runtime, flow_id)
+
+    _advance_and_run(runtime, flow_id)
+
+    terminal = runtime.flow_service.get_flow(flow_id)
+    assert terminal.status is FlowStatus.COMPLETED
+    assert isinstance(terminal.result, SourceIndexBuildResult)
+    assert terminal.result.outcome == "blocked"
+    assert terminal.result.reason == "SourceIndexBuilderAgent did not submit a builder round."
+
+
 def test_already_open_restart_reuses_checkpoint_baseline(tmp_path: Path) -> None:
     runtime, lean_runtime, _ = _runtime(tmp_path)
     repo_root = tmp_path / "Repo"

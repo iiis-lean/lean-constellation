@@ -364,6 +364,10 @@ class SourceBlockRefRemoveArgs(StrictModel):
     ref_id: str = Field(description="Draft-local ref id returned by add_source_block_ref.")
 
 
+class SourceBlockRefUpdateArgs(SourceBlockRefArgs):
+    ref_id: str = Field(description="Draft-local ref id to update in place.")
+
+
 class SourceBlockIdArgs(StrictModel):
     block_id: str = Field(description="Draft-local block id.")
 
@@ -374,6 +378,18 @@ class SourceLinkCreateArgs(StrictModel):
     evidence_ref_ids: list[str] = Field(description="Draft-local source ref ids supporting this link.")
     target_block_id: str | None = Field(default=None, description="Draft-local target block id, if already known.")
     target_hint: str | None = Field(default=None, description="Natural-language target hint when target_block_id is unknown.")
+
+
+class SourceLinkUpdateArgs(StrictModel):
+    link_id: str = Field(description="Draft-local source link id to update in place.")
+    link_kind: str = Field(description="Updated semantic relationship kind.")
+    evidence_ref_ids: list[str] = Field(description="Draft-local source ref ids supporting the updated link.")
+    target_block_id: str | None = Field(default=None, description="Updated draft-local target block id, if known.")
+    target_hint: str | None = Field(default=None, description="Updated natural-language target hint when target_block_id is unknown.")
+
+
+class SourceLinkRemoveArgs(StrictModel):
+    link_id: str = Field(description="Draft-local source link id to remove.")
 
 
 class FileStatusArgs(StrictModel):
