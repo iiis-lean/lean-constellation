@@ -547,7 +547,7 @@ def test_content_node_task_existing_content_plan_binding_is_not_overwritten(tmp_
     assert current_flow.agent_bindings.get("content_plan") == "agent_explicit"
 
 
-def test_content_node_task_decl_round_dispatch_ensures_stage_agents(tmp_path: Path) -> None:
+def test_completion_audit_rejection_uses_internal_wake_after_decl_round(tmp_path: Path) -> None:
     runtime, lean_runtime = _runtime(tmp_path)
     repo_root = tmp_path / "workspace" / "Repo"
     _prepare_content_repo(lean_runtime, repo_root)
@@ -626,12 +626,99 @@ def test_content_node_task_decl_round_dispatch_ensures_stage_agents(tmp_path: Pa
     )
     assert len(audit_steps) == 1
     assert audit_steps[0].result.outcome == "failed"
-    callback_prompt = runtime.agent_service.start_records[-1].prompt or ""
-    assert callback_prompt.index("decl-round-closeout") < callback_prompt.index(
-        "content-plan-completion-policy"
+    audit_report = audit_steps[0].result.summary
+    assert audit_report
+
+    runtime.agent_service.queue_submission(
+        ContentNodeBlockedSubmission(
+            submission_id=new_submission_id("sub"),
+            submission_type="content_node_blocked",
+            tool_name="submit_content_node_blocked",
+            repo_key=repo_root.name,
+            node_path="Main.Core",
+            reason="Stop after internal completion audit wake.",
+            summary="Stop after internal completion audit wake.",
+        )
     )
-    assert "decl-strategy-planning" in callback_prompt
-    assert "reassess whether the strategy still explains the next round" in callback_prompt
+    internal_wake_step_id = _advance_and_run(runtime, flow_id)
+    internal_wake_step = runtime.flow_service.get_step(internal_wake_step_id)
+    internal_wake_prompt = runtime.agent_service.start_records[-1].prompt or ""
+    assert internal_wake_step.state.prompt_mode == "initial"
+    assert internal_wake_step.state.callback_dispatch_step_id is None
+    assert "round_id" not in internal_wake_step.state.variables
+    assert audit_report in internal_wake_prompt
+    assert internal_wake_prompt.index("content-plan-completion-policy") < internal_wake_prompt.index(
+        "decl-strategy-planning"
+    )
+    assert "decl-round-closeout" not in internal_wake_prompt
+    assert "Round completed." not in internal_wake_prompt
+    assert runtime.agent_service.start_records[-1].agent_id == runtime.agent_service.start_records[-2].agent_id
+    assert runtime.agent_service.start_records[-1].workdir == _expected_node_workdir(repo_root)
+    completed = runtime.flow_service.get_flow(flow_id)
+    assert completed.status is FlowStatus.COMPLETED
+    assert completed.result.outcome == "blocked"
+    assert completed.state.waiting_dispatch_step_id is None
+    assert completed.state.waiting_child_kind is None
+    assert completed.state.completed_child_flow_id is None
+    assert completed.state.completed_child_outcome is None
+
+
+def test_completion_audit_rejection_uses_internal_wake_without_child_dispatch(tmp_path: Path) -> None:
+    runtime, lean_runtime = _runtime(tmp_path)
+    repo_root = tmp_path / "workspace" / "Repo"
+    _prepare_content_repo(lean_runtime, repo_root)
+    flow_id = _start_content_task(runtime, repo_root)
+
+    _advance_and_run(runtime, flow_id)
+    runtime.agent_service.queue_submission(
+        ContentNodeReadySubmission(
+            submission_id=new_submission_id("sub"),
+            submission_type="content_node_ready",
+            tool_name="submit_content_node_ready",
+            repo_key=repo_root.name,
+            node_path="Main.Core",
+            summary="Content ready without a prior child.",
+        )
+    )
+    _advance_and_run(runtime, flow_id)
+    assert runtime.flow_service.get_flow(flow_id).state.position.phase == "completion_audit"
+
+    _advance_and_run(runtime, flow_id)
+    flow = runtime.flow_service.get_flow(flow_id)
+    assert flow.state.position.phase == "callback_plan_agent"
+    audit_step = runtime.flow_service.store.list_steps(
+        flow_id=flow_id,
+        step_type="content_completion_audit_step",
+    )[0]
+    audit_report = audit_step.result.summary
+    assert audit_report
+
+    runtime.agent_service.queue_submission(
+        ContentNodeBlockedSubmission(
+            submission_id=new_submission_id("sub"),
+            submission_type="content_node_blocked",
+            tool_name="submit_content_node_blocked",
+            repo_key=repo_root.name,
+            node_path="Main.Core",
+            reason="Stop after no-child internal completion audit wake.",
+            summary="Stop after no-child internal completion audit wake.",
+        )
+    )
+    internal_wake_step_id = _advance_and_run(runtime, flow_id)
+    internal_wake_step = runtime.flow_service.get_step(internal_wake_step_id)
+    internal_wake_prompt = runtime.agent_service.start_records[-1].prompt or ""
+    assert internal_wake_step.state.prompt_mode == "initial"
+    assert internal_wake_step.state.callback_dispatch_step_id is None
+    assert audit_report in internal_wake_prompt
+    assert internal_wake_prompt.index("content-plan-completion-policy") < internal_wake_prompt.index(
+        "decl-strategy-planning"
+    )
+    assert "decl-round-closeout" not in internal_wake_prompt
+    assert runtime.agent_service.start_records[0].agent_id == runtime.agent_service.start_records[-1].agent_id
+    assert runtime.agent_service.start_records[-1].workdir == _expected_node_workdir(repo_root)
+    completed = runtime.flow_service.get_flow(flow_id)
+    assert completed.status is FlowStatus.COMPLETED
+    assert completed.result.outcome == "blocked"
 
 
 def test_content_plan_context_brief_resolves_stable_strategy_round_sequences(tmp_path: Path) -> None:

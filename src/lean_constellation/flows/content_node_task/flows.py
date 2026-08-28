@@ -422,6 +422,12 @@ class ContentNodeTaskFlow(LeanBusinessFlow):
             return
         state.latest_callback_summary = result.summary or result.reason or "Content completion audit failed."
         state.pending_completion_summary = None
+        state.waiting_dispatch_step_id = None
+        state.pending_dispatch_source_step_id = None
+        state.pending_dispatch_source_submission_id = None
+        state.waiting_child_kind = None
+        state.completed_child_flow_id = None
+        state.completed_child_outcome = None
         state.position = FlowPosition(phase="callback_plan_agent", round_index=state.decl_round_count)
 
     def _consume_stage_agents_result(
@@ -510,6 +516,8 @@ def _content_plan_agent_step(
 
     brief = build_content_plan_context_brief(ctx, flow, input_model, state)
     brief_text = brief.render()
+    internal_wake = callback and _is_completion_audit_internal_wake(state)
+    child_callback = callback and not internal_wake
     variables: dict[str, object] = {
         "repo_key": input_model.repo_key,
         "node_path": input_model.node_path,
@@ -517,11 +525,17 @@ def _content_plan_agent_step(
         "used_preparation_kinds": list(state.used_preparation_kinds),
         "decl_round_count": state.decl_round_count,
     }
-    callback_round_id = _completed_decl_round_id(ctx, flow, input_model, state) if callback else None
+    callback_round_id = _completed_decl_round_id(ctx, flow, input_model, state) if child_callback else None
     if callback_round_id is not None:
         variables["round_id"] = callback_round_id
     return ContentPlanAgentStep(
-        step_id=new_content_step_id("content_plan_callback" if callback else "content_plan"),
+        step_id=new_content_step_id(
+            "content_plan_internal_wake"
+            if internal_wake
+            else "content_plan_callback"
+            if child_callback
+            else "content_plan"
+        ),
         flow_id=flow.flow_id,
         scope_id=flow.scope_id,
         state=AgentStepState(
@@ -531,13 +545,17 @@ def _content_plan_agent_step(
             create_agent_if_missing=True,
             bind_created_agent_to="flow",
             variables=variables,
-            prompt_mode="callback" if callback else "initial",
+            prompt_mode="callback" if child_callback else "initial",
             prompt_override=(
                 None
-                if callback
-                else f"{_content_plan_initial_prompt(ctx, input_model)}\n\n{brief_text}"
+                if child_callback
+                else (
+                    f"{_content_plan_internal_wake_prompt(input_model, state)}\n\n{brief_text}"
+                    if internal_wake
+                    else f"{_content_plan_initial_prompt(ctx, input_model)}\n\n{brief_text}"
+                )
             ),
-            callback_dispatch_step_id=state.waiting_dispatch_step_id if callback else None,
+            callback_dispatch_step_id=state.waiting_dispatch_step_id if child_callback else None,
             env_overrides={
                 "LEAN_CONSTELLATION_AGENT_TYPE": "ContentPlanAgent",
                 "LEAN_CONSTELLATION_APPLICATION_TOOL_VIEW": "content_plan",
@@ -546,6 +564,19 @@ def _content_plan_agent_step(
             workdir_override=content_node_workdir(input_model.repo_path, input_model.node_path),
             max_auto_continue_turns=1,
         ),
+    )
+
+
+def _is_completion_audit_internal_wake(state: ContentNodeTaskState) -> bool:
+    return (
+        state.position.phase == "callback_plan_agent"
+        and state.waiting_dispatch_step_id is None
+        and state.pending_dispatch_source_step_id is None
+        and state.pending_dispatch_source_submission_id is None
+        and state.waiting_child_kind is None
+        and state.completed_child_flow_id is None
+        and state.completed_child_outcome is None
+        and state.latest_callback_summary is not None
     )
 
 
@@ -613,6 +644,32 @@ def _content_plan_initial_prompt(ctx: FlowContext, input_model: ContentNodeTaskI
         "preparation recon, resource request, decl round, ready, blocked, or failed."
     )
     return "\n".join(parts)
+
+
+def _content_plan_internal_wake_prompt(
+    input_model: ContentNodeTaskInput,
+    state: ContentNodeTaskState,
+) -> str:
+    audit_report = state.latest_callback_summary
+    if not audit_report:
+        raise TypeError("Content completion audit internal wake is missing its audit report")
+    return "\n".join(
+        [
+            f"Resume the content node task for {input_model.node_path} in repository {input_model.repo_key}.",
+            "Your ready intent was rejected by the deterministic Content completion audit.",
+            "Actual completion audit report:",
+            audit_report,
+            (
+                "Re-read the current node contract, declaration graph, and task state through tools before deciding. "
+                "Required Skill order for this turn: read and apply $content-plan-completion-policy first, then "
+                "$decl-strategy-planning as needed. This is an internal gate wake, not a child callback."
+            ),
+            (
+                "Submit exactly one next action: preparation recon, resource request, decl round, ready, blocked, "
+                "or failed. The deterministic completion gate remains authoritative."
+            ),
+        ]
+    )
 
 
 def _inherit_content_plan_binding_from_prior_task(ctx: FlowContext, flow: ContentNodeTaskFlow) -> None:
