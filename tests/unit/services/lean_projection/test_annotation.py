@@ -3,6 +3,7 @@ from tests.unit_services_helpers import make_runtime
 from lean_constellation.domain.repo import DocstringProjectionConfig
 from lean_constellation.services.decl_graph import DeclFileRevisionView
 from lean_constellation.services.lean_projection.annotation import (
+    DOCSTRING_PROJECTION_FORMAT_VERSION,
     ResolvedMathlibDependencyProjection,
     ResolvedRepoDeclDependencyProjection,
 )
@@ -72,7 +73,8 @@ def test_render_current_markdown_docstring_and_dependency_grammar() -> None:
     statement = component.render_statement_docstring(_revision(), dependencies=_statement_dependencies())
     assert statement.ok and statement.value is not None
     text = statement.value
-    assert "# lean-constellation target: `foo_bar`" in text
+    assert "# lean-constellation target" in text
+    assert "target:" not in text
     assert "For every natural number n" in text
     assert "## Sources" not in text
     assert "## Statement dependencies" not in text
@@ -113,7 +115,10 @@ def test_default_projection_fingerprint_changes_with_policy() -> None:
     default = component.projection_fingerprint()
     full = component.projection_fingerprint(DocstringProjectionConfig.full())
     assert default != full
-    assert default == component.projection_policy().fingerprint()
+    assert default == component.projection_policy().fingerprint(
+        format_version=DOCSTRING_PROJECTION_FORMAT_VERSION
+    )
+    assert default != component.projection_fingerprint(format_version=1)
 
 
 def test_render_docstring_wraps_generated_prose_to_style_limit() -> None:
@@ -165,11 +170,12 @@ def test_parse_and_validate_current_target_marker() -> None:
     assert expected is not None
     marker = component.parse_target_marker(expected)
     assert marker.ok and marker.value is not None
-    assert marker.value.decl_name == "foo_bar"
     assert marker.value.marker_line == 2
 
     old = component.parse_target_marker("/--\nlean-constellation target: foo_bar\n-/")
     assert not old.ok and old.issues[0].kind == "target_marker_missing"
+    old_named = component.parse_target_marker("/--\n# lean-constellation target: `foo_bar`\n-/")
+    assert not old_named.ok and old_named.issues[0].kind == "target_marker_missing"
     duplicate = component.parse_target_marker(expected + "\n" + expected)
     assert not duplicate.ok and duplicate.issues[0].kind == "target_marker_duplicate"
 
@@ -197,11 +203,6 @@ def test_locate_marker_adjacent_declaration_uses_namespace_and_not_decl_key() ->
     assert found.value.source_name == "actualResult"
     assert found.value.candidate_full_name == "Example.Inner.actualResult"
     assert found.value.kind == "theorem"
-
-    changed_marker = source.replace("target: `foo_bar`", "target: `other`")
-    mismatch = component.locate_target_declaration(changed_marker, decl_name="foo_bar")
-    assert not mismatch.ok and mismatch.issues[0].kind == "target_marker_decl_mismatch"
-
 
 def test_locate_rejects_missing_adjacent_or_later_top_level_declaration() -> None:
     component = make_runtime().lean_projection.annotation

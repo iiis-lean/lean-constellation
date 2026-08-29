@@ -503,7 +503,7 @@ def test_restore_projection_to_active_graph_uses_decl_graph_reset_revision(tmp_p
     assert restored.value is not None
     assert any(action.action == "sync_decl_file" for action in restored.value.actions)
     assert proof_path.read_text(encoding="utf-8") == revision.statement.formal.code
-    assert "# lean-constellation target: `main_result`" in proof_path.read_text(encoding="utf-8")
+    assert "# lean-constellation target" in proof_path.read_text(encoding="utf-8")
     assert "trivial" not in proof_path.read_text(encoding="utf-8")
 
 

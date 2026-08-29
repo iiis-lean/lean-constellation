@@ -491,7 +491,7 @@ def test_operator_constructs_publishes_and_restores_synthetic_declared_repo(
         )
     assert prepared_http.status_code == 200
     http_value = prepared_http.json()["value"]
-    assert "# lean-constellation target: `synthetic_result`" in http_value["content"]
+    assert "# lean-constellation target" in http_value["content"]
     assert "path" not in http_value
     assert "repo_root" not in http_value
 
@@ -502,7 +502,7 @@ def test_operator_constructs_publishes_and_restores_synthetic_declared_repo(
                 DeclIdentityInput(node_path=NODE_PATH, decl_name=name),
             )
         )
-        assert "lean-constellation target:" in prepared_file.content
+        assert "# lean-constellation target" in prepared_file.content
         assert "path" not in prepared_file.model_dump(mode="json")
         assert "repo_root" not in prepared_file.model_dump(mode="json")
         lean_code = prepared_file.content.rstrip() + "\n\n"

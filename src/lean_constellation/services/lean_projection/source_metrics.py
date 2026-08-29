@@ -33,7 +33,7 @@ from lean_constellation.services.lean_projection.managed_file import (
 from lean_constellation.services.node.node_store import NodeIndex
 
 DEFAULT_MAX_LINE_LENGTH = 100
-SOURCE_STATS_SCHEMA_VERSION = 2
+SOURCE_STATS_SCHEMA_VERSION = 3
 _EXCLUDED_DIRECTORY_NAMES = frozenset({
     ".agent_runtime",
     ".git",
@@ -72,8 +72,7 @@ class SourceLineRiskView(StrictModel):
     file_path: str
     line: int
     character_count: int
-    kind: Literal["target_marker", "docstring"]
-    policy_exempt: bool
+    kind: Literal["docstring"]
 
 
 class SourceMarkerAnalysisView(StrictModel):
@@ -83,8 +82,6 @@ class SourceMarkerAnalysisView(StrictModel):
     missing_marker_files: list[str] = Field(default_factory=list)
     duplicate_marker_files: list[str] = Field(default_factory=list)
     missing_primary_files: list[str] = Field(default_factory=list)
-    long_target_marker_count: int
-    max_target_marker_length: int
     docstring_block_count: int
     long_docstring_line_count: int
     max_docstring_line_length: int
@@ -120,7 +117,7 @@ class DeclStatisticsView(StrictModel):
 
 
 class LeanSourceStatisticsView(StrictModel):
-    schema_version: Literal[2] = SOURCE_STATS_SCHEMA_VERSION
+    schema_version: Literal[3] = SOURCE_STATS_SCHEMA_VERSION
     repo_root: str
     lean_file_count: int
     excluded_directory_names: list[str]
@@ -197,8 +194,6 @@ def build_source_statistics(
     missing_marker_files: list[str] = []
     duplicate_marker_files: list[str] = []
     missing_primary_files: list[str] = []
-    long_target_marker_count = 0
-    max_target_marker_length = 0
     docstring_block_count = 0
     long_docstring_line_count = 0
     max_docstring_line_length = 0
@@ -239,22 +234,6 @@ def build_source_statistics(
         target_markers = iter_target_marker_views(text)
         target_marker_count += len(target_markers)
         target_docstring_count += len({marker.docstring_start_offset for marker in target_markers})
-        for marker in target_markers:
-            marker_line = _line_text(text, marker.marker_line)
-            marker_length = len(marker_line)
-            max_target_marker_length = max(max_target_marker_length, marker_length)
-            if marker_length > max_line_length:
-                long_target_marker_count += 1
-                long_lines.append(
-                    SourceLineRiskView(
-                        file_path=rel_path,
-                        line=marker.marker_line,
-                        character_count=marker_length,
-                        kind="target_marker",
-                        policy_exempt=True,
-                    )
-                )
-
         for doc_match in _DOC_COMMENT_RE.finditer(text):
             docstring_block_count += 1
             start_line = text.count("\n", 0, doc_match.start()) + 1
@@ -264,8 +243,6 @@ def build_source_statistics(
                 max_docstring_line_length = max(max_docstring_line_length, line_length)
                 if line_length <= max_line_length:
                     continue
-                if line_number in {marker.marker_line for marker in target_markers}:
-                    continue
                 long_docstring_line_count += 1
                 long_lines.append(
                     SourceLineRiskView(
@@ -273,7 +250,6 @@ def build_source_statistics(
                         line=line_number,
                         character_count=line_length,
                         kind="docstring",
-                        policy_exempt=False,
                     )
                 )
 
@@ -311,8 +287,6 @@ def build_source_statistics(
             missing_marker_files=sorted(missing_marker_files),
             duplicate_marker_files=sorted(duplicate_marker_files),
             missing_primary_files=sorted(missing_primary_files),
-            long_target_marker_count=long_target_marker_count,
-            max_target_marker_length=max_target_marker_length,
             docstring_block_count=docstring_block_count,
             long_docstring_line_count=long_docstring_line_count,
             max_docstring_line_length=max_docstring_line_length,
@@ -358,9 +332,8 @@ def render_source_statistics_markdown(report: LeanSourceStatisticsView) -> str:
             "",
             "## Marker and docstring risks",
             "",
-            f"- Target markers: **{report.markers.target_marker_count}**; max length: **{report.markers.max_target_marker_length}**.",
-            f"- Long target markers: **{report.markers.long_target_marker_count}** (policy-exempt).",
-            f"- Long non-marker docstring lines: **{report.markers.long_docstring_line_count}**.",
+            f"- Target markers: **{report.markers.target_marker_count}**.",
+            f"- Long docstring lines: **{report.markers.long_docstring_line_count}**.",
         ]
     )
     if report.decls is not None:
@@ -670,10 +643,3 @@ def _render_rollup_row(name: str, metric: SourceMetricView) -> str:
 def _line_end(text: str, offset: int) -> int:
     newline = text.find("\n", offset)
     return len(text) if newline < 0 else newline + 1
-
-
-def _line_text(text: str, line_number: int) -> str:
-    lines = text.splitlines()
-    if line_number < 1 or line_number > len(lines):
-        return ""
-    return lines[line_number - 1]

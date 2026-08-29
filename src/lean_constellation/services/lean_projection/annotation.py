@@ -20,9 +20,8 @@ if TYPE_CHECKING:
 
 
 TARGET_DOCSTRING_RE = re.compile(r"/--(?P<body>.*?)-/", re.DOTALL)
-TARGET_MARKER_LINE_RE = re.compile(
-    r"^\s*#\s+lean-constellation\s+target:\s+`(?P<decl_name>[^`]+)`\s*$"
-)
+TARGET_MARKER_LINE_RE = re.compile(r"^\s*#\s+lean-constellation\s+target\s*$")
+DOCSTRING_PROJECTION_FORMAT_VERSION = 2
 DECLARATION_KEYWORDS = (
     "def",
     "theorem",
@@ -66,7 +65,6 @@ ResolvedDependencyProjection = ResolvedRepoDeclDependencyProjection | ResolvedMa
 
 
 class TargetMarkerView(StrictModel):
-    decl_name: str
     marker_line: int
     docstring_start_line: int
     docstring_end_line: int
@@ -74,14 +72,6 @@ class TargetMarkerView(StrictModel):
     docstring_end_offset: int
     docstring: str
     summary: str
-
-    @field_validator("decl_name")
-    @classmethod
-    def _non_empty_decl_name(cls, value: str) -> str:
-        if not value or not value.strip():
-            raise ValueError("decl_name must be non-empty")
-        return value.strip()
-
 
 class LeanDeclarationLocationView(StrictModel):
     source_name: str
@@ -143,26 +133,18 @@ def iter_target_marker_views(file_text: str) -> list[TargetMarkerView]:
             marker = TARGET_MARKER_LINE_RE.match(line)
             if marker is None:
                 continue
-            decl_name = marker.group("decl_name").strip()
             markers.append(
                 TargetMarkerView(
-                    decl_name=decl_name,
                     marker_line=body_start_line + offset,
                     docstring_start_line=file_text.count("\n", 0, match.start()) + 1,
                     docstring_end_line=file_text.count("\n", 0, match.end()) + 1,
                     docstring_start_offset=match.start(),
                     docstring_end_offset=match.end(),
                     docstring=match.group(0),
-                    summary=f"Found target marker for {decl_name}.",
+                    summary="Found managed target marker.",
                 )
             )
     return markers
-
-
-def target_marker_line_numbers(file_text: str) -> set[int]:
-    """Return 1-based line numbers of parser-confirmed target markers."""
-
-    return {marker.marker_line for marker in iter_target_marker_views(file_text)}
 
 
 def adjacent_declaration_pattern() -> re.Pattern[str]:
@@ -209,7 +191,7 @@ class AnnotationComponent:
         self,
         policy: DocstringProjectionConfig | None = None,
         *,
-        format_version: int = 1,
+        format_version: int = DOCSTRING_PROJECTION_FORMAT_VERSION,
     ) -> str:
         """Return the policy/version fingerprint used by managed-file freshness checks."""
 
@@ -234,7 +216,6 @@ class AnnotationComponent:
             statement_dependencies = []
         return self.runtime.foundation.ok(
             self._render_docstring(
-                decl_name=revision.decl_name,
                 statement_text=revision.statement.nl.text,
                 statement_origins=revision.statement.nl.origin,
                 statement_dependencies=statement_dependencies,
@@ -266,7 +247,6 @@ class AnnotationComponent:
             proof_projection_dependencies = []
         return self.runtime.foundation.ok(
             self._render_docstring(
-                decl_name=revision.decl_name,
                 statement_text=revision.statement.nl.text,
                 statement_origins=revision.statement.nl.origin,
                 statement_dependencies=statement_projection_dependencies,
@@ -291,7 +271,8 @@ class AnnotationComponent:
                 self.runtime.foundation.issue(
                     "target_marker_duplicate",
                     "A Decl-owned Lean file must contain exactly one target marker.",
-                    current=", ".join(marker.decl_name for marker in markers),
+                    current=", ".join(str(marker.marker_line) for marker in markers),
+                    expected="one marker line",
                 )
             )
         return self.runtime.foundation.ok(markers[0])
@@ -324,16 +305,6 @@ class AnnotationComponent:
                 )
             )
         issues = []
-        if marker.value.decl_name != decl_name:
-            issues.append(
-                self.runtime.foundation.issue(
-                    "target_marker_decl_mismatch",
-                    "The target marker points to a different Constellation Decl.",
-                    field="decl_name",
-                    current=marker.value.decl_name,
-                    expected=decl_name,
-                )
-            )
         if self._normalize_docstring(marker.value.docstring) != self._normalize_docstring(expected_docstring):
             issues.append(
                 self.runtime.foundation.issue(
@@ -362,15 +333,6 @@ class AnnotationComponent:
         marker = self.parse_target_marker(file_text)
         if not marker.ok or marker.value is None:
             return self.runtime.foundation.fail(marker.issues)
-        if marker.value.decl_name != decl_name:
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue(
-                    "target_marker_decl_mismatch",
-                    "The target marker points to a different Constellation Decl.",
-                    current=marker.value.decl_name,
-                    expected=decl_name,
-                )
-            )
         suffix = file_text[marker.value.docstring_end_offset :]
         declaration = self._adjacent_declaration_re().match(suffix)
         if declaration is None:
@@ -692,7 +654,6 @@ class AnnotationComponent:
     def _render_docstring(
         self,
         *,
-        decl_name: str,
         statement_text: str | None,
         statement_origins: Sequence[DeclOriginRef],
         statement_dependencies: Sequence[ResolvedDependencyProjection],
@@ -702,7 +663,7 @@ class AnnotationComponent:
         projection_policy: DocstringProjectionConfig | None = None,
     ) -> str:
         policy = projection_policy or self.projection_policy()
-        body: list[str] = [f"# lean-constellation target: `{decl_name}`"]
+        body: list[str] = ["# lean-constellation target"]
         if policy.include_statement_nl:
             self._append_text(body, statement_text)
         if policy.include_sources:

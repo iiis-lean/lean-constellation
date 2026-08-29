@@ -96,7 +96,7 @@ def test_default_decl_graph_revision_provider_prepares_statement_file(tmp_path: 
     text = path.read_text(encoding="utf-8")
     assert prepared.value.module == "TestProject.Main.Topic.Core.Theorems.main_result"
     assert "import TestProject.Main.Topic.Core.Prelude" in text
-    assert "# lean-constellation target: `main_result`" in text
+    assert "# lean-constellation target" in text
     assert "main_result states True." in text
     assert "theorem main_result" not in text
 

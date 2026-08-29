@@ -173,7 +173,7 @@ def _create_declared_main_public_theorem(runtime: LeanRuntimeServices, repo_root
         decl_name=decl_name,
         lean_code=(
             "/--\n"
-            f"# lean-constellation target: `{decl_name}`\n\n"
+            "# lean-constellation target\n\n"
             f"{decl_name} states True.\n"
             "-/\n"
             f"theorem {decl_name} : True := by\n  sorry"

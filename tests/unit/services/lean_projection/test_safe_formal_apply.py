@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 
 from lean_constellation.domain.refs import MathlibRef
@@ -125,6 +127,48 @@ def test_safe_statement_apply_rejects_stale_revision_without_writing(tmp_path: P
         expected_revision=2,
         expected_state="planned",
         expected_revision_digest="stale",
+    )
+
+    assert not result.ok
+    assert result.issues[0].kind == "formal_apply_revision_stale"
+    assert path.read_bytes() == before
+
+
+def test_safe_statement_apply_rejects_v1_projection_digest_without_writing(tmp_path: Path) -> None:
+    runtime = _runtime()
+    _setup_theorem_round(tmp_path, runtime)
+    prepared = runtime.lean_projection.prepare_statement_formal_stage_file(
+        tmp_path,
+        node_path=NODE_PATH,
+        decl_name=DECL_NAME,
+    )
+    assert prepared.ok and prepared.value is not None
+    path = Path(prepared.value.path)
+    before = path.read_bytes()
+    revision = _current_revision(runtime, tmp_path)
+    v1_payload = {
+        "revision": revision.model_dump(mode="json"),
+        "docstring_projection": runtime.lean_projection.annotation.projection_fingerprint(
+            format_version=1
+        ),
+    }
+    v1_digest = hashlib.sha256(
+        json.dumps(
+            v1_payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    ).hexdigest()
+
+    result = runtime.lean_projection.apply_statement_formal_code(
+        tmp_path,
+        node_path=NODE_PATH,
+        decl_name=DECL_NAME,
+        lean_code=path.read_text(encoding="utf-8"),
+        expected_revision=1,
+        expected_state="planned",
+        expected_revision_digest=v1_digest,
     )
 
     assert not result.ok

@@ -196,7 +196,7 @@ def test_lean_projection_real_lake_decl_file_projection_and_policy_gates(tmp_pat
     assert prepared_statement.value is not None
     decl_path = Path(prepared_statement.value.path)
     statement_text = decl_path.read_text(encoding="utf-8")
-    assert "# lean-constellation target: `main_result`" in statement_text
+    assert "# lean-constellation target" in statement_text
     assert "import ProjectionReal.Main.Topic.Core.Prelude" in statement_text
     assert "theorem main_result" not in statement_text
     statement_text = statement_text.replace(

@@ -384,12 +384,11 @@ def test_formal_policies_allow_long_system_managed_imports(tmp_path: Path) -> No
     assert proof.value.status == "passed"
 
 
-def test_formal_policies_allow_only_parser_confirmed_target_marker_line(tmp_path: Path) -> None:
+def test_formal_policies_do_not_exempt_managed_target_marker_line(tmp_path: Path) -> None:
     lean_file = tmp_path / "Main.lean"
-    long_name = "target_" + ("x" * 100)
     lean_file.write_text(
         "/--\n"
-        f"# lean-constellation target: `{long_name}`\n"
+        "# lean-constellation target\n"
         "-/\n"
         "theorem foo : True := by\n"
         "  trivial\n",
@@ -410,14 +409,15 @@ def test_formal_policies_allow_only_parser_confirmed_target_marker_line(tmp_path
     proof = component.build_proof_lean_check(tmp_path, file_path=lean_file)
 
     assert proof.ok and proof.value is not None
-    assert proof.value.status == "passed"
+    assert proof.value.status == "failed"
+    assert "linter_style_long_line" in proof.value.message
 
 
 def test_formal_policies_do_not_exempt_other_docstring_long_lines(tmp_path: Path) -> None:
     lean_file = tmp_path / "Main.lean"
     lean_file.write_text(
         "/--\n"
-        "# lean-constellation target: `foo`\n"
+        "# lean-constellation target\n"
         f"{'ordinary docstring text ' * 8}\n"
         "-/\n"
         "theorem foo : True := by\n"
@@ -445,9 +445,8 @@ def test_formal_policies_do_not_exempt_other_docstring_long_lines(tmp_path: Path
 
 def test_formal_policies_do_not_exempt_pseudo_marker_outside_docstring(tmp_path: Path) -> None:
     lean_file = tmp_path / "Main.lean"
-    long_name = "target_" + ("x" * 100)
     lean_file.write_text(
-        f"# lean-constellation target: `{long_name}`\n"
+        "# lean-constellation target\n"
         "theorem foo : True := by\n"
         "  trivial\n",
         encoding="utf-8",

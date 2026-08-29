@@ -26,7 +26,6 @@ from lean_constellation.services.external_clients.lean_toolchain import (
     ToolchainDeclarationSoundnessItem,
 )
 from lean_constellation.services.foundation import ServiceResult
-from lean_constellation.services.lean_projection.annotation import target_marker_line_numbers
 from lean_constellation.services.lean_projection.managed_file import (
     DECLARATION_SOURCE_BEGIN,
     MANAGED_IMPORTS_BEGIN,
@@ -394,11 +393,9 @@ class LeanCheckComponent:
         if scan.contains_sorry and not allow_sorry:
             policy_issues.append("contains_sorry")
         managed_import_lines = self._managed_import_lines(source_text)
-        target_marker_lines = target_marker_line_numbers(source_text)
         if any(
             any(marker in item.message.lower() for marker in self._LONG_LINE_DIAGNOSTIC_MARKERS)
             and item.line not in managed_import_lines
-            and item.line not in target_marker_lines
             for item in diagnostics.diagnostics
         ):
             policy_issues.append("linter_style_long_line")

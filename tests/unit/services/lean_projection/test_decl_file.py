@@ -170,7 +170,7 @@ def test_prepare_writes_managed_regions_and_no_fabricated_skeleton(tmp_path: Pat
     assert text.startswith("-- lean-constellation: managed-imports-begin")
     assert "import Main.Topic.Core.Prelude" in text
     assert "-- lean-constellation: declaration-source-begin" in text
-    assert "# lean-constellation target: `main_result`" in text
+    assert "# lean-constellation target" in text
     assert "theorem main_result" not in text
     assert "sorry" not in text
 

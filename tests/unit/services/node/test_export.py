@@ -123,7 +123,7 @@ def _seed_declared_public_decl(
                 code=(
                     (
                         "/--\n"
-                        f"# lean-constellation target: `{name}`\n"
+                        "# lean-constellation target\n"
                         "-/\n"
                         f"theorem {name} : True := by trivial"
                     )
@@ -776,7 +776,7 @@ def test_scope_commit_revalidates_bound_interface_statement_after_candidate_drif
     revision.value.statement.formal = DeclFormalSection(
         code=(
             "/--\n"
-            "# lean-constellation target: `sub_result`\n"
+            "# lean-constellation target\n"
             "-/\n"
             "theorem sub_result : False := by contradiction"
         )

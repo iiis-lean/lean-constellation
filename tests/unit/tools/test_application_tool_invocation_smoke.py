@@ -1872,7 +1872,7 @@ def test_read_formal_defaults_to_complete_source_without_docstring(tmp_path: Pat
     statement_code = (
         "import Mathlib\n\n"
         "private lemma supporting_fact : True := by trivial\n\n"
-        "/--\n# lean-constellation target: `long_theorem`\n-/\n"
+        "/--\n# lean-constellation target\n-/\n"
         f"theorem long_theorem {header_padding} : True := by\n  sorry\n"
     )
     assert write_statement_formal_for_test(
@@ -1944,7 +1944,7 @@ def test_read_formal_defaults_to_complete_source_without_docstring(tmp_path: Pat
             flat_args={"decl_name": "long_theorem", "include_docstring": True},
         )
     )
-    assert "# lean-constellation target: `long_theorem`" in with_docstring["code"]
+    assert "# lean-constellation target" in with_docstring["code"]
 
 
 def test_current_node_stage_reads_select_one_exact_historical_revision(tmp_path: Path) -> None:
@@ -2196,7 +2196,7 @@ def test_repo_public_decl_tools_read_stable_provider_repo(tmp_path: Path) -> Non
         "import Mathlib\n"
         "-- lean-constellation: managed-imports-end\n\n"
         "-- lean-constellation: declaration-source-begin\n\n"
-        "/--\n# lean-constellation target: `provider_result`\n-/\n"
+        "/--\n# lean-constellation target\n-/\n"
         "theorem provider_result : True := by\n  sorry\n"
     )
     revision.value.statement = DeclStatement(
@@ -2305,7 +2305,7 @@ def test_repo_public_decl_tools_read_stable_provider_repo(tmp_path: Path) -> Non
     assert source["revision"] == 1
     assert source["stage"] == "proof"
     assert source["source"] == "captured_revision"
-    assert "# lean-constellation target: `provider_result`" not in source["content"]
+    assert "# lean-constellation target" not in source["content"]
     assert "theorem provider_result : True := by" in source["content"]
 
 

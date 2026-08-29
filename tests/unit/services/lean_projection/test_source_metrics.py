@@ -14,6 +14,7 @@ from lean_constellation.services.decl_graph.models import (
     DeclState,
 )
 from lean_constellation.services.lean_projection import (
+    LeanSourceStatisticsView,
     build_source_statistics,
     render_source_statistics_markdown,
 )
@@ -100,7 +101,6 @@ def test_source_statistics_partitions_managed_source_and_reads_current_graph(tmp
     _write_current_graph(tmp_path)
     project = tmp_path / "Example"
     project.mkdir()
-    marker_name = "result_" + ("x" * 100)
     (project / "Result.lean").write_text(
         "-- lean-constellation: managed-imports-begin\n"
         "import Example.Prelude\n"
@@ -108,7 +108,7 @@ def test_source_statistics_partitions_managed_source_and_reads_current_graph(tmp
         "-- lean-constellation: declaration-source-begin\n\n"
         "private def helper : Nat := 1\n\n"
         "/--\n"
-        f"# lean-constellation target: `{marker_name}`\n"
+        "# lean-constellation target\n"
         "-/\n"
         "theorem result : True := by\n"
         "  trivial\n",
@@ -141,6 +141,7 @@ def test_source_statistics_partitions_managed_source_and_reads_current_graph(tmp
     assert report.decls.theorem_like_total == 2
     assert report.decls.theorem_like_proved == 1
     assert report.decls.theorem_like_remaining == 1
+    assert report.schema_version == 3
 
     all_metric = _layer(report, "all_source").metric
     component_layers = [
@@ -169,14 +170,12 @@ def test_source_statistics_partitions_managed_source_and_reads_current_graph(tmp
 
     assert _layer(report, "unmanaged_preamble_helpers").metric.nonempty_line_count == 1
     assert _layer(report, "primary_declaration").metric.nonempty_line_count == 2
-    assert report.markers.long_target_marker_count == 1
-    assert report.markers.max_target_marker_length > 100
     assert report.markers.long_docstring_line_count == 1
-    assert any(item.kind == "docstring" and not item.policy_exempt for item in report.markers.long_lines)
-    assert any(item.kind == "target_marker" and item.policy_exempt for item in report.markers.long_lines)
+    assert {item.kind for item in report.markers.long_lines} == {"docstring"}
     markdown = render_source_statistics_markdown(report)
     assert "`headerless_source`" in markdown
     assert "**1/2** proved; **1** remaining" in markdown
+    assert "policy-exempt" not in markdown
 
 
 def test_source_statistics_reports_source_without_graph_truth(tmp_path: Path) -> None:
@@ -188,6 +187,39 @@ def test_source_statistics_reports_source_without_graph_truth(tmp_path: Path) ->
     assert report.nodes is None
     assert report.decls is None
     assert any("node index is unavailable" in warning for warning in report.warnings)
+
+
+def test_source_statistics_rejects_previous_report_schema(tmp_path: Path) -> None:
+    (tmp_path / "Main.lean").write_text(
+        "theorem result : True := by trivial\n",
+        encoding="utf-8",
+    )
+    payload = build_source_statistics(tmp_path).model_dump(mode="json")
+    payload["schema_version"] = 2
+
+    with pytest.raises(ValueError):
+        LeanSourceStatisticsView.model_validate(payload)
+
+
+def test_source_statistics_does_not_exempt_indented_fixed_marker_line(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "Main.lean").write_text(
+        "/--\n"
+        + (" " * 90)
+        + "# lean-constellation target\n"
+        + "-/\n"
+        + "theorem result : True := by trivial\n",
+        encoding="utf-8",
+    )
+
+    report = build_source_statistics(tmp_path, max_line_length=100)
+
+    assert report.markers.target_marker_count == 1
+    assert report.markers.long_docstring_line_count == 1
+    assert len(report.markers.long_lines) == 1
+    assert report.markers.long_lines[0].kind == "docstring"
+    assert report.markers.long_lines[0].line == 2
 
 
 def test_source_statistics_rejects_noncurrent_node_index_schema(tmp_path: Path) -> None:
