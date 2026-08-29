@@ -36,6 +36,7 @@ from lean_constellation.services.foundation import GateReport, MutationSummaryVi
 from lean_constellation.services import LeanProviderOverrides, LeanRuntimeServices, create_lean_runtime_services
 from lean_constellation.services.external_clients import (
     ExternalClientConfig,
+    ExternalResourceDiscoveryConfig,
     LeanMcpToolkitClientConfig,
     LeanToolchainClientConfig,
 )
@@ -260,6 +261,11 @@ def external_client_config_from_app_config(config: LeanAppConfig) -> ExternalCli
         ),
         lean_toolchain=LeanToolchainClientConfig(
             mathlib_revision=config.native_lake_project.mathlib_rev,
+        ),
+        resource_discovery=ExternalResourceDiscoveryConfig(
+            openalex_api_keys_path=(
+                config.external_resource_discovery.openalex_api_keys_path
+            ),
         ),
     )
 

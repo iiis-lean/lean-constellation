@@ -277,7 +277,7 @@ class SubmitRepoReadyArgs(SummarySubmitArgs):
 
 
 class RepoResourceCandidateArg(StrictModel):
-    target: str = Field(description="OpenAlex id, DOI, arXiv locator, or other locator accepted by resource inspection.")
+    target: str = Field(description="OpenAlex work id, DOI, or arXiv locator accepted by exact resource inspection.")
     support_summary: str = Field(description="Concrete mathematical statement, construction, or evidence this resource may supply for the repository objective.")
     risks_or_gaps: list[str] = Field(default_factory=list, description="Known uncertainty, missing access, or scope gaps.")
     recommended_handling: Literal[
@@ -309,7 +309,12 @@ class RepoResourceCandidateArg(StrictModel):
 
 
 class SubmitRepoResourceDiscoveryResultArgs(SummarySubmitArgs):
-    outcome: Literal["completed", "no_useful_findings", "incomplete"] = Field(description="Terminal discovery outcome.")
+    outcome: Literal["completed", "no_useful_findings", "incomplete"] = Field(
+        description=(
+            "Terminal outcome: completed with retained candidates, no_useful_findings after a completed "
+            "bounded search, or incomplete when discovery could not be completed."
+        )
+    )
     candidates: list[RepoResourceCandidateArg] = Field(default_factory=list, max_length=5, description="Up to five promising targets in recommendation order; the backend re-inspects every target and supplies canonical metadata.")
 
     @model_validator(mode="after")

@@ -207,6 +207,11 @@ def test_repo_discovery_instructions_reference_current_skills_and_backend_owners
     assert "$repo-resource-discovery" in resource
     assert "backend re-inspects every target" in resource
     assert "canonical title, authors, kind, version, locator, and source URLs" in resource
+    assert "scholarly papers and books" in resource
+    assert "Lean repository/provider discovery" in resource
+    assert "Mathlib module, declaration, and API reconnaissance" in resource
+    assert "Use no_useful_findings only after a completed bounded search" in resource
+    assert "use incomplete when discovery remained unavailable" in resource
     assert "$repo-lean-provider-discovery" in provider
     assert "backend performs the terminal probe" in provider
     assert "resolved commit, project layout, package, modules, toolchain" in provider

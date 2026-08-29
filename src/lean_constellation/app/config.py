@@ -50,6 +50,7 @@ class LeanAppConfigView(StrictModel):
     scheduler_idle_interval_s: float
     scheduler_error_interval_s: float
     toolkit: "LeanToolkitAppConfig"
+    external_resource_discovery: "ExternalResourceDiscoveryAppConfig"
     automatic_checkpoints: "AutomaticCheckpointAppConfig"
     agent_trace_reports: "AgentTraceReportAppConfig"
     agent_home_overrides: dict[str, "AgentHomeOverrideAppConfig"] = Field(default_factory=dict)
@@ -130,6 +131,17 @@ class LeanToolkitAppConfig(StrictModel):
         if self.mode == "managed":
             return f"http://{self.host}:{self.port}".rstrip("/")
         return None
+
+
+class ExternalResourceDiscoveryAppConfig(StrictModel):
+    openalex_api_keys_path: Path | None = None
+
+    @field_validator("openalex_api_keys_path", mode="before")
+    @classmethod
+    def _coerce_path(cls, value: Any) -> Path | None:
+        if value is None or isinstance(value, Path):
+            return value
+        return Path(str(value)).expanduser()
 
 
 class AutomaticCheckpointAppConfig(StrictModel):
@@ -238,6 +250,9 @@ class LeanAppConfig(StrictModel):
     scheduler_idle_interval_s: float = 0.5
     scheduler_error_interval_s: float = 2.0
     toolkit: LeanToolkitAppConfig = Field(default_factory=LeanToolkitAppConfig)
+    external_resource_discovery: ExternalResourceDiscoveryAppConfig = Field(
+        default_factory=ExternalResourceDiscoveryAppConfig
+    )
     automatic_checkpoints: AutomaticCheckpointAppConfig = Field(default_factory=AutomaticCheckpointAppConfig)
     agent_trace_reports: AgentTraceReportAppConfig = Field(default_factory=AgentTraceReportAppConfig)
     agent_home_overrides: dict[str, AgentHomeOverrideAppConfig] = Field(default_factory=dict)
@@ -350,6 +365,7 @@ class LeanAppConfig(StrictModel):
             scheduler_idle_interval_s=self.scheduler_idle_interval_s,
             scheduler_error_interval_s=self.scheduler_error_interval_s,
             toolkit=self.toolkit,
+            external_resource_discovery=self.external_resource_discovery,
             automatic_checkpoints=self.automatic_checkpoints,
             agent_trace_reports=self.agent_trace_reports,
             agent_home_overrides=self.agent_home_overrides,

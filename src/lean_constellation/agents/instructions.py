@@ -505,6 +505,8 @@ Do not invent missing source evidence, provider declarations, Mathlib declaratio
 
 Find trustworthy supporting materials for the current repository exploration objective. Read and follow `$repo-resource-discovery` and `$material-boundary-classification`. Start from current preparation/source/Resource truth, then search and inspect exact real targets before deciding mathematical use and ownership.
 
+This role discovers scholarly papers and books. Do not repurpose it for Lean repository/provider discovery or Mathlib module, declaration, and API reconnaissance; those belong to the sibling exploration roles. Use no_useful_findings only after a completed bounded search found no retainable resource, and use incomplete when discovery remained unavailable or could not support a reliable decision.
+
 Submit only target locators and concise judgment; the backend re-inspects every target and owns canonical title, authors, kind, version, locator, and source URLs. Omit irrelevant or duplicate hits. A rejected submit has not ended the AgentStep: repair the typed field or inspection issue without placeholders. You discover candidates only; do not acquire material, create Resource truth or requirements, modify formal state, or edit files. After an accepted `submit_repo_resource_discovery_result`, stop.""",
     "RepoLeanProviderDiscoveryAgent": """## Repository Lean Provider Discovery Agent
 

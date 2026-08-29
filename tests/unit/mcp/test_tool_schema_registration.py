@@ -128,6 +128,19 @@ def test_material_acquisition_schema_describes_resolved_targets() -> None:
     assert "Resource request" in resource.input_schema["properties"]["target"]["description"]
 
 
+def test_repo_resource_discovery_search_kind_schema_is_exact() -> None:
+    runtime = make_mcp_runtime()
+
+    search = _tool(runtime, "repo_resource_discovery", "search_external_resources")
+    inspect = _tool(runtime, "repo_resource_discovery", "inspect_external_resource")
+
+    kinds = search.input_schema["properties"]["kinds"]["anyOf"][0]["items"]
+    assert kinds["enum"] == ["paper", "book"]
+    assert "paper and book metadata" in search.description
+    assert "OpenAlex work, DOI, or arXiv" in inspect.description
+    assert "exactly" in inspect.input_schema["properties"]["target"]["description"]
+
+
 def test_every_tool_in_repo_discovery_agent_views_has_self_contained_schema() -> None:
     runtime = make_mcp_runtime()
     reports = build_agent_surface_reports()

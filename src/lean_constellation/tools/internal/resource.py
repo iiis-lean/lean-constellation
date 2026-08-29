@@ -366,7 +366,7 @@ def build_tool_specs() -> list[ToolSpec]:
     return [
         handler_tool(
             name="search_external_resources",
-            description="Search bounded scholarly metadata for source-attributed supporting resources without acquiring or registering them.",
+            description="Search bounded paper and book metadata for source-attributed supporting resources without acquiring or registering them.",
             args_model=ExternalResourceSearchArgs,
             capability=ToolCapability.READ,
             result_view="external_resource_candidates",
@@ -377,7 +377,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="inspect_external_resource",
-            description="Inspect one canonical OpenAlex, DOI, or arXiv resource candidate as compact scholarly metadata.",
+            description="Inspect one exact OpenAlex work, DOI, or arXiv candidate as compact scholarly metadata.",
             args_model=ExternalResourceInspectArgs,
             capability=ToolCapability.READ,
             result_view="external_resource_detail",

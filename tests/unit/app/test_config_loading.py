@@ -6,6 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from lean_constellation.app import LeanAppConfig, load_app_config
+from lean_constellation.app.runtime import external_client_config_from_app_config
 from lean_constellation.domain.repo import ProofAvailability, RepoCompletionMode
 
 
@@ -17,6 +18,34 @@ def test_checkpoint_and_trace_report_config_defaults(tmp_path) -> None:
     assert config.agent_trace_reports.persistence == "disabled"
     assert config.agent_trace_reports.include_in_snapshots is False
     assert config.codex_force_full_access is False
+
+
+def test_external_resource_key_pool_path_loads_and_wires_without_secret(tmp_path) -> None:
+    pool = tmp_path / "openalex-keys"
+    pool.write_text("test-secret-a\ntest-secret-b\n", encoding="utf-8")
+    pool.chmod(0o600)
+    path = tmp_path / "lean_constellation.toml"
+    path.write_text(
+        "\n".join(
+            [
+                f'workspace_root = "{tmp_path / "workspace"}"',
+                "[external_resource_discovery]",
+                f'openalex_api_keys_path = "{pool}"',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    config = load_app_config(path)
+    external = external_client_config_from_app_config(config)
+    dumped = config.redacted_view().model_dump_json()
+
+    assert config.external_resource_discovery.openalex_api_keys_path == pool
+    assert external.resource_discovery.openalex_api_keys_path == pool
+    assert str(pool) in dumped
+    assert "test-secret-a" not in dumped
+    assert "test-secret-b" not in dumped
 
 
 def test_checkpoint_and_trace_report_config_reject_unknown_fields() -> None:

@@ -257,11 +257,13 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
             "Find trustworthy external supporting resources for one repository-level objective.",
             (
                 "Read current preparation input, completion policy, SourceCorpus/SourceIndex and registered Resource truth first so existing material is not suggested again.",
-                "Search with bounded metadata, then call exact resource inspection for each promising target. A search hit is not durable candidate truth. Use theorem search only for precise statement-level support.",
+                "Keep this role on scholarly papers and books. A Lean repository or provider belongs to RepoLeanProviderDiscovery; Mathlib module, declaration, or API support belongs to RepoMathlibRecon. Do not force either question through scholarly search.",
+                "Search with bounded paper/book metadata, then call exact resource inspection for each promising OpenAlex, DOI, or arXiv target. A search hit is not durable candidate truth. Use theorem search only for precise statement-level support.",
                 "Read `material-boundary-classification` before deciding ownership. Use local_resource for supporting material owned here, provider_requirement for an independent reusable formal boundary, and inspect_later only for a real inspected target whose usefulness or ownership remains unresolved.",
                 "For each retained target, submit only its locator, concrete support summary, handling, risks/gaps, and conditional consumer need/provider scope. The terminal handler re-inspects it and supplies canonical title, authors, kind, version, locator, and source URLs.",
                 "Omit irrelevant, duplicate, inaccessible, or unreliable hits instead of submitting ignore objects. Keep at most five useful candidates in recommendation order.",
-                "Use no_useful_findings with no candidates when none survives review. If the submit returns a typed field or inspection issue, correct the real target or judgment in the same AgentStep; never use placeholder locators to probe schema. After an accepted submit, stop.",
+                "Use no_useful_findings with no candidates only after the bounded search completed and none survived review. Use incomplete when scholarly discovery remained unavailable or the role could not make a reliable decision; do not convert an outage, exhausted service, or sibling-role question into no_useful_findings. If some exact candidates were already inspected, retain that truth and state the residual limitation concisely.",
+                "If the submit returns a typed field or inspection issue, correct the real target or judgment in the same AgentStep; never use placeholder locators to probe schema. After an accepted submit, stop.",
             ),
             (
                 "Do not acquire, normalize, draft, or register Resources.",

@@ -6,6 +6,10 @@ import tomllib
 
 from lean_constellation.agents import build_agent_type_specs, derive_agent_type_spec
 from lean_constellation.app import create_app_runtime_services, materialize_agent_home
+from lean_constellation.services.external_clients import (
+    ExternalClientConfig,
+    ExternalResourceDiscoveryConfig,
+)
 
 
 def test_agent_home_materialization_writes_instruction_skills_and_mcp_config(tmp_path: Path) -> None:
@@ -46,6 +50,42 @@ def test_agent_home_materialization_writes_instruction_skills_and_mcp_config(tmp
     assert len(manifest["mcp_server_specs"]) == 2
     assert "capabilities" not in manifest
     assert "LEAN_CONSTELLATION_AGENT_CAPABILITIES" not in manifest["fixed_env"]
+
+
+def test_external_resource_key_pool_is_not_materialized_into_agent_environment(tmp_path: Path) -> None:
+    pool = tmp_path / "openalex-keys"
+    secrets = ("test-openalex-secret-a", "test-openalex-secret-b")
+    pool.write_text("\n".join(secrets) + "\n", encoding="utf-8")
+    pool.chmod(0o600)
+    runtime = create_app_runtime_services(
+        runtime_root=tmp_path / ".agent_runtime",
+        external_config=ExternalClientConfig(
+            resource_discovery=ExternalResourceDiscoveryConfig(
+                openalex_api_keys_path=pool,
+            )
+        ),
+    )
+
+    view = materialize_agent_home(
+        runtime,
+        "RepoResourceDiscoveryAgent",
+        mcp_http_base_url="http://127.0.0.1:8765",
+    )
+
+    assert view.ok and view.value is not None
+    home_root = Path(view.value.home_root)
+    materialized = "\n".join(
+        path.read_text(encoding="utf-8", errors="replace")
+        for path in home_root.rglob("*")
+        if path.is_file()
+    )
+    manifest = json.loads(
+        (home_root / ".agents" / "lean_constellation_home.json").read_text(encoding="utf-8")
+    )
+    assert "OPENALEX" not in manifest["fixed_env"]
+    assert str(pool) not in materialized
+    for secret in secrets:
+        assert secret not in materialized
 
 
 def test_agent_home_materialization_supports_base_config_and_auth_reference(tmp_path: Path) -> None:

@@ -212,6 +212,12 @@ def test_repo_discovery_skills_assign_external_facts_to_terminal_handlers() -> N
     assert "supplies canonical title, authors, kind, version, locator, and source URLs" in resource
     assert "Omit irrelevant, duplicate, inaccessible, or unreliable hits" in resource
     assert "placeholder locators" in resource
+    assert "scholarly papers and books" in resource
+    assert "RepoLeanProviderDiscovery" in resource
+    assert "RepoMathlibRecon" in resource
+    assert "only after the bounded search completed" in resource
+    assert "Use incomplete when scholarly discovery remained unavailable" in resource
+    assert "exhausted service" in resource
     assert "terminal handler repeats the canonical probe" in provider
     assert "derives normalized URL, exact commit, package, modules, toolchain" in provider
     assert "Omit unsuitable candidates" in provider
