@@ -8,11 +8,20 @@ import re
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal, TypeVar
 
-from pydantic import Field
+from pydantic import Field, ValidationError
 
 from lean_constellation.domain.common import StrictModel
+from lean_constellation.domain.repo import RepoFormat, RepoFormatState
+from lean_constellation.services.decl_graph.availability_policy import is_theorem_like
+from lean_constellation.services.decl_graph.models import (
+    Decl,
+    DeclGraphIndex,
+    DeclLifecycle,
+    DeclRevision,
+    DeclState,
+)
 from lean_constellation.services.lean_projection.annotation import (
     adjacent_declaration_pattern,
     iter_target_marker_views,
@@ -21,10 +30,10 @@ from lean_constellation.services.lean_projection.annotation import (
 from lean_constellation.services.lean_projection.managed_file import (
     DECLARATION_SOURCE_BEGIN,
 )
-
+from lean_constellation.services.node.node_store import NodeIndex
 
 DEFAULT_MAX_LINE_LENGTH = 100
-SOURCE_STATS_SCHEMA_VERSION = 1
+SOURCE_STATS_SCHEMA_VERSION = 2
 _EXCLUDED_DIRECTORY_NAMES = frozenset({
     ".agent_runtime",
     ".git",
@@ -51,6 +60,12 @@ class SourceLayerView(StrictModel):
     description: str
     file_count: int
     metric: SourceMetricView
+
+
+class SourceRollupStatisticsView(StrictModel):
+    all_source: SourceMetricView
+    headerless_source: SourceMetricView
+    primary_declaration: SourceMetricView
 
 
 class SourceLineRiskView(StrictModel):
@@ -97,14 +112,20 @@ class DeclStatisticsView(StrictModel):
     by_state: dict[str, int] = Field(default_factory=dict)
     by_revision_status: dict[str, int] = Field(default_factory=dict)
     by_node: dict[str, int] = Field(default_factory=dict)
+    by_visibility: dict[str, int] = Field(default_factory=dict)
+    by_kind_and_state: dict[str, dict[str, int]] = Field(default_factory=dict)
+    theorem_like_total: int = 0
+    theorem_like_proved: int = 0
+    theorem_like_remaining: int = 0
 
 
 class LeanSourceStatisticsView(StrictModel):
-    schema_version: Literal[1] = SOURCE_STATS_SCHEMA_VERSION
+    schema_version: Literal[2] = SOURCE_STATS_SCHEMA_VERSION
     repo_root: str
     lean_file_count: int
     excluded_directory_names: list[str]
     layers: list[SourceLayerView]
+    rollups: SourceRollupStatisticsView
     markers: SourceMarkerAnalysisView
     graph_status: Literal["available", "unavailable", "invalid"]
     nodes: NodeStatisticsView | None = None
@@ -266,11 +287,23 @@ def build_source_statistics(
         )
         for layer, description in _LAYER_DESCRIPTIONS
     ]
+    all_source_metric = layer_accumulators["all_source"].metric.view()
+    managed_header_metric = layer_accumulators["managed_header"].metric.view()
+    managed_docstring_metric = layer_accumulators["managed_docstring"].metric.view()
     return LeanSourceStatisticsView(
         repo_root=str(root),
         lean_file_count=len(lean_files),
         excluded_directory_names=sorted(_EXCLUDED_DIRECTORY_NAMES),
         layers=layers,
+        rollups=SourceRollupStatisticsView(
+            all_source=all_source_metric,
+            headerless_source=_subtract_metrics(
+                all_source_metric,
+                managed_header_metric,
+                managed_docstring_metric,
+            ),
+            primary_declaration=layer_accumulators["primary_declaration"].metric.view(),
+        ),
         markers=SourceMarkerAnalysisView(
             managed_file_count=marker_files,
             target_marker_count=target_marker_count,
@@ -315,6 +348,14 @@ def render_source_statistics_markdown(report: LeanSourceStatisticsView) -> str:
     lines.extend(
         [
             "",
+            "## Source rollups",
+            "",
+            "| Rollup | Bytes | Physical lines | Non-empty lines |",
+            "| --- | ---: | ---: | ---: |",
+            _render_rollup_row("all_source", report.rollups.all_source),
+            _render_rollup_row("headerless_source", report.rollups.headerless_source),
+            _render_rollup_row("primary_declaration", report.rollups.primary_declaration),
+            "",
             "## Marker and docstring risks",
             "",
             f"- Target markers: **{report.markers.target_marker_count}**; max length: **{report.markers.max_target_marker_length}**.",
@@ -331,6 +372,12 @@ def render_source_statistics_markdown(report: LeanSourceStatisticsView) -> str:
                 f"- Total Decl records: **{report.decls.total}**",
                 f"- Lifecycle: `{json.dumps(report.decls.by_lifecycle, ensure_ascii=False, sort_keys=True)}`",
                 f"- State: `{json.dumps(report.decls.by_state, ensure_ascii=False, sort_keys=True)}`",
+                f"- Visibility: `{json.dumps(report.decls.by_visibility, ensure_ascii=False, sort_keys=True)}`",
+                (
+                    "- Theorem-like proof progress: "
+                    f"**{report.decls.theorem_like_proved}/{report.decls.theorem_like_total}** proved; "
+                    f"**{report.decls.theorem_like_remaining}** remaining."
+                ),
             ]
         )
     if report.warnings:
@@ -433,20 +480,16 @@ def _read_graph_statistics(
     if not index_path.exists():
         warnings.append("Current-schema node index is unavailable; node/Decl statistics were not computed.")
         return None, None, "unavailable"
-    try:
-        index = json.loads(index_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        warnings.append(f"Current-schema node index could not be read: {exc}.")
+    index = _read_model(index_path, NodeIndex, warnings)
+    if index is None:
         return None, None, "invalid"
-    entries = index.get("entries")
-    if index.get("schema_version") != 1:
-        warnings.append(
-            f"Unsupported current node index schema version: {index.get('schema_version')!r}."
-        )
-        return None, None, "invalid"
-    if not isinstance(entries, list):
-        warnings.append("Current-schema node index has no valid `entries` list.")
-        return None, None, "invalid"
+    repo_format = RepoFormat.UNKNOWN
+    repo_format_path = root / ".lean_constellation" / "repo_format.json"
+    if repo_format_path.exists():
+        repo_format_state = _read_model(repo_format_path, RepoFormatState, warnings)
+        if repo_format_state is None:
+            return None, None, "invalid"
+        repo_format = repo_format_state.repo_format
 
     node_kind = Counter()
     node_lifecycle = Counter()
@@ -456,38 +499,98 @@ def _read_graph_statistics(
     decl_state = Counter()
     decl_revision_status = Counter()
     decl_node = Counter()
+    decl_visibility = Counter()
+    decl_kind_and_state: dict[str, Counter[str]] = {}
     decl_total = 0
-    for entry in entries:
-        if not isinstance(entry, dict):
-            warnings.append("Node index contains a non-object entry.")
-            continue
-        node_path = str(entry.get("path") or "<unknown>")
-        kind = str(entry.get("kind") or "unknown")
-        lifecycle = str(entry.get("lifecycle") or "unknown")
-        node_id = entry.get("node_id")
+    theorem_like_total = 0
+    theorem_like_proved = 0
+    invalid = False
+    for entry in index.entries:
+        node_path = entry.path
+        kind = entry.kind
+        lifecycle = entry.lifecycle
+        node_id = entry.node_id
         node_kind[kind] += 1
         node_lifecycle[lifecycle] += 1
         decl_count = 0
-        decl_root = root / ".lean_constellation" / "nodes" / str(node_id) / "decl_graph" / "decls"
-        if node_id and decl_root.is_dir():
-            for decl_path in sorted(decl_root.glob("*/decl.json")):
-                decl = _read_json(decl_path, warnings)
-                if decl is None:
-                    continue
-                decl_count += 1
-                decl_total += 1
-                decl_kind[str(decl.get("kind") or "unknown")] += 1
-                decl_lifecycle[str(decl.get("lifecycle") or "unknown")] += 1
-                decl_node[node_path] += 1
-                current_revision = decl.get("current_revision")
-                revision_path = decl_path.parent / "revisions" / f"{current_revision}.json"
-                revision = _read_json(revision_path, warnings) if current_revision is not None else None
-                if revision is None:
-                    decl_state["unknown"] += 1
-                    decl_revision_status["unknown"] += 1
-                else:
-                    decl_state[str(revision.get("state") or "unknown")] += 1
-                    decl_revision_status[str(revision.get("status") or "unknown")] += 1
+        graph_root = root / ".lean_constellation" / "nodes" / node_id / "decl_graph"
+        decl_root = graph_root / "decls"
+        decl_names: list[str] = []
+        graph_index_path = graph_root / "index.json"
+        graph_expected = kind == "content" or (
+            kind == "scope" and node_path == "Main" and repo_format == RepoFormat.ADAPTER
+        )
+        if graph_index_path.exists() and not graph_expected:
+            warnings.append(
+                f"DeclGraph index is attached to a node that cannot own a catalog: `{graph_index_path}`."
+            )
+            invalid = True
+        elif graph_expected:
+            graph_index = _read_model(graph_index_path, DeclGraphIndex, warnings)
+            if graph_index is None:
+                invalid = True
+            elif graph_index.node_id != node_id or graph_index.node_path != node_path:
+                warnings.append(
+                    "Current-schema DeclGraph index identity does not match its NodeIndex entry: "
+                    f"`{graph_root / 'index.json'}`."
+                )
+                invalid = True
+            else:
+                decl_names = graph_index.decl_names
+                disk_names = (
+                    sorted(
+                        path.name
+                        for path in decl_root.iterdir()
+                        if path.is_dir() and (path / "decl.json").is_file()
+                    )
+                    if decl_root.is_dir()
+                    else []
+                )
+                if disk_names != decl_names:
+                    warnings.append(
+                        "Current-schema DeclGraph index declaration inventory does not match canonical files: "
+                        f"`{graph_root / 'index.json'}`."
+                    )
+                    invalid = True
+        for decl_name in decl_names:
+            decl_path = decl_root / decl_name / "decl.json"
+            decl = _read_model(decl_path, Decl, warnings)
+            if decl is None:
+                invalid = True
+                continue
+            if decl.name != decl_name or decl.node_path != node_path:
+                warnings.append(
+                    f"Current-schema declaration identity does not match its graph inventory: `{decl_path}`."
+                )
+                invalid = True
+                continue
+            decl_count += 1
+            decl_total += 1
+            decl_kind[decl.kind] += 1
+            decl_lifecycle[decl.lifecycle.value] += 1
+            decl_node[node_path] += 1
+            decl_visibility["public" if decl.public else "private"] += 1
+            if decl.current_revision not in decl.revision_ids:
+                warnings.append(f"Current declaration revision is absent from revision_ids: `{decl_path}`.")
+                invalid = True
+                continue
+            revision_path = decl_path.parent / "revisions" / f"{decl.current_revision}.json"
+            revision = _read_model(revision_path, DeclRevision, warnings)
+            if revision is None:
+                invalid = True
+                continue
+            if revision.revision != decl.current_revision:
+                warnings.append(f"Current declaration revision identity does not match its catalog: `{revision_path}`.")
+                invalid = True
+                continue
+            state = revision.state.value
+            decl_state[state] += 1
+            decl_revision_status[revision.status.value] += 1
+            decl_kind_and_state.setdefault(decl.kind, Counter())[state] += 1
+            if entry.active and decl.lifecycle == DeclLifecycle.ACTIVE and is_theorem_like(decl.kind):
+                theorem_like_total += 1
+                if revision.state == DeclState.PROVED:
+                    theorem_like_proved += 1
         node_views.append(
             NodeEntryStatisticsView(
                 path=node_path,
@@ -496,6 +599,9 @@ def _read_graph_statistics(
                 decl_count=decl_count,
             )
         )
+
+    if invalid:
+        return None, None, "invalid"
 
     return (
         NodeStatisticsView(
@@ -511,21 +617,54 @@ def _read_graph_statistics(
             by_state=dict(sorted(decl_state.items())),
             by_revision_status=dict(sorted(decl_revision_status.items())),
             by_node=dict(sorted(decl_node.items())),
+            by_visibility=dict(sorted(decl_visibility.items())),
+            by_kind_and_state={
+                kind: dict(sorted(counts.items()))
+                for kind, counts in sorted(decl_kind_and_state.items())
+            },
+            theorem_like_total=theorem_like_total,
+            theorem_like_proved=theorem_like_proved,
+            theorem_like_remaining=theorem_like_total - theorem_like_proved,
         ),
         "available",
     )
 
 
-def _read_json(path: Path, warnings: list[str]) -> dict[str, Any] | None:
+_ModelT = TypeVar("_ModelT", bound=StrictModel)
+
+
+def _read_model(path: Path, model_type: type[_ModelT], warnings: list[str]) -> _ModelT | None:
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         warnings.append(f"Could not read current-schema graph file `{path}`: {exc}.")
         return None
-    if not isinstance(value, dict):
+    if not isinstance(payload, dict):
         warnings.append(f"Current-schema graph file is not an object: `{path}`.")
         return None
-    return value
+    if "schema_version" in model_type.model_fields and "schema_version" not in payload:
+        warnings.append(f"Current-schema graph file does not declare `schema_version`: `{path}`.")
+        return None
+    try:
+        return model_type.model_validate(payload)
+    except ValidationError as exc:
+        warnings.append(f"Could not read current-schema graph file `{path}`: {exc}.")
+        return None
+
+
+def _subtract_metrics(total: SourceMetricView, *excluded: SourceMetricView) -> SourceMetricView:
+    return SourceMetricView(
+        byte_count=total.byte_count - sum(item.byte_count for item in excluded),
+        physical_line_count=total.physical_line_count - sum(item.physical_line_count for item in excluded),
+        nonempty_line_count=total.nonempty_line_count - sum(item.nonempty_line_count for item in excluded),
+    )
+
+
+def _render_rollup_row(name: str, metric: SourceMetricView) -> str:
+    return (
+        f"| `{name}` | {metric.byte_count} | "
+        f"{metric.physical_line_count} | {metric.nonempty_line_count} |"
+    )
 
 
 def _line_end(text: str, offset: int) -> int:

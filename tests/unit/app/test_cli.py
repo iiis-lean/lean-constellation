@@ -62,7 +62,9 @@ def test_cli_source_stats_is_standalone_and_read_only(tmp_path, capsys) -> None:
     payload = json.loads(capsys.readouterr().out)
 
     assert exit_code == 0
+    assert payload["schema_version"] == 2
     assert payload["lean_file_count"] == 1
+    assert payload["rollups"]["all_source"]["physical_line_count"] == 1
     assert payload["graph_status"] == "unavailable"
 
 
