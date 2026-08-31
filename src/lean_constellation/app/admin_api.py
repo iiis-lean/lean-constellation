@@ -524,6 +524,22 @@ class RestartFailedAgentStepView(StrictModel):
     summary: str
 
 
+class ResetCoordinatorForCurrentTruthInput(StrictModel):
+    flow_id: str
+    expected_agent_id: str
+
+
+class ResetCoordinatorForCurrentTruthView(StrictModel):
+    flow_id: str
+    scope_id: str
+    previous_agent_id: str
+    replacement_agent_id: str
+    previous_phase: str
+    current_phase: str
+    enqueued: bool = False
+    summary: str
+
+
 class ManualCheckpointInput(StrictModel):
     repo_root: Path
     scope_ids: list[str]
@@ -3411,6 +3427,124 @@ class LeanAdminApi:
                     "restart_failed_agent_step_failed",
                     f"Failed to restart AgentStep: {exc}",
                     object_ref=input_model.step_id,
+                )
+            )
+
+    def reset_coordinator_for_current_truth(
+        self,
+        input_model: ResetCoordinatorForCurrentTruthInput,
+    ) -> ServiceResult[ResetCoordinatorForCurrentTruthView]:
+        """Replace an idle callback Coordinator with a fresh current-truth decision Agent."""
+
+        flow_service = self.runtime.ark.flow_service
+        step_service = self.runtime.ark.step_service
+        agent_service = self.runtime.ark.agent_service
+        schedule_service = self.runtime.ark.schedule_service
+        pause_controller = self.runtime.ark.pause_controller
+        if (
+            flow_service is None
+            or step_service is None
+            or agent_service is None
+            or schedule_service is None
+            or pause_controller is None
+        ):
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "coordinator_recovery_service_missing",
+                    "Coordinator recovery requires ARK Flow, Step, Agent, Schedule, and Pause services.",
+                )
+            )
+        try:
+            flow = flow_service.get_flow(input_model.flow_id)
+            if flow.flow_type != "native_repo_coordinator":
+                raise ValueError("current-truth reset requires a native_repo_coordinator Flow")
+            if flow.status is not FlowStatus.RUNNING:
+                raise ValueError("current-truth reset requires a running Coordinator Flow")
+            phase = getattr(getattr(flow.state, "position", None), "phase", None)
+            if phase != "coordinator_callback":
+                raise ValueError("current-truth reset requires coordinator_callback phase")
+            if flow.current_step_id is not None:
+                raise ValueError("current-truth reset requires no current Step")
+            if not pause_controller.is_paused(None):
+                raise ValueError("current-truth reset requires the runtime to be paused")
+            active_flow_advances = set(getattr(schedule_service, "active_flow_advances", set()))
+            active_in_scope = [
+                candidate_id
+                for candidate_id in active_flow_advances
+                if flow_service.get_flow(candidate_id).scope_id == flow.scope_id
+            ]
+            if active_in_scope:
+                raise ValueError(
+                    "current-truth reset requires no active Flow advance in scope: "
+                    + ",".join(sorted(active_in_scope))
+                )
+            active_steps = [
+                step.step_id
+                for status in (StepStatus.RUNNING, StepStatus.CREATED)
+                for step in step_service.store.list_steps(scope_id=flow.scope_id, status=status)
+            ]
+            if active_steps:
+                raise ValueError(
+                    "current-truth reset requires no running or created Step in scope: "
+                    + ",".join(sorted(active_steps))
+                )
+            if agent_service.has_running_agents(flow.scope_id):
+                raise ValueError("current-truth reset requires no running Agent in scope")
+
+            previous_agent_id = flow.agent_bindings.get("coordinator")
+            if previous_agent_id != input_model.expected_agent_id:
+                raise ValueError(
+                    "Coordinator Agent binding changed: "
+                    f"expected {input_model.expected_agent_id}, found {previous_agent_id}"
+                )
+            previous_agent = agent_service.get_agent(previous_agent_id)
+            if previous_agent.scope_id != flow.scope_id:
+                raise ValueError("bound Coordinator Agent scope does not match the Flow")
+            if previous_agent.agent_type != "CoordinatorAgent":
+                raise ValueError("bound Agent is not a CoordinatorAgent")
+            if previous_agent.status == "running":
+                raise ValueError("bound Coordinator Agent is still running")
+
+            replacement = agent_service.create_agent(
+                flow.scope_id,
+                previous_agent.agent_type,
+                provider_type=previous_agent.provider_type,
+                home_id=previous_agent.home_id,
+            )
+
+            def apply_reset(target_flow) -> None:
+                current_phase = getattr(getattr(target_flow.state, "position", None), "phase", None)
+                if (
+                    target_flow.status is not FlowStatus.RUNNING
+                    or current_phase != "coordinator_callback"
+                    or target_flow.current_step_id is not None
+                    or target_flow.agent_bindings.get("coordinator") != input_model.expected_agent_id
+                ):
+                    raise ValueError("Coordinator Flow changed during current-truth reset")
+                target_flow.agent_bindings.by_role["coordinator"] = replacement.agent_id
+                target_flow.state.position.phase = "coordinator_agent"
+
+            updated = flow_service.store.update_flow_record(flow.flow_id, apply_reset)
+            return self.runtime.foundation.ok(
+                ResetCoordinatorForCurrentTruthView(
+                    flow_id=updated.flow_id,
+                    scope_id=updated.scope_id,
+                    previous_agent_id=previous_agent_id,
+                    replacement_agent_id=replacement.agent_id,
+                    previous_phase=phase,
+                    current_phase=updated.state.position.phase,
+                    summary=(
+                        f"Reset Coordinator Flow {updated.flow_id} from callback Agent "
+                        f"{previous_agent_id} to fresh current-truth Agent {replacement.agent_id}."
+                    ),
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - operator mutation boundary.
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "reset_coordinator_for_current_truth_failed",
+                    f"Failed to reset Coordinator for current truth: {exc}",
+                    object_ref=input_model.flow_id,
                 )
             )
 
