@@ -365,6 +365,60 @@ class StrategyRoundComponent:
             round_record=round_record.value,
         )
 
+    def rollback_failed_round_execution_reopen(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        failed_step_id: str,
+        previous_round: DeclGraphRound,
+    ) -> ServiceResult[DeclGraphRound]:
+        """Compensate a recovery-boundary reopen after the ARK transaction fails."""
+
+        expected_reason_prefix = (
+            f"Step {failed_step_id} failed before DeclGraph round completion:"
+        )
+        if (
+            previous_round.node_path != node_path
+            or previous_round.status is not DeclRoundStatus.AWAITING_CLOSEOUT
+            or previous_round.execution_result_kind is not DeclRoundResultKind.FAILED
+            or not (previous_round.execution_reason or "").startswith(expected_reason_prefix)
+        ):
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "round_reopen_compensation_source_invalid",
+                    "Declaration round compensation source is not the expected failed Step marker.",
+                    object_ref=previous_round.round_id,
+                )
+            )
+        current = self.get_round(
+            repo_root,
+            node_path=node_path,
+            round_id=previous_round.round_id,
+        )
+        if not current.ok or current.value is None:
+            return self.runtime.foundation.fail(current.issues)
+        if current.value == previous_round:
+            return self.runtime.foundation.ok(current.value)
+        expected_reopened = previous_round.model_copy(deep=True)
+        expected_reopened.status = DeclRoundStatus.RUNNING
+        expected_reopened.execution_result_kind = None
+        expected_reopened.execution_reason = None
+        expected_reopened.execution_completed_at = None
+        if current.value != expected_reopened:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "round_reopen_compensation_cas_mismatch",
+                    "Declaration round changed after recovery-boundary reopen.",
+                    object_ref=previous_round.round_id,
+                )
+            )
+        return self._write_round(
+            repo_root,
+            node_path=node_path,
+            round_record=previous_round,
+        )
+
     def validate_failed_round_execution_restart(
         self,
         repo_root: Path,

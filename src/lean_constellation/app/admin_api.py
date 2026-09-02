@@ -10,7 +10,13 @@ import time
 from typing import Any, Literal
 
 from agent_runtime_kit.agent.models import to_jsonable
-from agent_runtime_kit.flow import SchedulerRunBudget, SchedulerRunControlView, SchedulerRunLeaseView
+from agent_runtime_kit.flow import (
+    AgentStepRecoveryView,
+    LostStepSubmissionFinalizeUnavailableError,
+    SchedulerRunBudget,
+    SchedulerRunControlView,
+    SchedulerRunLeaseView,
+)
 from agent_runtime_kit.flow.models import FlowRequest, FlowStatus, StepStatus, utc_now_iso
 from agent_runtime_kit.flow.standard_steps import AgentStepState
 from pydantic import Field, field_validator, model_validator
@@ -177,6 +183,11 @@ class StepMonitorView(StrictModel):
     error_type: str | None = None
     agent_type: str | None = None
     bound_agent_id: str | None = None
+    provider_type: str | None = None
+    provider_error_type: str | None = None
+    provider_retryable: bool | None = None
+    operator_action_required: bool | None = None
+    available_recovery_actions: list[str] = Field(default_factory=list)
     created_at: str | None = None
     updated_at: str | None = None
     started_at: str | None = None
@@ -508,17 +519,75 @@ class ClearAgentStepOverrideInput(StrictModel):
     step_id: str
 
 
-class RestartFailedAgentStepInput(StrictModel):
+class DeclGraphRoundRecoveryGateView(StrictModel):
+    repo_root: str | None = None
+    node_path: str
+    round_id: str
+    eligible: bool
+    issue_kinds: list[str] = Field(default_factory=list)
+
+
+class AgentStepRecoveryAdminView(StrictModel):
+    recovery: AgentStepRecoveryView
+    decl_graph_round_gate: DeclGraphRoundRecoveryGateView | None = None
+    summary: str
+
+
+class RecoverAgentStepInput(StrictModel):
     step_id: str
+    expected_status: Literal["failed", "suspended", "running"]
+    expected_recovery_token: str = Field(min_length=64, max_length=64)
+    action: Literal[
+        "restart",
+        "resume_suspended",
+        "finalize_submission",
+        "settle_runner_lost",
+    ]
+    agent_mode: Literal["auto", "reuse", "fresh", "fork_current"] = "auto"
+
+    @model_validator(mode="after")
+    def _status_matches_action(self) -> "RecoverAgentStepInput":
+        if (
+            (self.expected_status == "failed" and self.action != "restart")
+            or (
+                self.expected_status == "suspended"
+                and self.action != "resume_suspended"
+            )
+            or (
+                self.expected_status == "running"
+                and self.action
+                not in {"restart", "finalize_submission", "settle_runner_lost"}
+            )
+        ):
+            raise ValueError("AgentStep recovery action does not match expected_status")
+        if self.action in {"finalize_submission", "settle_runner_lost"} and self.agent_mode != "auto":
+            raise ValueError(f"AgentStep recovery action {self.action} requires agent_mode=auto")
+        return self
 
 
-class RestartFailedAgentStepView(StrictModel):
-    failed_step_id: str
-    replacement_step_id: str
+class RecoverAgentStepView(StrictModel):
+    source_step_id: str
+    replacement_step_id: str | None = None
     flow_id: str
     scope_id: str
-    agent_id: str
+    action: Literal[
+        "restart",
+        "resume_suspended",
+        "finalize_submission",
+        "settle_runner_lost",
+    ]
+    previous_status: str
+    previous_agent_id: str | None = None
+    replacement_agent_id: str | None = None
+    agent_mode: Literal["auto", "reuse", "fresh", "fork_current"]
     agent_reused: bool
+    submission_disposition: str
+    flow_status_before: str
+    flow_current_step_id_before: str | None = None
+    flow_updated_at_before: str
+    flow_status_after: str
+    flow_current_step_id_after: str | None = None
+    flow_updated_at_after: str
     enqueued: bool
     reopened_round_id: str | None = None
     summary: str
@@ -536,6 +605,25 @@ class ResetCoordinatorForCurrentTruthView(StrictModel):
     replacement_agent_id: str
     previous_phase: str
     current_phase: str
+    enqueued: bool = False
+    summary: str
+
+
+class ResetContentPlanForCurrentTruthInput(StrictModel):
+    flow_id: str
+    expected_agent_id: str
+    replacement_mode: Literal["fresh"] = "fresh"
+
+
+class ResetContentPlanForCurrentTruthView(StrictModel):
+    flow_id: str
+    scope_id: str
+    previous_agent_id: str
+    replacement_agent_id: str
+    previous_phase: str
+    current_phase: str
+    replacement_mode: Literal["fresh"] = "fresh"
+    updated_step_id: str | None = None
     enqueued: bool = False
     summary: str
 
@@ -2523,7 +2611,12 @@ class LeanAdminApi:
                 summary=(
                     f"Step {step_id} reached settled terminal state."
                     if waited.terminal
-                    else f"Step {step_id} observation returned {waited.runner_state}."
+                    else (
+                        f"Step {step_id} reached a settled suspended boundary."
+                        if waited.runner_state == "settled"
+                        and str(waited.step.status) == "suspended"
+                        else f"Step {step_id} observation returned {waited.runner_state}."
+                    )
                 ),
             )
         )
@@ -3356,29 +3449,105 @@ class LeanAdminApi:
                 self.runtime.foundation.issue("clear_agent_step_override_failed", f"Failed to clear AgentStep override: {exc}")
             )
 
-    def restart_failed_agent_step(
+    def inspect_agent_step_recovery(
         self,
-        input_model: RestartFailedAgentStepInput,
-    ) -> ServiceResult[RestartFailedAgentStepView]:
+        step_id: str,
+    ) -> ServiceResult[AgentStepRecoveryAdminView]:
+        """Return a read-only AgentStep recovery assessment and optional LC round gate."""
+
         flow_service = self.runtime.ark.flow_service
-        step_service = self.runtime.ark.step_service
-        if flow_service is None or step_service is None:
+        if flow_service is None:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
-                    "flow_step_service_missing",
-                    "ARK flow/step services are not configured.",
+                    "flow_service_missing",
+                    "ARK flow service is not configured.",
                 )
             )
         try:
-            failed_step = step_service.store.get_step(input_model.step_id)
-            failed_flow = flow_service.get_flow(failed_step.flow_id)
-            round_target: tuple[Path, str, str] | None = None
-            if failed_flow.flow_type == "decl_graph_round":
+            recovery = flow_service.inspect_agent_step_recovery(step_id)
+            flow = flow_service.get_flow(recovery.flow_id)
+            round_gate = None
+            if (
+                flow.flow_type == "decl_graph_round"
+                and recovery.step_status is StepStatus.FAILED
+            ):
                 from lean_constellation.flows.content_node_task.decl_round.flow import (
                     DeclGraphRoundInput,
                 )
 
-                round_input = failed_flow.input
+                round_input = flow.input
+                if not isinstance(round_input, DeclGraphRoundInput):
+                    round_gate = DeclGraphRoundRecoveryGateView(
+                        node_path="",
+                        round_id="",
+                        eligible=False,
+                        issue_kinds=["decl_graph_round_input_invalid"],
+                    )
+                elif round_input.repo_path is None:
+                    round_gate = DeclGraphRoundRecoveryGateView(
+                        node_path=round_input.node_path,
+                        round_id=round_input.round_id,
+                        eligible=False,
+                        issue_kinds=["decl_graph_round_repo_path_missing"],
+                    )
+                else:
+                    validated = self.runtime.decl_graph.validate_failed_round_execution_restart(
+                        Path(round_input.repo_path),
+                        node_path=round_input.node_path,
+                        round_id=round_input.round_id,
+                        failed_step_id=step_id,
+                    )
+                    round_gate = DeclGraphRoundRecoveryGateView(
+                        repo_root=round_input.repo_path,
+                        node_path=round_input.node_path,
+                        round_id=round_input.round_id,
+                        eligible=validated.ok,
+                        issue_kinds=[issue.kind for issue in validated.issues],
+                    )
+            return self.runtime.foundation.ok(
+                AgentStepRecoveryAdminView(
+                    recovery=recovery,
+                    decl_graph_round_gate=round_gate,
+                    summary=f"Inspected recovery boundary for AgentStep {step_id}.",
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - read-only operator boundary.
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "inspect_agent_step_recovery_failed",
+                    f"Failed to inspect AgentStep recovery: {exc}",
+                    object_ref=step_id,
+                )
+            )
+
+    def recover_agent_step(
+        self,
+        input_model: RecoverAgentStepInput,
+    ) -> ServiceResult[RecoverAgentStepView]:
+        """Recover one failed, suspended, or persisted-running/lost AgentStep."""
+
+        flow_service = self.runtime.ark.flow_service
+        if flow_service is None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "flow_service_missing",
+                    "ARK flow service is not configured.",
+                )
+            )
+        try:
+            preview = flow_service.inspect_agent_step_recovery(input_model.step_id)
+            flow = flow_service.get_flow(preview.flow_id)
+            round_target = None
+            if (
+                flow.flow_type == "decl_graph_round"
+                and input_model.expected_status == "failed"
+                and input_model.action == "restart"
+            ):
+                from lean_constellation.flows.content_node_task.decl_round.flow import (
+                    DeclGraphRoundInput,
+                )
+
+                round_input = flow.input
                 if not isinstance(round_input, DeclGraphRoundInput) or round_input.repo_path is None:
                     raise TypeError("DeclGraphRoundFlow has no typed repo_path input")
                 repo_root = Path(round_input.repo_path)
@@ -3386,16 +3555,31 @@ class LeanAdminApi:
                     repo_root,
                     node_path=round_input.node_path,
                     round_id=round_input.round_id,
-                    failed_step_id=failed_step.step_id,
+                    failed_step_id=input_model.step_id,
                 )
-                if not validated.ok:
+                if not validated.ok or validated.value is None:
                     return self.runtime.foundation.fail(validated.issues)
-                round_target = (repo_root, round_input.node_path, round_input.round_id)
+                round_target = (
+                    repo_root,
+                    round_input.node_path,
+                    round_input.round_id,
+                    validated.value.model_copy(deep=True),
+                )
 
-            restarted = flow_service.restart_failed_agent_step(input_model.step_id)
             reopened_round_id = None
-            if round_target is not None:
-                repo_root, node_path, round_id = round_target
+            round_reopened = False
+
+            def reopen_round_boundary(target_flow, source_step, replacement_step) -> None:
+                nonlocal round_reopened, reopened_round_id
+                if round_target is None:
+                    return
+                repo_root, node_path, round_id, _ = round_target
+                if (
+                    target_flow.flow_type != "decl_graph_round"
+                    or source_step.step_id != input_model.step_id
+                    or replacement_step.state.restart_of_step_id != input_model.step_id
+                ):
+                    raise ValueError("DeclGraph round recovery boundary changed")
                 reopened = self.runtime.decl_graph.reopen_failed_round_execution(
                     repo_root,
                     node_path=node_path,
@@ -3403,29 +3587,68 @@ class LeanAdminApi:
                     failed_step_id=input_model.step_id,
                 )
                 if not reopened.ok:
-                    return self.runtime.foundation.fail(reopened.issues)
+                    raise ValueError(
+                        "DeclGraph round reopen failed: "
+                        + ",".join(issue.kind for issue in reopened.issues)
+                    )
+                round_reopened = True
                 reopened_round_id = round_id
+
+            def rollback_round_boundary() -> None:
+                if round_target is None:
+                    return
+                repo_root, node_path, _, previous_round = round_target
+                rolled_back = self.runtime.decl_graph.rollback_failed_round_execution_reopen(
+                    repo_root,
+                    node_path=node_path,
+                    failed_step_id=input_model.step_id,
+                    previous_round=previous_round,
+                )
+                if not rolled_back.ok:
+                    raise ValueError(
+                        "DeclGraph round reopen compensation failed: "
+                        + ",".join(issue.kind for issue in rolled_back.issues)
+                    )
+
+            recovered = flow_service.recover_agent_step(
+                step_id=input_model.step_id,
+                expected_status=StepStatus(input_model.expected_status),
+                expected_recovery_token=input_model.expected_recovery_token,
+                action=input_model.action,
+                agent_mode=input_model.agent_mode,
+                boundary_mutator=(reopen_round_boundary if round_target is not None else None),
+                boundary_compensator=(rollback_round_boundary if round_target is not None else None),
+            )
             return self.runtime.foundation.ok(
-                RestartFailedAgentStepView(
-                    failed_step_id=restarted.failed_step_id,
-                    replacement_step_id=restarted.replacement_step_id,
-                    flow_id=restarted.flow_id,
-                    scope_id=failed_step.scope_id,
-                    agent_id=restarted.agent_id,
-                    agent_reused=restarted.agent_reused,
-                    enqueued=restarted.enqueued,
-                    reopened_round_id=reopened_round_id,
+                RecoverAgentStepView(
+                    **recovered.model_dump(mode="json"),
+                    reopened_round_id=reopened_round_id if round_reopened else None,
                     summary=(
-                        f"Restarted failed AgentStep {restarted.failed_step_id} as "
-                        f"{restarted.replacement_step_id}."
+                        f"Recovered AgentStep {recovered.source_step_id} as "
+                        f"{recovered.replacement_step_id}."
+                        if recovered.replacement_step_id is not None
+                        else (
+                            f"Finalized accepted submission for AgentStep {recovered.source_step_id}."
+                            if recovered.action == "finalize_submission"
+                            else f"Settled lost runner for AgentStep {recovered.source_step_id}."
+                        )
                     ),
+                )
+            )
+        except LostStepSubmissionFinalizeUnavailableError as exc:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    exc.error_type,
+                    "Lost AgentStep accepted submission cannot be finalized safely; "
+                    "restore a paired checkpoint.",
+                    object_ref=input_model.step_id,
                 )
             )
         except Exception as exc:  # noqa: BLE001 - operator mutation boundary.
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
-                    "restart_failed_agent_step_failed",
-                    f"Failed to restart AgentStep: {exc}",
+                    "recover_agent_step_failed",
+                    f"Failed to recover AgentStep: {exc}",
                     object_ref=input_model.step_id,
                 )
             )
@@ -3505,37 +3728,40 @@ class LeanAdminApi:
             if previous_agent.status == "running":
                 raise ValueError("bound Coordinator Agent is still running")
 
-            replacement = agent_service.create_agent(
-                flow.scope_id,
-                previous_agent.agent_type,
-                provider_type=previous_agent.provider_type,
-                home_id=previous_agent.home_id,
-            )
-
-            def apply_reset(target_flow) -> None:
+            def apply_reset(target_flow, target_step) -> None:
                 current_phase = getattr(getattr(target_flow.state, "position", None), "phase", None)
                 if (
-                    target_flow.status is not FlowStatus.RUNNING
+                    target_flow.flow_type != "native_repo_coordinator"
+                    or target_flow.status is not FlowStatus.RUNNING
                     or current_phase != "coordinator_callback"
                     or target_flow.current_step_id is not None
-                    or target_flow.agent_bindings.get("coordinator") != input_model.expected_agent_id
+                    or target_step is not None
+                    or target_flow.agent_bindings.get("coordinator")
+                    != input_model.expected_agent_id
                 ):
                     raise ValueError("Coordinator Flow changed during current-truth reset")
-                target_flow.agent_bindings.by_role["coordinator"] = replacement.agent_id
                 target_flow.state.position.phase = "coordinator_agent"
 
-            updated = flow_service.store.update_flow_record(flow.flow_id, apply_reset)
+            replacement = flow_service.replace_bound_agent(
+                flow_id=flow.flow_id,
+                role="coordinator",
+                expected_agent_id=input_model.expected_agent_id,
+                replacement_mode="fresh",
+                boundary_mutator=apply_reset,
+            )
+            updated = flow_service.get_flow(flow.flow_id)
             return self.runtime.foundation.ok(
                 ResetCoordinatorForCurrentTruthView(
                     flow_id=updated.flow_id,
                     scope_id=updated.scope_id,
                     previous_agent_id=previous_agent_id,
-                    replacement_agent_id=replacement.agent_id,
+                    replacement_agent_id=replacement.replacement_agent_id,
                     previous_phase=phase,
                     current_phase=updated.state.position.phase,
                     summary=(
                         f"Reset Coordinator Flow {updated.flow_id} from callback Agent "
-                        f"{previous_agent_id} to fresh current-truth Agent {replacement.agent_id}."
+                        f"{previous_agent_id} to fresh current-truth Agent "
+                        f"{replacement.replacement_agent_id}."
                     ),
                 )
             )
@@ -3544,6 +3770,129 @@ class LeanAdminApi:
                 self.runtime.foundation.issue(
                     "reset_coordinator_for_current_truth_failed",
                     f"Failed to reset Coordinator for current truth: {exc}",
+                    object_ref=input_model.flow_id,
+                )
+            )
+
+    def reset_content_plan_for_current_truth(
+        self,
+        input_model: ResetContentPlanForCurrentTruthInput,
+    ) -> ServiceResult[ResetContentPlanForCurrentTruthView]:
+        """Replace one paused ContentPlan binding without changing task truth."""
+
+        flow_service = self.runtime.ark.flow_service
+        step_service = self.runtime.ark.step_service
+        agent_service = self.runtime.ark.agent_service
+        schedule_service = self.runtime.ark.schedule_service
+        pause_controller = self.runtime.ark.pause_controller
+        if (
+            flow_service is None
+            or step_service is None
+            or agent_service is None
+            or schedule_service is None
+            or pause_controller is None
+        ):
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "content_plan_recovery_service_missing",
+                    "ContentPlan recovery requires ARK Flow, Step, Agent, Schedule, and Pause services.",
+                )
+            )
+        try:
+            flow = flow_service.get_flow(input_model.flow_id)
+            if flow.flow_type != "content_node_task":
+                raise ValueError("current-truth reset requires a content_node_task Flow")
+            if flow.status is not FlowStatus.RUNNING:
+                raise ValueError("current-truth reset requires a running ContentNodeTask Flow")
+            phase = getattr(getattr(flow.state, "position", None), "phase", None)
+            if phase not in {"plan_agent", "callback_plan_agent"}:
+                raise ValueError(
+                    "current-truth reset requires plan_agent or callback_plan_agent phase"
+                )
+            if not pause_controller.is_paused(None):
+                raise ValueError("current-truth reset requires the runtime to be paused")
+
+            current_step_id = flow.current_step_id
+            if current_step_id is not None:
+                current_step = step_service.store.get_step(current_step_id)
+                if current_step.step_type != "content_plan_agent_step":
+                    raise ValueError("current Step is not a ContentPlan AgentStep")
+                if current_step.status is not StepStatus.CREATED:
+                    raise ValueError("current ContentPlan AgentStep is not created")
+                state = current_step.state
+                if not isinstance(state, AgentStepState) or state.agent_role != "content_plan":
+                    raise ValueError("current ContentPlan AgentStep has an invalid role")
+
+            previous_agent_id = flow.agent_bindings.get("content_plan")
+            if previous_agent_id != input_model.expected_agent_id:
+                raise ValueError(
+                    "ContentPlan Agent binding changed: "
+                    f"expected {input_model.expected_agent_id}, found {previous_agent_id}"
+                )
+            previous_agent = agent_service.get_agent(previous_agent_id)
+            if previous_agent.scope_id != flow.scope_id:
+                raise ValueError("bound ContentPlan Agent scope does not match the Flow")
+            if previous_agent.agent_type != "ContentPlanAgent":
+                raise ValueError("bound Agent is not a ContentPlanAgent")
+            if previous_agent.status == "running":
+                raise ValueError("bound ContentPlan Agent is still running")
+
+            def validate_boundary(target_flow, target_step) -> None:
+                current_phase = getattr(getattr(target_flow.state, "position", None), "phase", None)
+                if (
+                    target_flow.flow_type != "content_node_task"
+                    or target_flow.status is not FlowStatus.RUNNING
+                    or current_phase != phase
+                    or target_flow.current_step_id != current_step_id
+                    or target_flow.agent_bindings.get("content_plan")
+                    != input_model.expected_agent_id
+                ):
+                    raise ValueError("ContentPlan Flow changed during current-truth reset")
+                if current_step_id is None:
+                    if target_step is not None:
+                        raise ValueError("ContentPlan current Step changed during current-truth reset")
+                    return
+                if (
+                    target_step is None
+                    or target_step.step_type != "content_plan_agent_step"
+                    or target_step.status is not StepStatus.CREATED
+                    or not isinstance(target_step.state, AgentStepState)
+                    or target_step.state.agent_role != "content_plan"
+                ):
+                    raise ValueError("ContentPlan current Step changed during current-truth reset")
+
+            replacement = flow_service.replace_bound_agent(
+                flow_id=flow.flow_id,
+                role="content_plan",
+                expected_agent_id=input_model.expected_agent_id,
+                replacement_mode=input_model.replacement_mode,
+                created_step_id=current_step_id,
+                boundary_mutator=validate_boundary,
+            )
+            updated = flow_service.get_flow(flow.flow_id)
+            current_phase = getattr(getattr(updated.state, "position", None), "phase", None)
+            return self.runtime.foundation.ok(
+                ResetContentPlanForCurrentTruthView(
+                    flow_id=updated.flow_id,
+                    scope_id=updated.scope_id,
+                    previous_agent_id=previous_agent_id,
+                    replacement_agent_id=replacement.replacement_agent_id,
+                    previous_phase=phase,
+                    current_phase=current_phase,
+                    replacement_mode="fresh",
+                    updated_step_id=replacement.step_id,
+                    summary=(
+                        f"Reset ContentPlan Flow {updated.flow_id} from Agent "
+                        f"{previous_agent_id} to fresh current-truth Agent "
+                        f"{replacement.replacement_agent_id}."
+                    ),
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - operator mutation boundary.
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "reset_content_plan_for_current_truth_failed",
+                    f"Failed to reset ContentPlan for current truth: {exc}",
                     object_ref=input_model.flow_id,
                 )
             )
@@ -4045,6 +4394,38 @@ class LeanAdminApi:
         agent_type = getattr(step.state, "agent_type", None)
         agent_role = getattr(step.state, "agent_role", None)
         bound_agent_id = step.agent_bindings.get(agent_role) if agent_role else None
+        error_details = getattr(step.error, "details", None) if step.error is not None else None
+        is_provider_suspension = (
+            step.status is StepStatus.SUSPENDED
+            and getattr(step.error, "error_type", None)
+            in {"agent_provider_turn_failed", "agent_provider_unavailable"}
+        )
+        safe_error_details = (
+            error_details
+            if is_provider_suspension and isinstance(error_details, dict)
+            else {}
+        )
+        provider_type = safe_error_details.get("provider_type")
+        if not isinstance(provider_type, str):
+            configured_provider = getattr(step.state, "provider_type", None)
+            provider_type = configured_provider if isinstance(configured_provider, str) else None
+        provider_error_type = safe_error_details.get("provider_error_type")
+        if not isinstance(provider_error_type, str):
+            provider_error_type = None
+        provider_retryable = safe_error_details.get("retryable")
+        if not isinstance(provider_retryable, bool):
+            provider_retryable = None
+        operator_action_required = safe_error_details.get("operator_action_required")
+        if not isinstance(operator_action_required, bool):
+            operator_action_required = None
+        available_recovery_actions: list[str] = []
+        if step.status is StepStatus.SUSPENDED:
+            try:
+                recovery = self.runtime.ark.flow_service.inspect_agent_step_recovery(step.step_id)
+            except Exception:
+                available_recovery_actions = []
+            else:
+                available_recovery_actions = [str(action) for action in recovery.available_actions]
         return StepMonitorView(
             step_id=step.step_id,
             flow_id=step.flow_id,
@@ -4058,6 +4439,11 @@ class LeanAdminApi:
             error_type=getattr(step.error, "error_type", None) if step.error is not None else None,
             agent_type=agent_type,
             bound_agent_id=bound_agent_id,
+            provider_type=provider_type,
+            provider_error_type=provider_error_type,
+            provider_retryable=provider_retryable,
+            operator_action_required=operator_action_required,
+            available_recovery_actions=available_recovery_actions,
             created_at=step.created_at,
             updated_at=step.updated_at,
             started_at=step.started_at,
@@ -4185,6 +4571,12 @@ class LeanAdminApi:
             lease,
             advanced_flows,
         )
+        if lease.status == "terminal" and any(
+            step.status == "suspended" for step in started_steps
+        ):
+            terminal_disposition = "review_required"
+            requires_review = True
+            suggested_next_action = "inspect_agent_step_recovery"
         return RuntimeLeaseMonitorView(
             lease=lease,
             runtime=runtime_result.value,

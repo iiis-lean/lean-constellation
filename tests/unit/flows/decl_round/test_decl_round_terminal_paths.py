@@ -5,7 +5,7 @@ from pathlib import Path
 from agent_runtime_kit.flow.models import BaseStepError, FlowStatus, StepStatus, utc_now_iso
 from agent_runtime_kit.runtime import RuntimePauseController
 
-from lean_constellation.app import LeanAdminApi, RestartFailedAgentStepInput
+from lean_constellation.app import LeanAdminApi, RecoverAgentStepInput
 from lean_constellation.services.decl_graph import DeclRoundResultKind, DeclRoundStatus
 from tests.unit.flows.decl_round._helpers import (
     advance_and_run,
@@ -77,8 +77,9 @@ def test_worker_step_exception_records_failed_round_for_plan_closeout(tmp_path: 
     )
 
 
-def test_admin_restart_reuses_failed_worker_and_reopens_only_round_failure_marker(
+def test_admin_recovery_reuses_failed_worker_and_reopens_only_round_failure_marker(
     tmp_path: Path,
+    monkeypatch,
 ) -> None:
     runtime, lean_runtime, repo_root = make_decl_round_runtime(tmp_path)
     strategy_id, round_id, round_index = create_round_with_decl(lean_runtime, repo_root)
@@ -127,17 +128,75 @@ def test_admin_restart_reuses_failed_worker_and_reopens_only_round_failure_marke
     schedule = _RestartSchedule()
     runtime.ark.schedule_service = schedule
 
-    restarted = LeanAdminApi(lean_runtime).restart_failed_agent_step(
-        RestartFailedAgentStepInput(step_id=failed_step_id)
+    admin = LeanAdminApi(lean_runtime)
+    preview = admin.inspect_agent_step_recovery(failed_step_id)
+    assert preview.ok and preview.value is not None, preview.issues
+    flow_before = runtime.flow_service.get_flow(flow_id).model_dump(mode="json")
+    step_before = runtime.flow_service.get_step(failed_step_id).model_dump(mode="json")
+    round_before = lean_runtime.decl_graph.get_round(
+        repo_root,
+        node_path="Main.Topic.Core",
+        round_id=round_id,
+    ).value.model_dump(mode="json")
+    reopen = lean_runtime.decl_graph.reopen_failed_round_execution
+
+    def reopen_then_fail(*args, **kwargs):  # noqa: ANN002, ANN003
+        reopened = reopen(*args, **kwargs)
+        assert reopened.ok
+        raise RuntimeError("injected ARK recovery boundary failure")
+
+    monkeypatch.setattr(
+        lean_runtime.decl_graph,
+        "reopen_failed_round_execution",
+        reopen_then_fail,
+    )
+    failed_recovery = admin.recover_agent_step(
+        RecoverAgentStepInput(
+            step_id=failed_step_id,
+            expected_status="failed",
+            expected_recovery_token=preview.value.recovery.recovery_token,
+            action="restart",
+            agent_mode="reuse",
+        )
     )
 
-    assert restarted.ok and restarted.value is not None, restarted.issues
-    assert restarted.value.agent_reused is True
-    assert restarted.value.agent_id == agent.agent_id
-    assert restarted.value.reopened_round_id == round_id
-    assert schedule.step_ids == [restarted.value.replacement_step_id]
+    assert not failed_recovery.ok
+    assert failed_recovery.issues[0].kind == "recover_agent_step_failed"
+    assert runtime.flow_service.get_flow(flow_id).model_dump(mode="json") == flow_before
+    assert runtime.flow_service.get_step(failed_step_id).model_dump(mode="json") == step_before
+    compensated_round = lean_runtime.decl_graph.get_round(
+        repo_root,
+        node_path="Main.Topic.Core",
+        round_id=round_id,
+    )
+    assert compensated_round.ok and compensated_round.value is not None
+    assert compensated_round.value.model_dump(mode="json") == round_before
+    assert schedule.step_ids == []
+
+    monkeypatch.setattr(
+        lean_runtime.decl_graph,
+        "reopen_failed_round_execution",
+        reopen,
+    )
+    preview = admin.inspect_agent_step_recovery(failed_step_id)
+    assert preview.ok and preview.value is not None, preview.issues
+    recovered = admin.recover_agent_step(
+        RecoverAgentStepInput(
+            step_id=failed_step_id,
+            expected_status="failed",
+            expected_recovery_token=preview.value.recovery.recovery_token,
+            action="restart",
+            agent_mode="auto",
+        )
+    )
+
+    assert recovered.ok and recovered.value is not None, recovered.issues
+    assert recovered.value.agent_reused is True
+    assert recovered.value.replacement_agent_id == agent.agent_id
+    assert recovered.value.reopened_round_id == round_id
+    assert schedule.step_ids == [recovered.value.replacement_step_id]
     old_step = runtime.flow_service.get_step(failed_step_id)
-    replacement = runtime.flow_service.get_step(restarted.value.replacement_step_id)
+    replacement = runtime.flow_service.get_step(recovered.value.replacement_step_id)
     flow = runtime.flow_service.get_flow(flow_id)
     assert old_step.status is StepStatus.FAILED
     assert replacement.step_type == old_step.step_type
@@ -171,6 +230,89 @@ def test_admin_restart_reuses_failed_worker_and_reopens_only_round_failure_marke
     assert "previous execution of this AgentStep ended unexpectedly" in (
         runtime.agent_service.start_records[-1].prompt or ""
     )
+
+
+def test_admin_recovery_resumes_suspended_worker_without_changing_live_round(
+    tmp_path: Path,
+) -> None:
+    runtime, lean_runtime, repo_root = make_decl_round_runtime(tmp_path)
+    strategy_id, round_id, round_index = create_round_with_decl(lean_runtime, repo_root)
+    flow_id = start_decl_round_flow(
+        runtime,
+        repo_root,
+        strategy_id=strategy_id,
+        round_id=round_id,
+        round_index=round_index,
+    )
+    advance_and_run(runtime, flow_id)
+    advance_and_run(runtime, flow_id)
+    advance_and_run(runtime, flow_id)
+    suspended_step_id = runtime.flow_service.advance_flow(flow_id)
+    assert suspended_step_id is not None
+    suspended_step = runtime.flow_service.get_step(suspended_step_id)
+    suspended_state = suspended_step.state
+    agent = runtime.agent_service.create_agent(
+        suspended_step.scope_id,
+        suspended_state.agent_type,
+        provider_type=suspended_state.provider_type or "codex",
+        home_id=suspended_state.home_id,
+    )
+
+    def suspend_bound_step(step) -> None:  # noqa: ANN001
+        step.agent_bindings.by_role[suspended_state.agent_role] = agent.agent_id
+        step.status = StepStatus.SUSPENDED
+        step.error = BaseStepError(
+            error_type="provider_terminal_failure",
+            message="provider requires operator action",
+        )
+        step.started_at = utc_now_iso()
+
+    runtime.flow_service.store.update_step_record(suspended_step_id, suspend_bound_step)
+    runtime.ark.pause_controller = RuntimePauseController(global_paused=True)
+    schedule = _RestartSchedule()
+    runtime.ark.schedule_service = schedule
+    round_before_result = lean_runtime.decl_graph.get_round(
+        repo_root,
+        node_path="Main.Topic.Core",
+        round_id=round_id,
+    )
+    assert round_before_result.ok and round_before_result.value is not None
+    assert round_before_result.value.status is DeclRoundStatus.RUNNING
+    round_before = round_before_result.value.model_dump(mode="json")
+    source_before = runtime.flow_service.get_step(suspended_step_id).model_dump(mode="json")
+
+    admin = LeanAdminApi(lean_runtime)
+    preview = admin.inspect_agent_step_recovery(suspended_step_id)
+
+    assert preview.ok and preview.value is not None, preview.issues
+    assert preview.value.decl_graph_round_gate is None
+    assert preview.value.recovery.available_actions == ["resume_suspended"]
+    recovered = admin.recover_agent_step(
+        RecoverAgentStepInput(
+            step_id=suspended_step_id,
+            expected_status="suspended",
+            expected_recovery_token=preview.value.recovery.recovery_token,
+            action="resume_suspended",
+            agent_mode="reuse",
+        )
+    )
+
+    assert recovered.ok and recovered.value is not None, recovered.issues
+    assert recovered.value.reopened_round_id is None
+    assert recovered.value.replacement_agent_id == agent.agent_id
+    assert recovered.value.flow_status_before == "running"
+    assert recovered.value.flow_current_step_id_before == suspended_step_id
+    assert recovered.value.flow_status_after == "running"
+    assert recovered.value.flow_current_step_id_after == recovered.value.replacement_step_id
+    assert schedule.step_ids == [recovered.value.replacement_step_id]
+    assert runtime.flow_service.get_step(suspended_step_id).model_dump(mode="json") == source_before
+    round_after = lean_runtime.decl_graph.get_round(
+        repo_root,
+        node_path="Main.Topic.Core",
+        round_id=round_id,
+    )
+    assert round_after.ok and round_after.value is not None
+    assert round_after.value.model_dump(mode="json") == round_before
 
 
 def test_worker_blocked_submission_completes_round_flow_as_blocked(tmp_path: Path) -> None:

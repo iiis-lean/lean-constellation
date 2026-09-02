@@ -8,7 +8,7 @@ from threading import RLock
 from typing import Literal
 
 from agent_runtime_kit.flow import SchedulerRunBudget, SchedulerRunControlView
-from agent_runtime_kit.flow.models import FlowStatus
+from agent_runtime_kit.flow.models import FlowStatus, StepStatus
 from pydantic import Field
 
 from lean_constellation.app.bootstrap import (
@@ -44,6 +44,8 @@ class RepoRuntimeStatusView(StrictModel):
     run_control: SchedulerRunControlView | None = None
     flow_count: int | None = None
     step_count: int | None = None
+    suspended_step_count: int | None = None
+    suspended_step_ids: list[str] = Field(default_factory=list)
     agent_count: int | None = None
     agent_homes: ProductionAgentHomesView | None = None
     last_error: str | None = None
@@ -745,7 +747,8 @@ class RepoRuntimeRegistry:
         runtime = record.runtime
         paused = _runtime_paused(runtime) if runtime is not None else None
         run_control = None
-        flow_count = step_count = agent_count = None
+        flow_count = step_count = suspended_step_count = agent_count = None
+        suspended_step_ids: list[str] = []
         if runtime is not None:
             try:
                 schedule_service = runtime.ark.schedule_service
@@ -762,6 +765,15 @@ class RepoRuntimeRegistry:
             except Exception:  # noqa: BLE001 - status should be best-effort.
                 step_count = None
             try:
+                suspended_steps = runtime.ark.step_service.store.list_steps(
+                    status=StepStatus.SUSPENDED
+                )
+                suspended_step_ids = sorted(str(step.step_id) for step in suspended_steps)
+                suspended_step_count = len(suspended_step_ids)
+            except Exception:  # noqa: BLE001 - status should be best-effort.
+                suspended_step_count = None
+                suspended_step_ids = []
+            try:
                 agent_service = runtime.ark.agent_service
                 agent_count = len(list(agent_service.list_agents())) if hasattr(agent_service, "list_agents") else None
             except Exception:  # noqa: BLE001 - status should be best-effort.
@@ -776,6 +788,8 @@ class RepoRuntimeRegistry:
             run_control=run_control,
             flow_count=flow_count,
             step_count=step_count,
+            suspended_step_count=suspended_step_count,
+            suspended_step_ids=suspended_step_ids,
             agent_count=agent_count,
             agent_homes=record.agent_homes,
             last_error=record.last_error,

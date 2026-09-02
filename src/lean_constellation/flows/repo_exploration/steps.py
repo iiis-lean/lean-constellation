@@ -55,6 +55,7 @@ def _submission_map(*classes: type[BaseSubmission]) -> dict[str, type[BaseSubmis
 
 class RepoResourceDiscoveryAgentStep(AgentStep):
     step_type: ClassVar[str] = "repo_resource_discovery_agent_step"
+    offline_submission_finalize_supported: ClassVar[bool] = True
     Results = {**AgentStep.Results, "repo_resource_discovery": RepoResourceDiscoveryStepResult}
     Submissions = _submission_map(RepoResourceDiscoverySubmission)
     SubmitTools = {"submit_repo_resource_discovery_result"}
@@ -76,6 +77,7 @@ class RepoResourceDiscoveryAgentStep(AgentStep):
 
 class RepoLeanProviderDiscoveryAgentStep(AgentStep):
     step_type: ClassVar[str] = "repo_lean_provider_discovery_agent_step"
+    offline_submission_finalize_supported: ClassVar[bool] = True
     Results = {**AgentStep.Results, "repo_lean_provider_discovery": RepoLeanProviderDiscoveryStepResult}
     Submissions = _submission_map(RepoLeanProviderDiscoverySubmission)
     SubmitTools = {"submit_repo_lean_provider_discovery_result"}
@@ -97,6 +99,7 @@ class RepoLeanProviderDiscoveryAgentStep(AgentStep):
 
 class RepoMathlibReconAgentStep(AgentStep):
     step_type: ClassVar[str] = "repo_mathlib_recon_agent_step"
+    offline_submission_finalize_supported: ClassVar[bool] = True
     Results = {**AgentStep.Results, "repo_mathlib_recon": RepoMathlibReconStepResult}
     Submissions = _submission_map(RepoMathlibReconSubmission)
     SubmitTools = {"submit_repo_mathlib_recon_result"}

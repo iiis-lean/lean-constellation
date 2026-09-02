@@ -271,6 +271,21 @@ class DeclGraphService:
             failed_step_id=failed_step_id,
         )
 
+    def rollback_failed_round_execution_reopen(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        failed_step_id: str,
+        previous_round: DeclGraphRound,
+    ) -> ServiceResult[DeclGraphRound]:
+        return self.strategy_round.rollback_failed_round_execution_reopen(
+            repo_root,
+            node_path=node_path,
+            failed_step_id=failed_step_id,
+            previous_round=previous_round,
+        )
+
     def validate_failed_round_execution_restart(
         self,
         repo_root: Path,

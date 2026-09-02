@@ -25,6 +25,10 @@ class FakeAgent:
     home_id: str | None = None
     session_id: str | None = None
     status: str = "idle"
+    updated_at: str | None = None
+    session_locator: object | None = None
+    latest_turn_locator: object | None = None
+    artifact_locator: object | None = None
 
 
 @dataclass
@@ -100,6 +104,14 @@ class FakeAgentService:
         )
         self.agents[agent.agent_id] = agent
         return agent
+
+    def fork_agent_for_recovery(
+        self,
+        source_agent_id: str,
+        *,
+        target_scope_id: str | None = None,
+    ) -> FakeAgent:
+        return self.fork_agent(source_agent_id, target_scope_id=target_scope_id)
 
     def start_agent(
         self,

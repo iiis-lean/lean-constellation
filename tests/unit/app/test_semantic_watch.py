@@ -174,6 +174,65 @@ def test_semantic_watcher_verbose_mode_preserves_opaque_agent_cursor() -> None:
     assert "agent_changed" in [event["event"] for event in events]
 
 
+def test_semantic_watcher_reports_suspended_step_as_recovery_required() -> None:
+    events: list[dict] = []
+    calls: list[str] = []
+    step = {
+        "step_id": "suspended-agent-step",
+        "step_type": "agent_step",
+        "state_type": "agent_step",
+        "status": "suspended",
+        "bound_agent_id": "agent-1",
+        "provider_type": "codex",
+        "provider_error_type": "provider_rate_limit",
+        "provider_retryable": True,
+        "operator_action_required": False,
+        "available_recovery_actions": ["resume_suspended"],
+    }
+
+    def request_json(_method: str, url: str, _payload: dict | None, _timeout_s: float) -> dict:
+        calls.append(url)
+        if url.endswith("/runtime/leases/lease-1"):
+            return _lease_payload(status="active", version=1, steps=[step], content_flow_id=None)
+        if "/steps/suspended-agent-step/wait?" in url:
+            return {
+                "ok": True,
+                "value": {
+                    "terminal": False,
+                    "timed_out": False,
+                    "runner_state": "settled",
+                    "step": step,
+                },
+                "issues": [],
+            }
+        raise AssertionError(url)
+
+    watcher = SemanticWatcher(
+        SemanticWatchOptions(
+            admin_base_url="http://admin.test",
+            repo_key="Repo",
+            lease_id="lease-1",
+            wait_s=1,
+        ),
+        request_json=request_json,
+        emit=events.append,
+    )
+
+    assert watcher.run() == 3
+    assert [event["event"] for event in events] == [
+        "watch_started",
+        "lease_changed",
+        "step_started",
+        "recovery_required",
+    ]
+    recovery = events[-1]
+    assert recovery["step_status"] == "suspended"
+    assert recovery["provider_type"] == "codex"
+    assert recovery["provider_error_type"] == "provider_rate_limit"
+    assert recovery["available_recovery_actions"] == ["resume_suspended"]
+    assert len([url for url in calls if "/steps/suspended-agent-step/wait?" in url]) == 1
+
+
 def test_semantic_watcher_refreshes_running_agent_step_binding_before_step_started() -> None:
     events: list[dict] = []
     initial_step = {

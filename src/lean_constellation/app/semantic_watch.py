@@ -162,6 +162,28 @@ class SemanticWatcher:
                     force=True,
                 )
                 return 3
+            if (
+                waited.get("runner_state") == "settled"
+                and waited_step.get("status") == "suspended"
+            ):
+                self._emit(
+                    "recovery_required",
+                    step_id=step_id,
+                    step_status="suspended",
+                    runner_state="settled",
+                    provider_type=waited_step.get("provider_type"),
+                    provider_error_type=waited_step.get("provider_error_type"),
+                    provider_retryable=waited_step.get("provider_retryable"),
+                    operator_action_required=waited_step.get("operator_action_required"),
+                    available_recovery_actions=waited_step.get(
+                        "available_recovery_actions",
+                        [],
+                    ),
+                    summary=f"Step {step_id} is suspended at a settled provider boundary.",
+                    resume_token=self._resume_token(),
+                    force=True,
+                )
+                return 3
             if waited.get("terminal"):
                 step = waited["step"]
                 self.state.last_progress_at = monotonic()

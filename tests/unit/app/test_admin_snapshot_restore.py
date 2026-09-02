@@ -311,6 +311,8 @@ def test_repo_checkpoint_captures_all_runtime_scopes_and_prunes_later_scopes(tmp
     )
     assert second.ok and second.value is not None, second.issues
     assert second.value.ark_runtime_snapshot_id is not None
+    second_lc_manifest = json.loads((Path(second.value.root) / "snapshot.json").read_text(encoding="utf-8"))
+    assert second_lc_manifest["ark_runtime_snapshot_id"] == second.value.ark_runtime_snapshot_id
     second_ark_manifest_path = (
         runtime_root
         / "snapshots"
@@ -331,5 +333,101 @@ def test_repo_checkpoint_captures_all_runtime_scopes_and_prunes_later_scopes(tmp
     )
 
     assert restored.ok and restored.value is not None, restored.issues
+    assert restored.value.ark_runtime_snapshot_id == second.value.ark_runtime_snapshot_id
     assert set(store.list_scope_ids()) == {repo_scope, node_scope}
     assert not node_report.exists()
+
+
+def test_restore_previous_paired_checkpoint_rewinds_later_failed_round_truth(tmp_path) -> None:
+    repo_root = tmp_path / "Repo"
+    runtime_root = repo_root / ".agent_runtime"
+    runtime = create_app_runtime_services(runtime_root=runtime_root)
+    assert initialize_repo_business_truth(runtime, repo_root).ok
+    scope_id = "repo:Repo:node:Main.Core"
+    flow_id = runtime.ark.flow_service.start_flow(
+        FlowRequest(
+            flow_type="content_node_task",
+            scope_id=scope_id,
+            params={
+                "repo_key": "Repo",
+                "repo_path": str(repo_root),
+                "node_path": "Main.Core",
+                "contract_version": 1,
+            },
+        ),
+        enqueue=False,
+    )
+
+    def mark_round_boundary(flow, *, count: int, child_id: str, outcome: str, summary: str) -> None:  # noqa: ANN001
+        flow.state.position = flow.state.position.model_copy(
+            update={"phase": "callback_plan_agent", "round_index": count}
+        )
+        flow.state.decl_round_count = count
+        flow.state.waiting_child_kind = "decl_graph_round"
+        flow.state.completed_child_flow_id = child_id
+        flow.state.completed_child_outcome = outcome
+        flow.state.latest_callback_summary = summary
+
+    runtime.ark.flow_service.store.update_flow_record(
+        flow_id,
+        lambda flow: mark_round_boundary(
+            flow,
+            count=1,
+            child_id="round_child_1",
+            outcome="completed",
+            summary="round_1 completed",
+        ),
+    )
+    admin = LeanAdminApi(runtime)
+    before_failed = admin.create_snapshot(
+        SnapshotCreateInput(
+            repo_root=repo_root,
+            checkpoint_kind="after_content_decl_round_terminal",
+            scope_ids=[scope_id],
+            label="round_1 completed",
+        )
+    )
+    assert before_failed.ok and before_failed.value is not None, before_failed.issues
+    assert before_failed.value.ark_runtime_snapshot_id is not None
+
+    runtime.ark.flow_service.store.update_flow_record(
+        flow_id,
+        lambda flow: mark_round_boundary(
+            flow,
+            count=2,
+            child_id="round_child_2",
+            outcome="failed",
+            summary="round_2 failed",
+        ),
+    )
+    after_failed = admin.create_snapshot(
+        SnapshotCreateInput(
+            repo_root=repo_root,
+            checkpoint_kind="after_content_decl_round_terminal",
+            scope_ids=[scope_id],
+            label="round_2 failed",
+        )
+    )
+    assert after_failed.ok and after_failed.value is not None, after_failed.issues
+    assert after_failed.value.ark_runtime_snapshot_id is not None
+    assert after_failed.value.snapshot_id != before_failed.value.snapshot_id
+    assert after_failed.value.ark_runtime_snapshot_id != before_failed.value.ark_runtime_snapshot_id
+
+    before_manifest = json.loads((Path(before_failed.value.root) / "snapshot.json").read_text(encoding="utf-8"))
+    assert before_manifest["ark_runtime_snapshot_id"] == before_failed.value.ark_runtime_snapshot_id
+    restored = admin.restore_snapshot(
+        SnapshotRestoreInput(
+            repo_root=repo_root,
+            snapshot_id=before_failed.value.snapshot_id,
+            leave_runtime_paused=True,
+        )
+    )
+
+    assert restored.ok and restored.value is not None, restored.issues
+    assert restored.value.ark_runtime_snapshot_id == before_failed.value.ark_runtime_snapshot_id
+    restored_flow = runtime.ark.flow_service.get_flow(flow_id)
+    assert restored_flow.state.decl_round_count == 1
+    assert restored_flow.state.completed_child_flow_id == "round_child_1"
+    assert restored_flow.state.completed_child_outcome == "completed"
+    assert restored_flow.state.latest_callback_summary == "round_1 completed"
+    assert runtime.ark.pause_controller.is_paused() is True

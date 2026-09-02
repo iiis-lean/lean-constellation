@@ -256,7 +256,7 @@ def test_native_source_index_recovery_routes_are_typed_and_route_owned(tmp_path)
     assert "expected_recovery_token" in missing_token.json()["issues"][0]["message"]
 
 
-def test_failed_agent_step_restart_route_owns_step_id_and_uses_production_admin(
+def test_agent_step_recovery_route_owns_step_id_and_uses_production_admin(
     tmp_path,
 ) -> None:
     workspace = tmp_path / "workspace"
@@ -272,18 +272,27 @@ def test_failed_agent_step_restart_route_owns_step_id_and_uses_production_admin(
 
     with TestClient(app_result.value) as client:
         route_owned = client.post(
-            "/admin/repos/MainRepo/steps/missing/restart-failed",
-            json={"step_id": "other"},
+            "/admin/repos/MainRepo/steps/missing/recover",
+            json={
+                "step_id": "other",
+                "expected_status": "failed",
+                "expected_recovery_token": "0" * 64,
+                "action": "restart",
+            },
         )
         missing = client.post(
-            "/admin/repos/MainRepo/steps/missing/restart-failed",
-            json={},
+            "/admin/repos/MainRepo/steps/missing/recover",
+            json={
+                "expected_status": "failed",
+                "expected_recovery_token": "0" * 64,
+                "action": "restart",
+            },
         )
 
     assert route_owned.status_code == 422
     assert "route-owned" in route_owned.json()["issues"][0]["message"]
     assert missing.status_code == 400
-    assert missing.json()["issues"][0]["kind"] == "restart_failed_agent_step_failed"
+    assert missing.json()["issues"][0]["kind"] == "recover_agent_step_failed"
 
 
 def test_production_semantic_advance_route_is_typed_and_starts_process_local_lease(tmp_path) -> None:

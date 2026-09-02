@@ -102,6 +102,84 @@ def test_reset_coordinator_for_current_truth_at_idle_callback_boundary(tmp_path)
     assert runtime.ark.flow_service.get_flow(flow_id).agent_bindings.get("coordinator") == result.value.replacement_agent_id
 
 
+def test_reset_coordinator_for_current_truth_rolls_back_binding_and_phase_on_mutator_failure(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    runtime = create_app_runtime_services(runtime_root=tmp_path / ".runtime", start_paused=True)
+    flow_id, previous = _create_callback_boundary(runtime, tmp_path / "MainRepo")
+    before_flow = runtime.ark.flow_service.get_flow(flow_id).model_dump(mode="json")
+    before_agent_ids = {agent.agent_id for agent in runtime.ark.agent_service.list_agents()}
+    original = runtime.ark.flow_service.replace_bound_agent
+
+    def inject_failure(**kwargs):
+        boundary_mutator = kwargs["boundary_mutator"]
+
+        def fail_after_lc_mutation(flow, step) -> None:
+            boundary_mutator(flow, step)
+            raise RuntimeError("injected Coordinator phase mutation failure")
+
+        kwargs["boundary_mutator"] = fail_after_lc_mutation
+        return original(**kwargs)
+
+    monkeypatch.setattr(runtime.ark.flow_service, "replace_bound_agent", inject_failure)
+
+    result = LeanAdminApi(runtime).reset_coordinator_for_current_truth(
+        ResetCoordinatorForCurrentTruthInput(
+            flow_id=flow_id,
+            expected_agent_id=previous.agent_id,
+        )
+    )
+
+    assert not result.ok
+    assert "injected Coordinator phase mutation failure" in result.issues[0].message
+    assert runtime.ark.flow_service.get_flow(flow_id).model_dump(mode="json") == before_flow
+    assert runtime.ark.agent_service.get_agent(previous.agent_id) == previous
+    after_agent_ids = {agent.agent_id for agent in runtime.ark.agent_service.list_agents()}
+    assert len(after_agent_ids - before_agent_ids) == 1
+
+
+def test_reset_coordinator_for_current_truth_rolls_back_phase_on_commit_quiescence_drift(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    runtime = create_app_runtime_services(runtime_root=tmp_path / ".runtime", start_paused=True)
+    flow_id, previous = _create_callback_boundary(runtime, tmp_path / "MainRepo")
+    before_flow = runtime.ark.flow_service.get_flow(flow_id).model_dump(mode="json")
+    before_agent_ids = {agent.agent_id for agent in runtime.ark.agent_service.list_agents()}
+    original = runtime.ark.flow_service.replace_bound_agent
+
+    def inject_active_flow_after_phase(**kwargs):
+        boundary_mutator = kwargs["boundary_mutator"]
+
+        def drift_after_lc_mutation(flow, step) -> None:
+            boundary_mutator(flow, step)
+            assert flow.state.position.phase == "coordinator_agent"
+            runtime.ark.schedule_service.active_flow_advances.add(flow_id)
+
+        kwargs["boundary_mutator"] = drift_after_lc_mutation
+        return original(**kwargs)
+
+    monkeypatch.setattr(
+        runtime.ark.flow_service,
+        "replace_bound_agent",
+        inject_active_flow_after_phase,
+    )
+
+    result = LeanAdminApi(runtime).reset_coordinator_for_current_truth(
+        ResetCoordinatorForCurrentTruthInput(
+            flow_id=flow_id,
+            expected_agent_id=previous.agent_id,
+        )
+    )
+
+    assert not result.ok
+    assert "active Flow advance" in result.issues[0].message
+    assert runtime.ark.flow_service.get_flow(flow_id).model_dump(mode="json") == before_flow
+    after_agent_ids = {agent.agent_id for agent in runtime.ark.agent_service.list_agents()}
+    assert len(after_agent_ids - before_agent_ids) == 1
+
+
 def test_reset_coordinator_for_current_truth_rejects_unpaused_runtime(tmp_path) -> None:
     runtime = create_app_runtime_services(runtime_root=tmp_path / ".runtime", start_paused=False)
     flow_id, previous = _create_callback_boundary(runtime, tmp_path / "MainRepo")

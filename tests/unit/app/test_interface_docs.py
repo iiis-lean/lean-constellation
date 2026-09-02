@@ -122,15 +122,30 @@ def test_interface_catalogs_follow_live_registries() -> None:
         "safety",
     }
 
-    restart = next(
+    recover = next(
         item
         for item in admin["operations"]
         if item["path"]
-        == "/admin/repos/{repo_key:str}/steps/{step_id:str}/restart-failed"
+        == "/admin/repos/{repo_key:str}/steps/{step_id:str}/recover"
     )
-    assert restart["input_model"] == "RestartFailedAgentStepInput"
-    assert restart["route_owned_fields"] == ["step_id"]
-    assert restart["input_schema"]["properties"] == {}
+    assert recover["input_model"] == "RecoverAgentStepInput"
+    assert recover["route_owned_fields"] == ["step_id"]
+    assert set(recover["input_schema"]["properties"]) == {
+        "expected_status",
+        "expected_recovery_token",
+        "action",
+        "agent_mode",
+    }
+
+    recovery = next(
+        item
+        for item in admin["operations"]
+        if item["path"]
+        == "/admin/repos/{repo_key:str}/steps/{step_id:str}/recovery"
+    )
+    assert recovery["method"] == "GET"
+    assert recovery["input_model"] is None
+    assert recovery["schema_status"] == "route_only"
 
     coordinator_reset = next(
         item
@@ -141,6 +156,19 @@ def test_interface_catalogs_follow_live_registries() -> None:
     assert coordinator_reset["input_model"] == "ResetCoordinatorForCurrentTruthInput"
     assert coordinator_reset["route_owned_fields"] == ["flow_id"]
     assert set(coordinator_reset["input_schema"]["properties"]) == {"expected_agent_id"}
+
+    content_plan_reset = next(
+        item
+        for item in admin["operations"]
+        if item["path"]
+        == "/admin/repos/{repo_key:str}/flows/{flow_id:str}/content-plan/reset-current-truth"
+    )
+    assert content_plan_reset["input_model"] == "ResetContentPlanForCurrentTruthInput"
+    assert content_plan_reset["route_owned_fields"] == ["flow_id"]
+    assert set(content_plan_reset["input_schema"]["properties"]) == {
+        "expected_agent_id",
+        "replacement_mode",
+    }
 
     submit_requirement = next(
         item for item in tools["tools"] if item["name"] == "submit_repo_requirement"

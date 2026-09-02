@@ -113,6 +113,7 @@ def _compact_preflight_policy() -> AgentContextMaintenancePolicy:
 
 class RepoFormatDiscoveryAgentStep(AgentStep):
     step_type: ClassVar[str] = "repo_format_discovery_agent_step"
+    offline_submission_finalize_supported: ClassVar[bool] = True
     Results: ClassVar[dict[str, type]] = {
         **AgentStep.Results,
         "repo_format_discovery": RepoFormatDiscoveryStepResult,
@@ -149,6 +150,7 @@ class RepoFormatDiscoveryAgentStep(AgentStep):
 
 class SourceCorpusBuilderAgentStep(AgentStep):
     step_type: ClassVar[str] = "source_corpus_builder_agent_step"
+    offline_submission_finalize_supported: ClassVar[bool] = True
     Results: ClassVar[dict[str, type]] = {
         **AgentStep.Results,
         "source_corpus_builder": SourceCorpusBuilderStepResult,
@@ -187,6 +189,7 @@ class SourceCorpusBuilderAgentStep(AgentStep):
 
 class SourceCorpusReviewerAgentStep(AgentStep):
     step_type: ClassVar[str] = "source_corpus_reviewer_agent_step"
+    offline_submission_finalize_supported: ClassVar[bool] = True
     Results: ClassVar[dict[str, type]] = {
         **AgentStep.Results,
         "source_corpus_reviewer": SourceCorpusReviewerStepResult,
@@ -215,6 +218,7 @@ class SourceCorpusReviewerAgentStep(AgentStep):
 
 class SourceIndexBuilderAgentStep(AgentStep):
     step_type: ClassVar[str] = "source_index_builder_agent_step"
+    offline_submission_finalize_supported: ClassVar[bool] = True
     Results: ClassVar[dict[str, type]] = {
         **AgentStep.Results,
         "source_index_builder": SourceIndexBuilderStepResult,
@@ -241,6 +245,7 @@ class SourceIndexBuilderAgentStep(AgentStep):
 
 class SourceIndexReviewerAgentStep(AgentStep):
     step_type: ClassVar[str] = "source_index_reviewer_agent_step"
+    offline_submission_finalize_supported: ClassVar[bool] = True
     Results: ClassVar[dict[str, type]] = {
         **AgentStep.Results,
         "source_index_reviewer": SourceIndexReviewerStepResult,
@@ -267,6 +272,7 @@ class SourceIndexReviewerAgentStep(AgentStep):
 
 class RootInterfacePrepareAgentStep(AgentStep):
     step_type: ClassVar[str] = "root_interface_prepare_agent_step"
+    offline_submission_finalize_supported: ClassVar[bool] = True
     Results: ClassVar[dict[str, type]] = {
         **AgentStep.Results,
         "root_interface_prepare": RootInterfacePrepareStepResult,
@@ -289,6 +295,7 @@ class RootInterfacePrepareAgentStep(AgentStep):
 
 class AdapterDeclCatalogAgentStep(AgentStep):
     step_type: ClassVar[str] = "adapter_decl_catalog_agent_step"
+    offline_submission_finalize_supported: ClassVar[bool] = True
     Results: ClassVar[dict[str, type]] = {
         **AgentStep.Results,
         "adapter_decl_catalog": AdapterDeclCatalogStepResult,
@@ -323,6 +330,7 @@ class AdapterDeclCatalogAgentStep(AgentStep):
 
 class ResourceCuratorAgentStep(AgentStep):
     step_type: ClassVar[str] = "resource_curator_agent_step"
+    offline_submission_finalize_supported: ClassVar[bool] = True
     Results: ClassVar[dict[str, type]] = {
         **AgentStep.Results,
         "resource_curator": ResourceCuratorStepResult,
@@ -419,6 +427,7 @@ class ResourceCuratorAgentStep(AgentStep):
 
 class CoordinatorAgentStep(AgentStep):
     step_type: ClassVar[str] = "coordinator_agent_step"
+    offline_submission_finalize_supported: ClassVar[bool] = True
     Results: ClassVar[dict[str, type]] = {
         **AgentStep.Results,
         "coordinator": CoordinatorStepResult,
@@ -552,6 +561,7 @@ class CoordinatorAgentStep(AgentStep):
 
 class ContentPlanAgentStep(AgentStep):
     step_type: ClassVar[str] = "content_plan_agent_step"
+    offline_submission_finalize_supported: ClassVar[bool] = True
     Results: ClassVar[dict[str, type]] = {
         **AgentStep.Results,
         "content_plan": ContentPlanStepResult,
@@ -689,6 +699,7 @@ class ContentPlanAgentStep(AgentStep):
 
 class NodeDirDependencyReconAgentStep(AgentStep):
     step_type: ClassVar[str] = "node_dir_dependency_recon_agent_step"
+    offline_submission_finalize_supported: ClassVar[bool] = True
     Results: ClassVar[dict[str, type]] = {
         **AgentStep.Results,
         "node_dir_dependency_recon_agent": NodeDirDependencyReconStepResult,
@@ -720,6 +731,7 @@ class NodeDirDependencyReconAgentStep(AgentStep):
 
 class MathlibReconAgentStep(AgentStep):
     step_type: ClassVar[str] = "mathlib_recon_agent_step"
+    offline_submission_finalize_supported: ClassVar[bool] = True
     Results: ClassVar[dict[str, type]] = {
         **AgentStep.Results,
         "mathlib_recon_agent": MathlibReconStepResult,
@@ -751,6 +763,7 @@ class MathlibReconAgentStep(AgentStep):
 
 class ResourceReconAgentStep(AgentStep):
     step_type: ClassVar[str] = "resource_recon_agent_step"
+    offline_submission_finalize_supported: ClassVar[bool] = True
     Results: ClassVar[dict[str, type]] = {
         **AgentStep.Results,
         "resource_recon_agent": ResourceReconStepResult,
@@ -822,6 +835,7 @@ class ResourceReconAgentStep(AgentStep):
 
 class DeclStageWorkerAgentStep(AgentStep):
     step_type: ClassVar[str] = "decl_stage_worker_agent_step"
+    offline_submission_finalize_supported: ClassVar[bool] = True
     State: ClassVar[type] = DeclStageWorkerStepState
     Results: ClassVar[dict[str, type]] = {
         **AgentStep.Results,
@@ -879,6 +893,7 @@ class DeclStageWorkerAgentStep(AgentStep):
 
 class DeclStageReviewerAgentStep(AgentStep):
     step_type: ClassVar[str] = "decl_stage_reviewer_agent_step"
+    offline_submission_finalize_supported: ClassVar[bool] = True
     State: ClassVar[type] = DeclStageReviewerStepState
     Results: ClassVar[dict[str, type]] = {
         **AgentStep.Results,

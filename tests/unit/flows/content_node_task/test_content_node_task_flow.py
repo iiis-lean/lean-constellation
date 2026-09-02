@@ -182,6 +182,67 @@ def _preparation_submission(repo_root: Path, recon_kind: str) -> ContentPreparat
     )
 
 
+def _run_decl_round_and_checkpoint(
+    runtime: FakeLeanFlowRuntime,
+    flow_id: str,
+    repo_root: Path,
+    *,
+    round_id: str,
+    round_index: int,
+    failed: bool = False,
+) -> tuple[str, str]:
+    runtime.agent_service.queue_submission(
+        DeclRoundDispatchSubmission(
+            submission_id=new_submission_id("sub"),
+            submission_type="decl_round_dispatch",
+            tool_name="submit_current_decl_round",
+            repo_key=repo_root.name,
+            node_path="Main.Core",
+            strategy_id=f"strategy_{round_index}",
+            round_id=round_id,
+            round_index=round_index,
+            requests=[
+                build_decl_round_request(
+                    repo_key=repo_root.name,
+                    node_path="Main.Core",
+                    scope_id=f"repo:{repo_root.name}:node:Main.Core",
+                    strategy_id=f"strategy_{round_index}",
+                    round_id=round_id,
+                    round_index=round_index,
+                )
+            ],
+            summary=f"Dispatch {round_id}.",
+        )
+    )
+    _advance_and_run(runtime, flow_id)
+    _advance_and_run(runtime, flow_id)
+    dispatch_step_id = _advance_and_run(runtime, flow_id)
+    child = runtime.flow_service.store.list_child_flows(
+        parent_flow_id=flow_id,
+        parent_dispatch_step_id=dispatch_step_id,
+    )[0]
+    if failed:
+        _fail_child_flow(runtime, child.flow_id)
+    else:
+        _complete_child_flow(
+            runtime,
+            child.flow_id,
+            DeclGraphRoundResult(
+                outcome="completed",
+                repo_key=repo_root.name,
+                node_path="Main.Core",
+                round_id=round_id,
+                round_index=round_index,
+                completed_stages=["statement_nl"],
+                summary=f"{round_id} complete.",
+            ),
+        )
+    checkpoint_step_id = runtime.flow_service.advance_flow(flow_id)
+    assert checkpoint_step_id is not None
+    runtime.run_step(checkpoint_step_id)
+    return checkpoint_step_id, child.flow_id
+
+
 def test_content_node_task_preparation_dispatch_callback_and_blocked_completion(tmp_path: Path) -> None:
     runtime, lean_runtime = _runtime(tmp_path)
     repo_root = tmp_path / "workspace" / "Repo"
@@ -1082,6 +1143,83 @@ def test_content_progress_checkpoints_run_before_callback_and_narrow_later_scope
     assert round_step.result.decl_round_count == 1
     assert round_step.result.child_outcome == "completed"
     assert round_step.result.snapshot_id == "content_snapshot_2"
+
+
+def test_consecutive_decl_round_terminals_create_distinct_progress_checkpoints(tmp_path: Path) -> None:
+    runtime, lean_runtime = _runtime(tmp_path)
+    lean_runtime.app.automatic_checkpoints = AutomaticCheckpointAppConfig(
+        content_task_progress_enabled=True,
+    )
+    snapshots = RecordingContentSnapshotRuntime(lean_runtime)
+    lean_runtime.app.snapshot_runtime = snapshots
+    repo_root = tmp_path / "workspace" / "Repo"
+    _prepare_content_repo(lean_runtime, repo_root)
+    flow_id = _start_content_task(runtime, repo_root)
+    _advance_and_run(runtime, flow_id)
+
+    first_step_id, first_child_id = _run_decl_round_and_checkpoint(
+        runtime,
+        flow_id,
+        repo_root,
+        round_id="round_1",
+        round_index=11,
+    )
+    second_step_id, second_child_id = _run_decl_round_and_checkpoint(
+        runtime,
+        flow_id,
+        repo_root,
+        round_id="round_2",
+        round_index=12,
+    )
+
+    assert [call["checkpoint_kind"] for call in snapshots.calls] == [
+        "after_content_decl_round_terminal",
+        "after_content_decl_round_terminal",
+    ]
+    assert [runtime.flow_service.get_step(step_id).result.snapshot_id for step_id in [first_step_id, second_step_id]] == [
+        "content_snapshot_1",
+        "content_snapshot_2",
+    ]
+    assert f"child={first_child_id}" in str(snapshots.calls[0]["label"])
+    assert "round_id=round_1" in str(snapshots.calls[0]["label"])
+    assert "round_index=11" in str(snapshots.calls[0]["label"])
+    assert "task_round_count=1" in str(snapshots.calls[0]["label"])
+    assert f"child={second_child_id}" in str(snapshots.calls[1]["label"])
+    assert "round_id=round_2" in str(snapshots.calls[1]["label"])
+    assert "round_index=12" in str(snapshots.calls[1]["label"])
+    assert "task_round_count=2" in str(snapshots.calls[1]["label"])
+    assert runtime.flow_service.get_flow(flow_id).state.position.phase == "callback_plan_agent"
+
+
+def test_failed_decl_round_terminal_creates_progress_checkpoint(tmp_path: Path) -> None:
+    runtime, lean_runtime = _runtime(tmp_path)
+    lean_runtime.app.automatic_checkpoints = AutomaticCheckpointAppConfig(
+        content_task_progress_enabled=True,
+    )
+    snapshots = RecordingContentSnapshotRuntime(lean_runtime)
+    lean_runtime.app.snapshot_runtime = snapshots
+    repo_root = tmp_path / "workspace" / "Repo"
+    _prepare_content_repo(lean_runtime, repo_root)
+    flow_id = _start_content_task(runtime, repo_root)
+    _advance_and_run(runtime, flow_id)
+
+    checkpoint_step_id, child_id = _run_decl_round_and_checkpoint(
+        runtime,
+        flow_id,
+        repo_root,
+        round_id="round_failed",
+        round_index=17,
+        failed=True,
+    )
+
+    assert len(snapshots.calls) == 1
+    assert snapshots.calls[0]["checkpoint_kind"] == "after_content_decl_round_terminal"
+    assert f"child={child_id}" in str(snapshots.calls[0]["label"])
+    assert "outcome=failed" in str(snapshots.calls[0]["label"])
+    checkpoint_step = runtime.flow_service.get_step(checkpoint_step_id)
+    assert checkpoint_step.result.child_outcome == "failed"
+    assert checkpoint_step.result.snapshot_id == "content_snapshot_1"
+    assert runtime.flow_service.get_flow(flow_id).state.position.phase == "callback_plan_agent"
 
 
 @pytest.mark.parametrize("recon_kind", ["node_dir_dependency", "mathlib", "resource"])

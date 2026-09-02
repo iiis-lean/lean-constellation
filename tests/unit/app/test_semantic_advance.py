@@ -5,7 +5,14 @@ from types import SimpleNamespace
 
 import pytest
 from agent_runtime_kit.agent.provider_contracts import ProviderHomeSpec
-from agent_runtime_kit.flow import AgentStep, FlowStatus, StepStatus
+from agent_runtime_kit.flow import (
+    AgentStep,
+    BaseStepError,
+    FlowStatus,
+    SchedulerRunDecision,
+    SchedulerSemanticRunPolicy,
+    StepStatus,
+)
 from agent_runtime_kit.flow.standard_steps import AgentStepState
 from pydantic import ValidationError
 
@@ -245,6 +252,74 @@ def test_runtime_lease_monitor_keeps_unexplained_no_runnable_reviewable(tmp_path
     assert view.value.terminal_disposition == "review_required"
     assert view.value.requires_review is True
     assert view.value.suggested_next_action == "audit_candidates_before_next_admission"
+
+
+def test_runtime_lease_monitor_classifies_suspended_step_as_recovery_required(
+    tmp_path: Path,
+) -> None:
+    repo_root = tmp_path / "Repo"
+    repo_root.mkdir()
+    runtime = create_app_runtime_services(runtime_root=tmp_path / ".runtime")
+    admin = LeanAdminApi(runtime)
+    flow_id = _start_coordinator(admin, repo_root)
+    flow = runtime.ark.flow_service.get_flow(flow_id)
+    step = ContentPlanAgentStep(
+        step_id="suspended-plan-step",
+        flow_id=flow_id,
+        scope_id=flow.scope_id,
+        status=StepStatus.SUSPENDED,
+        state=AgentStepState(
+            agent_role="content_plan",
+            agent_type="ContentPlanAgent",
+            provider_type="codex",
+        ),
+        error=BaseStepError(
+            error_type="agent_provider_turn_failed",
+            message="Agent provider execution suspended before business completion.",
+            details={
+                "provider_type": "codex",
+                "provider_error_type": "provider_rate_limit",
+                "retryable": True,
+                "operator_action_required": False,
+            },
+        ),
+    )
+    runtime.ark.step_service.create_step(step, enqueue=False)
+    runtime.ark.flow_service.store.update_flow_record(
+        flow_id,
+        lambda target: (
+            setattr(target, "status", FlowStatus.RUNNING),
+            target.step_ids.append(step.step_id),
+            setattr(target, "current_step_id", step.step_id),
+        ),
+    )
+    assert admin.pause_runtime().ok
+    control = runtime.ark.schedule_service.configure_semantic_run(
+        SchedulerSemanticRunPolicy(
+            name="suspended_monitor",
+            allow_flow_advance=lambda _flow: False,
+            allow_step_start=lambda _step: False,
+            decide=lambda _scheduler: SchedulerRunDecision(action="pause", reason="no_runnable_candidate"),
+            max_flow_advances=1,
+            max_step_starts=0,
+        )
+    )
+    with runtime.ark.schedule_service.lock:
+        runtime.ark.schedule_service._update_semantic_lease_locked(  # noqa: SLF001 - lease truth fixture.
+            status="terminal",
+            terminal_reason="no_runnable_candidate",
+            started_step_ids=[step.step_id],
+        )
+
+    view = admin.get_runtime_lease(control.lease_id or "")
+
+    assert view.ok and view.value is not None
+    assert view.value.started_steps[0].status == "suspended"
+    assert view.value.started_steps[0].provider_error_type == "provider_rate_limit"
+    assert view.value.started_steps[0].available_recovery_actions == ["resume_suspended"]
+    assert view.value.terminal_disposition == "review_required"
+    assert view.value.requires_review is True
+    assert view.value.suggested_next_action == "inspect_agent_step_recovery"
 
 
 def test_semantic_advance_requires_global_pause_and_valid_target(tmp_path: Path) -> None:
