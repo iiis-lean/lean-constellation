@@ -12,6 +12,7 @@ from lean_constellation.app import (
     LeanAppConfig,
     ResetContentPlanForCurrentTruthInput,
     ResetCoordinatorForCurrentTruthInput,
+    SetAgentStepOperatorInstructionInput,
     create_app_runtime_services,
     create_production_app_server,
 )
@@ -126,6 +127,18 @@ def test_reset_content_plan_for_current_truth_updates_current_created_step(tmp_p
 
     runtime.ark.flow_service.store.update_flow_record(flow_id, attach)
 
+    current_flow = runtime.ark.flow_service.get_flow(flow_id)
+    current_step = runtime.ark.flow_service.get_step(step.step_id)
+    instruction_result = LeanAdminApi(runtime).set_agent_step_operator_instruction(
+        SetAgentStepOperatorInstructionInput(
+            step_id=step.step_id,
+            expected_step_updated_at=current_step.updated_at,
+            expected_flow_updated_at=current_flow.updated_at,
+            instruction="Inspect exact current sibling truth.",
+        )
+    )
+    assert instruction_result.ok, instruction_result.issues
+
     result = LeanAdminApi(runtime).reset_content_plan_for_current_truth(
         ResetContentPlanForCurrentTruthInput(
             flow_id=flow_id,
@@ -139,6 +152,10 @@ def test_reset_content_plan_for_current_truth_updates_current_created_step(tmp_p
     assert runtime.ark.flow_service.get_flow(flow_id).agent_bindings.get("content_plan") == replacement_id
     assert runtime.ark.flow_service.get_step(step.step_id).agent_bindings.get("content_plan") == replacement_id
     assert runtime.ark.flow_service.get_step(step.step_id).status is StepStatus.CREATED
+    assert (
+        runtime.ark.flow_service.get_step(step.step_id).state.operator_instruction
+        == "Inspect exact current sibling truth."
+    )
 
 
 def test_reset_content_plan_for_current_truth_rolls_back_gate_drift_and_binding(

@@ -183,6 +183,7 @@ class StepMonitorView(StrictModel):
     error_type: str | None = None
     agent_type: str | None = None
     bound_agent_id: str | None = None
+    operator_instruction: str | None = None
     provider_type: str | None = None
     provider_error_type: str | None = None
     provider_retryable: bool | None = None
@@ -505,6 +506,7 @@ class AgentStepControlView(StrictModel):
     tool_view_key: str | None = None
     step_bound_agent_id: str | None = None
     flow_bound_agent_id: str | None = None
+    operator_instruction: str | None = None
     override: dict[str, Any] | None = None
     controlled_record: dict[str, Any] | None = None
     summary: str
@@ -590,6 +592,27 @@ class RecoverAgentStepView(StrictModel):
     flow_updated_at_after: str
     enqueued: bool
     reopened_round_id: str | None = None
+    summary: str
+
+
+class SetAgentStepOperatorInstructionInput(StrictModel):
+    step_id: str
+    expected_step_updated_at: str
+    expected_flow_updated_at: str
+    instruction: str | None
+
+
+class AgentStepOperatorInstructionView(StrictModel):
+    step_id: str
+    flow_id: str
+    scope_id: str
+    instruction_before: str | None = None
+    instruction_after: str | None = None
+    instruction_present: bool
+    step_updated_at_before: str
+    step_updated_at_after: str
+    flow_updated_at_before: str
+    flow_updated_at_after: str
     summary: str
 
 
@@ -2732,6 +2755,39 @@ class LeanAdminApi:
                 self.runtime.foundation.issue("step_monitor_failed", f"Failed to load step monitor view: {exc}")
             )
 
+    def set_agent_step_operator_instruction(
+        self,
+        input_model: SetAgentStepOperatorInstructionInput,
+    ) -> ServiceResult[AgentStepOperatorInstructionView]:
+        flow_service = self.runtime.ark.flow_service
+        if flow_service is None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "flow_service_missing",
+                    "ARK flow service is not configured.",
+                )
+            )
+        try:
+            receipt = flow_service.set_agent_step_operator_instruction(
+                step_id=input_model.step_id,
+                expected_step_updated_at=input_model.expected_step_updated_at,
+                expected_flow_updated_at=input_model.expected_flow_updated_at,
+                instruction=input_model.instruction,
+            )
+            return self.runtime.foundation.ok(
+                AgentStepOperatorInstructionView.model_validate(
+                    receipt.model_dump(mode="json")
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - operator mutation boundary.
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "set_agent_step_operator_instruction_failed",
+                    f"Failed to set AgentStep operator instruction: {exc}",
+                    object_ref=input_model.step_id,
+                )
+            )
+
     def get_content_task_progress(self, flow_id: str) -> ServiceResult[ContentTaskProgressView]:
         try:
             flow = self.runtime.ark.flow_service.get_flow(flow_id)
@@ -4439,6 +4495,7 @@ class LeanAdminApi:
             error_type=getattr(step.error, "error_type", None) if step.error is not None else None,
             agent_type=agent_type,
             bound_agent_id=bound_agent_id,
+            operator_instruction=getattr(step.state, "operator_instruction", None),
             provider_type=provider_type,
             provider_error_type=provider_error_type,
             provider_retryable=provider_retryable,
@@ -4742,6 +4799,7 @@ class LeanAdminApi:
             tool_view_key=tool_view_key,
             step_bound_agent_id=step.agent_bindings.get(step.state.agent_role),
             flow_bound_agent_id=flow.agent_bindings.get(step.state.agent_role),
+            operator_instruction=step.state.operator_instruction,
             override=override if isinstance(override, dict) else None,
             controlled_record=record if isinstance(record, dict) else None,
             summary="Loaded AgentStep control view.",

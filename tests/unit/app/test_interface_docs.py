@@ -147,6 +147,21 @@ def test_interface_catalogs_follow_live_registries() -> None:
     assert recovery["input_model"] is None
     assert recovery["schema_status"] == "route_only"
 
+    operator_instruction = next(
+        item
+        for item in admin["operations"]
+        if item["path"]
+        == "/admin/repos/{repo_key:str}/steps/{step_id:str}/operator-instruction"
+    )
+    assert operator_instruction["method"] == "PUT"
+    assert operator_instruction["input_model"] == "SetAgentStepOperatorInstructionInput"
+    assert operator_instruction["route_owned_fields"] == ["step_id"]
+    assert set(operator_instruction["input_schema"]["properties"]) == {
+        "expected_step_updated_at",
+        "expected_flow_updated_at",
+        "instruction",
+    }
+
     coordinator_reset = next(
         item
         for item in admin["operations"]

@@ -42,6 +42,7 @@ from lean_constellation.app.admin_api import (
     RuntimePauseView,
     RuntimeResumeInput,
     RuntimeSemanticAdvanceInput,
+    SetAgentStepOperatorInstructionInput,
     SnapshotCreateInput,
     SnapshotListInput,
     SnapshotRestoreInput,
@@ -459,6 +460,26 @@ def create_workspace_admin_http_routes(
         if not admin_result.ok or admin_result.value is None:
             return _service_result_response(admin_result)
         return _service_result_response(admin_result.value.get_step_monitor(request.path_params["step_id"]))
+
+    async def repo_set_agent_step_operator_instruction(request: Request) -> JSONResponse:
+        data = await _json_or_empty(request)
+        if "step_id" in data:
+            return _request_validation_response("Body must not provide route-owned field: step_id.")
+        data["step_id"] = request.path_params["step_id"]
+        try:
+            input_model = SetAgentStepOperatorInstructionInput.model_validate(data)
+        except ValidationError as exc:
+            return _request_validation_response(str(exc))
+        admin_result = repo_admin(request)
+        if not admin_result.ok or admin_result.value is None:
+            return _service_result_response(admin_result)
+        record = registry.discover_repo(request.path_params["repo_key"])
+        if not record.ok or record.value is None:
+            return _service_result_response(record)
+        with record.value.lock:
+            return _service_result_response(
+                admin_result.value.set_agent_step_operator_instruction(input_model)
+            )
 
     async def repo_step_terminal_wait(request: Request) -> JSONResponse:
         admin_result = repo_admin(request)
@@ -1099,6 +1120,11 @@ def create_workspace_admin_http_routes(
             methods=["GET"],
         ),
         Route("/admin/repos/{repo_key:str}/steps/{step_id:str}", repo_step_monitor, methods=["GET"]),
+        Route(
+            "/admin/repos/{repo_key:str}/steps/{step_id:str}/operator-instruction",
+            repo_set_agent_step_operator_instruction,
+            methods=["PUT"],
+        ),
         Route(
             "/admin/repos/{repo_key:str}/steps/{step_id:str}/recovery",
             repo_step_recovery,

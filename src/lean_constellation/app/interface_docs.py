@@ -295,7 +295,10 @@ def _admin_input_model(endpoint: Any) -> type[BaseModel] | None:
 
 def _admin_route_owned_fields(endpoint: Any) -> list[str]:
     names = set(endpoint.__code__.co_names)
-    if endpoint.__name__ == "repo_recover_agent_step":
+    if endpoint.__name__ in {
+        "repo_recover_agent_step",
+        "repo_set_agent_step_operator_instruction",
+    }:
         return ["step_id"]
     if endpoint.__name__ in {
         "repo_reset_coordinator_for_current_truth",
