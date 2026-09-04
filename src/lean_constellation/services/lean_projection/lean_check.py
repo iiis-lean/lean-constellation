@@ -83,7 +83,12 @@ class LeanCheckComponent:
             return self.runtime.foundation.fail(resolved.issues)
         repo, target, rel_file = resolved.value
 
-        result = self.runtime.external.lean_toolchain.run_file_diagnostics(repo, target, rel_file=rel_file)
+        with self.runtime.repo_activity.build_cache_write(repo):
+            result = self.runtime.external.lean_toolchain.run_file_diagnostics(
+                repo,
+                target,
+                rel_file=rel_file,
+            )
         if not result.ok:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(

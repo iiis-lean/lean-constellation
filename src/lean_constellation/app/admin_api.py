@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import base64
 from collections.abc import Callable
+from contextlib import ExitStack
+from functools import wraps
 import json
 from pathlib import Path
 import time
@@ -70,6 +72,10 @@ from lean_constellation.services.foundation import (
     ServiceResult,
     WriteMode,
 )
+from lean_constellation.services.concurrency import (
+    RepoActivityConflictError,
+    RepoActivityRecoveryRequiredError,
+)
 from lean_constellation.services.repo_workspace import (
     DependencyReleaseMode,
     RepoSkeletonView,
@@ -79,6 +85,51 @@ from lean_constellation.services.repo_workspace.repo_preparation import (
     resolve_requirement_routes,
 )
 from lean_constellation.services.runtime import LeanRuntimeServices
+
+
+def _reject_during_paired_restore(method: Callable[..., Any]) -> Callable[..., Any]:
+    """Reject ordinary repo mutation while a paired restore is incomplete."""
+
+    @wraps(method)
+    def guarded(self, *args, **kwargs):  # noqa: ANN001, ANN202
+        blocked = self._check_admin_mutation_interlocks(*args, **kwargs)
+        if blocked is not None:
+            return blocked
+        return method(self, *args, **kwargs)
+
+    return guarded
+
+
+def _repo_exclusive_admin_mutation(method: Callable[..., Any]) -> Callable[..., Any]:
+    """Run one repo-global Admin mutation in the shared maintenance lane."""
+
+    @wraps(method)
+    def guarded(self, *args, **kwargs):  # noqa: ANN001, ANN202
+        roots = self._admin_mutation_repo_roots(*args, **kwargs)
+        blocked = self._check_admin_mutation_interlocks(*args, **kwargs)
+        if blocked is not None:
+            return blocked
+        try:
+            with ExitStack() as stack:
+                for root in roots:
+                    stack.enter_context(
+                        self.runtime.repo_activity.maintenance(
+                            root,
+                            owner=f"admin:{method.__name__}",
+                        )
+                    )
+                return method(self, *args, **kwargs)
+        except RepoActivityConflictError as exc:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "repo_activity_recovery_required"
+                    if isinstance(exc, RepoActivityRecoveryRequiredError)
+                    else "repo_maintenance_conflict",
+                    str(exc),
+                )
+            )
+
+    return guarded
 
 
 class AdminFlowStartView(StrictModel):
@@ -159,6 +210,7 @@ class RuntimeLeaseMonitorView(StrictModel):
     started_steps: list[StepMonitorView] = Field(default_factory=list)
     current_content_task_flow_id: str | None = None
     current_content_task_phase: str | None = None
+    content_batch_bookmark: "ContentBatchLogicalBookmarkView | None" = None
     current_agent_id: str | None = None
     checkpoint_ids: list[str] = Field(default_factory=list)
     truth_version: int
@@ -168,6 +220,34 @@ class RuntimeLeaseMonitorView(StrictModel):
     requires_review: bool = False
     suggested_next_action: str = "wait_for_terminal"
     summary: str
+
+
+class ContentBatchChildBookmarkView(StrictModel):
+    content_task_flow_id: str
+    node_path: str
+    contract_version: int | None = None
+    task_completion_mode: str | None = None
+    status: str
+    phase: str | None = None
+    outcome: str | None = None
+    active_or_latest_child_flow_id: str | None = None
+    child_kind: str | None = None
+    decl_round_index: int | None = None
+    round_id: str | None = None
+    latest_terminal_round_id: str | None = None
+    current_step_id: str | None = None
+    terminal_result_kind: str | None = None
+
+
+class ContentBatchLogicalBookmarkView(StrictModel):
+    coordinator_flow_id: str
+    source_submission_id: str
+    dispatch_step_id: str | None = None
+    pre_batch_snapshot_ref: str | None = None
+    children: list[ContentBatchChildBookmarkView] = Field(default_factory=list)
+    snapshot_eligible: bool
+    snapshot_ineligible_reason: str | None = None
+    post_batch_snapshot_ref: str | None = None
 
 
 class StepMonitorView(StrictModel):
@@ -244,6 +324,9 @@ def _classify_runtime_lease_terminal(
     if isinstance(reason, str) and reason.startswith("runtime_failure"):
         return "runtime_failure", True, "inspect_runtime_failure"
 
+    if isinstance(reason, str) and reason.startswith("content_batch_recovery_required:"):
+        return "review_required", True, "inspect_agent_step_recovery"
+
     if isinstance(reason, str) and reason.startswith("flow_terminal:"):
         return "cross_flow_handoff", False, "inspect_flow_result_and_start_next_lifecycle_entry"
 
@@ -255,6 +338,8 @@ def _classify_runtime_lease_terminal(
         "waiting_for_parent_callback:",
         "content_task_terminal:",
         "content_task_batch_checkpointed:",
+        "content_batch_checkpointed:",
+        "content_batch_progress_epoch:",
         "coordinator_terminal:",
     )
     if reason == "semantic_boundary_reached" or (
@@ -1097,6 +1182,94 @@ class LeanAdminApi:
         self.toolkit_state = toolkit_state
         self.repo_runtime_registry = repo_runtime_registry
 
+    def _check_admin_mutation_interlocks(self, *args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        for repo_root in self._admin_mutation_repo_roots(*args, **kwargs):
+            interlock = self.runtime.app.snapshot_runtime.check_repo_recovery_interlock(
+                repo_root
+            )
+            if not interlock.ok:
+                return self.runtime.foundation.fail(interlock.issues)
+        return None
+
+    def _admin_mutation_repo_roots(self, *args, **kwargs) -> tuple[Path, ...]:  # noqa: ANN002, ANN003
+        roots: dict[str, Path] = {}
+        values = [*args, *kwargs.values()]
+        for value in values:
+            if isinstance(value, Path):
+                root = value.resolve(strict=False)
+                roots[str(root)] = root
+                continue
+            for field in ("repo_root", "consumer_repo_root"):
+                candidate = getattr(value, field, None)
+                if candidate:
+                    root = Path(candidate).resolve(strict=False)
+                    roots[str(root)] = root
+            workspace_root = getattr(value, "workspace_root", None)
+            repo_keys = getattr(value, "repo_keys", None)
+            if workspace_root and repo_keys:
+                for repo_key in repo_keys:
+                    root = (Path(workspace_root) / str(repo_key)).resolve(strict=False)
+                    roots[str(root)] = root
+            target_repo = getattr(value, "target_repo", None)
+            if workspace_root and target_repo:
+                root = (Path(workspace_root) / str(target_repo)).resolve(strict=False)
+                roots[str(root)] = root
+            repo_name = getattr(value, "repo_name", None)
+            if workspace_root and repo_name:
+                root = (Path(workspace_root) / str(repo_name)).resolve(strict=False)
+                roots[str(root)] = root
+            consumer_repo = getattr(value, "consumer_repo", None)
+            if self.workspace_root is not None and consumer_repo:
+                root = (self.workspace_root / str(consumer_repo)).resolve(strict=False)
+                roots[str(root)] = root
+            flow_id = getattr(value, "flow_id", None)
+            step_id = getattr(value, "step_id", None)
+            resolved = self._repo_root_for_runtime_identity(
+                flow_id=str(flow_id) if flow_id else None,
+                step_id=str(step_id) if step_id else None,
+            )
+            if resolved is not None:
+                roots[str(resolved)] = resolved
+        if not roots:
+            for flow in self.runtime.list_flows():
+                input_model = getattr(flow, "input", None)
+                candidate = getattr(input_model, "repo_root", None) or getattr(
+                    input_model,
+                    "repo_path",
+                    None,
+                )
+                if candidate:
+                    root = Path(candidate).resolve(strict=False)
+                    roots[str(root)] = root
+        return tuple(roots[key] for key in sorted(roots))
+
+    def _repo_root_for_runtime_identity(
+        self,
+        *,
+        flow_id: str | None,
+        step_id: str | None,
+    ) -> Path | None:
+        try:
+            if flow_id is None and step_id is not None:
+                flow_id = self.runtime.get_step(step_id).flow_id
+            seen: set[str] = set()
+            while flow_id is not None and flow_id not in seen:
+                seen.add(flow_id)
+                flow = self.runtime.get_flow(flow_id)
+                input_model = getattr(flow, "input", None)
+                candidate = getattr(input_model, "repo_root", None) or getattr(
+                    input_model,
+                    "repo_path",
+                    None,
+                )
+                if candidate:
+                    return Path(candidate).resolve(strict=False)
+                flow_id = getattr(flow, "parent_flow_id", None)
+        except Exception:  # noqa: BLE001 - unresolved identity is handled by the target operation.
+            return None
+        return None
+
+    @_reject_during_paired_restore
     def start_requirement_group_bootstrap(
         self,
         input_model: StartRequirementGroupBootstrapInput,
@@ -1175,6 +1348,7 @@ class LeanAdminApi:
             repo_root=prepared.value.shell.repo_root,
         )
 
+    @_repo_exclusive_admin_mutation
     def update_repo_requirement(
         self,
         input_model: UpdateRepoRequirementInput,
@@ -1569,6 +1743,7 @@ class LeanAdminApi:
             return self.runtime.foundation.fail(verified.issues)
         return self.runtime.foundation.ok(verified.value)
 
+    @_reject_during_paired_restore
     def start_native_preparation(self, input_model: StartPreparationInput) -> ServiceResult[AdminFlowStartView]:
         try:
             with self.runtime.repo_workspace.lifecycle_lock.locked(input_model.repo_root):
@@ -1578,6 +1753,7 @@ class LeanAdminApi:
                 "repo_lifecycle_lock_busy", str(exc), object_ref=str(input_model.repo_root)
             ))
 
+    @_reject_during_paired_restore
     def start_initial_native_repo_run(self, input_model: RepoRunStartInput) -> ServiceResult[AdminFlowStartView]:
         return self.start_native_preparation(StartPreparationInput(
             repo_root=input_model.repo_root,
@@ -1599,6 +1775,7 @@ class LeanAdminApi:
             failed_parent_flow_id=input_model.failed_parent_flow_id,
         )
 
+    @_repo_exclusive_admin_mutation
     def recover_native_source_index(
         self,
         input_model: NativeSourceIndexRecoveryStartInput,
@@ -1668,12 +1845,15 @@ class LeanAdminApi:
             repo_root=str(input_model.repo_root),
         )
 
+    @_reject_during_paired_restore
     def start_native_repo_continuation(self, input_model: RepoRunRequestInput) -> ServiceResult[AdminFlowStartView]:
         return self.continue_native_repo(input_model)
 
+    @_reject_during_paired_restore
     def start_source_index_run(self, input_model: StandaloneSourceIndexRunInput) -> ServiceResult[AdminFlowStartView]:
         return self.start_standalone_source_index(input_model)
 
+    @_reject_during_paired_restore
     def start_root_interface_run(self, input_model: StandaloneRootInterfaceRunInput) -> ServiceResult[AdminFlowStartView]:
         return self.start_standalone_root_interfaces(input_model)
 
@@ -1712,6 +1892,7 @@ class LeanAdminApi:
             ), repo_root=str(input_model.repo_root),
         )
 
+    @_reject_during_paired_restore
     def continue_native_repo(self, input_model: RepoRunRequestInput) -> ServiceResult[AdminFlowStartView]:
         try:
             with self.runtime.repo_workspace.lifecycle_lock.locked(input_model.repo_root):
@@ -1769,6 +1950,7 @@ class LeanAdminApi:
             run_spec=run_spec, summary="Derived current repo run status.",
         ))
 
+    @_reject_during_paired_restore
     def start_standalone_source_index(self, input_model: StandaloneSourceIndexRunInput) -> ServiceResult[AdminFlowStartView]:
         repo_key = input_model.repo_key or input_model.repo_root.name
         spec = self.runtime.repo_workspace.run.resolve_continuation_repo_run_spec(
@@ -1793,6 +1975,7 @@ class LeanAdminApi:
             },
         )
 
+    @_reject_during_paired_restore
     def start_standalone_root_interfaces(self, input_model: StandaloneRootInterfaceRunInput) -> ServiceResult[AdminFlowStartView]:
         repo_key = input_model.repo_key or input_model.repo_root.name
         spec = self.runtime.repo_workspace.run.resolve_continuation_repo_run_spec(
@@ -1894,6 +2077,7 @@ class LeanAdminApi:
             repo_root, release_id=release_id
         )
 
+    @_repo_exclusive_admin_mutation
     def preview_repo_release(self, repo_root: Path, *, summary: str = "Admin release preview."):  # noqa: ANN201
         try:
             with self.runtime.repo_workspace.lifecycle_lock.locked(repo_root):
@@ -1924,6 +2108,7 @@ class LeanAdminApi:
             )
         )
 
+    @_repo_exclusive_admin_mutation
     def apply_repo_release_restore(
         self,
         input_model: RepoReleaseRestoreApplyInput,
@@ -1947,6 +2132,7 @@ class LeanAdminApi:
             )
         )
 
+    @_repo_exclusive_admin_mutation
     def prepare_repo_publication(
         self,
         input_model: RepoPublicationPrepareInput,
@@ -1987,6 +2173,7 @@ class LeanAdminApi:
             release_id=input_model.release_id,
         )
 
+    @_repo_exclusive_admin_mutation
     def apply_repo_remote_publication(
         self,
         input_model: RepoRemotePublicationInput,
@@ -2021,6 +2208,7 @@ class LeanAdminApi:
             remote_name=input_model.remote_name,
         )
 
+    @_repo_exclusive_admin_mutation
     def apply_repo_github_topics(
         self,
         input_model: RepoGitHubTopicsInput,
@@ -2052,6 +2240,7 @@ class LeanAdminApi:
             validation_profile=input_model.validation_profile,
         )
 
+    @_repo_exclusive_admin_mutation
     def apply_repo_dependency_change(
         self,
         input_model: RepoDependencyChangeInput,
@@ -2085,6 +2274,7 @@ class LeanAdminApi:
             push_superproject=input_model.push_superproject,
         )
 
+    @_repo_exclusive_admin_mutation
     def apply_workspace_publication(
         self,
         input_model: WorkspacePublicationInput,
@@ -2147,12 +2337,14 @@ class LeanAdminApi:
                 "repo_lifecycle_lock_busy", str(exc), object_ref=str(repo_root)
             ))
 
+    @_repo_exclusive_admin_mutation
     def cleanup_repo_release_orphans(self, input_model: RepoReleaseOrphanCleanupInput):  # noqa: ANN201
         return self.runtime.validation_snapshot.cleanup_repo_release_orphans(
             input_model.repo_root,
             expected_audit_digest=input_model.expected_audit_digest,
         )
 
+    @_repo_exclusive_admin_mutation
     def reconcile_repo_requirements(self, repo_root: Path, *, release_id: str):  # noqa: ANN201
         try:
             with self.runtime.repo_workspace.lifecycle_lock.locked(repo_root):
@@ -2164,6 +2356,7 @@ class LeanAdminApi:
                 "repo_lifecycle_lock_busy", str(exc), object_ref=str(repo_root)
             ))
 
+    @_reject_during_paired_restore
     def start_adapter_preparation(self, input_model: StartPreparationInput) -> ServiceResult[AdminFlowStartView]:
         repo_key = input_model.repo_key or input_model.repo_root.name
         return self.start_arbitrary_flow(
@@ -2181,6 +2374,7 @@ class LeanAdminApi:
             repo_root=str(input_model.repo_root),
         )
 
+    @_repo_exclusive_admin_mutation
     def create_main_repo_shell(self, input_model: CreateMainRepoShellInput) -> ServiceResult[RepoShellView]:
         return self.runtime.repo_workspace.create_main_repo_shell(
             input_model.workspace_root,
@@ -2188,6 +2382,7 @@ class LeanAdminApi:
             project_name=input_model.project_name,
         )
 
+    @_repo_exclusive_admin_mutation
     def write_main_repo_preparation_input(
         self,
         input_model: WriteMainRepoPreparationInput,
@@ -2284,6 +2479,7 @@ class LeanAdminApi:
             return self.runtime.foundation.ok(view)
         return self.runtime.foundation.fail(issues)
 
+    @_repo_exclusive_admin_mutation
     def initialize_main_native_skeleton(
         self,
         input_model: InitializeMainNativeSkeletonInput,
@@ -2296,6 +2492,7 @@ class LeanAdminApi:
     def get_repo_config(self, repo_root: Path) -> ServiceResult[RepoConfigView]:
         return self.runtime.repo_workspace.metadata.get_repo_config(repo_root)
 
+    @_repo_exclusive_admin_mutation
     def update_repo_config(self, input_model: RepoConfigUpdateInput) -> ServiceResult[RepoConfigView]:
         return self.runtime.repo_workspace.metadata.update_repo_config(
             input_model.repo_root,
@@ -2307,6 +2504,7 @@ class LeanAdminApi:
     def get_repo_publication(self, repo_root: Path) -> ServiceResult[RepoPublicationView]:
         return self.runtime.repo_workspace.metadata.get_repo_publication(repo_root)
 
+    @_reject_during_paired_restore
     def bootstrap_main_native_repo(
         self,
         input_model: BootstrapMainNativeRepoInput,
@@ -2358,6 +2556,7 @@ class LeanAdminApi:
             )
         )
 
+    @_reject_during_paired_restore
     def start_arbitrary_flow(
         self,
         input_model: StartFlowInput,
@@ -2394,6 +2593,7 @@ class LeanAdminApi:
         schedule_service = self.runtime.ark.schedule_service
         if scope_id is None and schedule_service is not None and hasattr(schedule_service, "clear_run_budget"):
             schedule_service.clear_run_budget(reason="manual_pause")
+            self.runtime.repo_activity.release_all_content_batches()
         return self.runtime.foundation.ok(
             RuntimePauseView(
                 paused=True,
@@ -2403,6 +2603,7 @@ class LeanAdminApi:
             )
         )
 
+    @_reject_during_paired_restore
     def resume_runtime(
         self,
         input_model: RuntimeResumeInput | None = None,
@@ -2487,6 +2688,11 @@ class LeanAdminApi:
                     details={"step_ids": [step.step_id for step in running_steps]},
                 )
             )
+        repo_root = self._semantic_repo_root(input_model)
+        if repo_root is not None:
+            interlock = self.runtime.app.snapshot_runtime.check_repo_recovery_interlock(repo_root)
+            if not interlock.ok:
+                return self.runtime.foundation.fail(interlock.issues)
         try:
             policy = build_semantic_run_policy(self.runtime, input_model)
             run_control = schedule_service.configure_semantic_run(policy)
@@ -2497,6 +2703,7 @@ class LeanAdminApi:
         except Exception as exc:  # noqa: BLE001 - Admin mutation boundary.
             schedule_service.clear_run_budget(reason="semantic_advance_admission_failed")
             controller.pause(None)
+            self.runtime.repo_activity.release_all_content_batches()
             kind = "semantic_advance_invalid" if isinstance(exc, SemanticAdvancePolicyError) else "semantic_advance_failed"
             return self.runtime.foundation.fail(self.runtime.foundation.issue(kind, str(exc)))
         run_control = schedule_service.get_run_control_view()
@@ -2511,6 +2718,32 @@ class LeanAdminApi:
                 summary=f"Started production semantic advance {policy.name}.",
             )
         )
+
+    def _semantic_repo_root(self, input_model: RuntimeSemanticAdvanceInput) -> Path | None:
+        flow_id = input_model.coordinator_flow_id or input_model.content_task_flow_id
+        if flow_id is None and input_model.step_id is not None:
+            try:
+                flow_id = self.runtime.ark.step_service.store.get_step(input_model.step_id).flow_id
+            except Exception:
+                return None
+        if flow_id is None and input_model.scope_id is not None:
+            candidates = [
+                flow
+                for flow in self.runtime.list_flows()
+                if flow.scope_id == input_model.scope_id and str(flow.status) not in {"completed", "failed"}
+            ]
+            if len(candidates) == 1:
+                flow_id = candidates[0].flow_id
+        while flow_id is not None:
+            try:
+                flow = self.runtime.ark.flow_service.get_flow(flow_id)
+            except Exception:
+                return None
+            value = getattr(flow.input, "repo_root", None) or getattr(flow.input, "repo_path", None)
+            if value:
+                return Path(value)
+            flow_id = flow.parent_flow_id
+        return None
 
     def get_runtime_lease(self, lease_id: str) -> ServiceResult[RuntimeLeaseMonitorView]:
         schedule_service = self.runtime.ark.schedule_service
@@ -2755,6 +2988,7 @@ class LeanAdminApi:
                 self.runtime.foundation.issue("step_monitor_failed", f"Failed to load step monitor view: {exc}")
             )
 
+    @_reject_during_paired_restore
     def set_agent_step_operator_instruction(
         self,
         input_model: SetAgentStepOperatorInstructionInput,
@@ -3032,6 +3266,7 @@ class LeanAdminApi:
                 )
             )
 
+    @_reject_during_paired_restore
     def repair_running_agent(
         self,
         agent_id: str,
@@ -3316,6 +3551,7 @@ class LeanAdminApi:
             )
         )
 
+    @_reject_during_paired_restore
     def rebuild_candidate_queues(self, *, scope_id: str | None = None) -> ServiceResult[TestControlCandidateQueueView]:
         guarded = self._require_test_control()
         if guarded is not None:
@@ -3333,6 +3569,7 @@ class LeanAdminApi:
             )
         return self.runtime.foundation.ok(self._candidate_queue_view())
 
+    @_reject_during_paired_restore
     def advance_flow_once(self, input_model: AdminFlowAdvanceInput) -> ServiceResult[AdminFlowAdvanceView]:
         guarded = self._require_test_control()
         if guarded is not None:
@@ -3361,6 +3598,7 @@ class LeanAdminApi:
             )
         )
 
+    @_reject_during_paired_restore
     def start_step_once(self, input_model: AdminStepStartInput) -> ServiceResult[AdminStepRunView]:
         guarded = self._require_test_control()
         if guarded is not None:
@@ -3454,6 +3692,7 @@ class LeanAdminApi:
                 self.runtime.foundation.issue("agent_step_control_view_failed", f"Failed to load AgentStep control view: {exc}")
             )
 
+    @_reject_during_paired_restore
     def set_agent_step_override(self, input_model: SetAgentStepOverrideInput) -> ServiceResult[AgentStepControlView]:
         guarded = self._require_test_control()
         if guarded is not None:
@@ -3478,6 +3717,7 @@ class LeanAdminApi:
                 self.runtime.foundation.issue("set_agent_step_override_failed", f"Failed to set AgentStep override: {exc}")
             )
 
+    @_reject_during_paired_restore
     def clear_agent_step_override(self, input_model: ClearAgentStepOverrideInput) -> ServiceResult[AgentStepControlView]:
         guarded = self._require_test_control()
         if guarded is not None:
@@ -3576,6 +3816,7 @@ class LeanAdminApi:
                 )
             )
 
+    @_reject_during_paired_restore
     def recover_agent_step(
         self,
         input_model: RecoverAgentStepInput,
@@ -3709,6 +3950,7 @@ class LeanAdminApi:
                 )
             )
 
+    @_reject_during_paired_restore
     def reset_coordinator_for_current_truth(
         self,
         input_model: ResetCoordinatorForCurrentTruthInput,
@@ -3830,6 +4072,7 @@ class LeanAdminApi:
                 )
             )
 
+    @_reject_during_paired_restore
     def reset_content_plan_for_current_truth(
         self,
         input_model: ResetContentPlanForCurrentTruthInput,
@@ -3999,6 +4242,7 @@ class LeanAdminApi:
             prune_extra_files=input_model.prune_extra_files,
         )
 
+    @_repo_exclusive_admin_mutation
     def resume_requirement(self, input_model: RequirementResumeInput) -> ServiceResult[RequirementResumeView]:
         loaded = self.runtime.repo_workspace.requirement.get_requirement(
             input_model.consumer_repo_root,
@@ -4634,6 +4878,7 @@ class LeanAdminApi:
             terminal_disposition = "review_required"
             requires_review = True
             suggested_next_action = "inspect_agent_step_recovery"
+        content_batch_bookmark = self._content_batch_bookmark(observation)
         return RuntimeLeaseMonitorView(
             lease=lease,
             runtime=runtime_result.value,
@@ -4645,6 +4890,7 @@ class LeanAdminApi:
                 "phase",
                 None,
             ),
+            content_batch_bookmark=content_batch_bookmark,
             current_agent_id=current_agent_id,
             truth_version=lease.version,
             observed_at=utc_now_iso(),
@@ -4656,6 +4902,140 @@ class LeanAdminApi:
                 f"Scheduler lease {lease.lease_id} is {lease.status} ({terminal_disposition})"
                 + (" after a bounded wait timeout." if timed_out else ".")
             ),
+        )
+
+    def _content_batch_bookmark(self, observation) -> ContentBatchLogicalBookmarkView | None:  # noqa: ANN001
+        if observation is None or observation.granularity != "content_batch" or not observation.coordinator_flow_id:
+            return None
+        try:
+            coordinator = self.runtime.ark.flow_service.get_flow(observation.coordinator_flow_id)
+        except Exception:
+            return None
+        state = getattr(coordinator, "state", None)
+        dispatch_step_id = getattr(state, "waiting_dispatch_step_id", None) or observation.expected_dispatch_step_id
+        children = []
+        if dispatch_step_id is not None:
+            try:
+                children = list(
+                    self.runtime.ark.flow_service.store.list_child_flows(
+                        parent_flow_id=coordinator.flow_id,
+                        parent_dispatch_step_id=dispatch_step_id,
+                    )
+                )
+            except Exception:
+                children = []
+        child_views: list[ContentBatchChildBookmarkView] = []
+        for child in children:
+            if child.flow_type != "content_node_task":
+                continue
+            child_state = getattr(child, "state", None)
+            try:
+                nested = list(
+                    self.runtime.ark.flow_service.store.list_child_flows(
+                        parent_flow_id=child.flow_id
+                    )
+                )
+            except Exception:
+                nested = []
+            current_dispatch_id = getattr(child_state, "waiting_dispatch_step_id", None)
+            current_nested = [
+                item for item in nested if item.parent_dispatch_step_id == current_dispatch_id
+            ] if current_dispatch_id is not None else []
+            latest_child_id = (
+                current_nested[-1].flow_id
+                if current_nested
+                else getattr(child_state, "completed_child_flow_id", None)
+            )
+            round_index = None
+            round_id = None
+            latest_terminal_round_id = None
+            if latest_child_id is not None:
+                try:
+                    latest_child = self.runtime.ark.flow_service.get_flow(latest_child_id)
+                except Exception:
+                    latest_child = None
+                if latest_child is not None and latest_child.flow_type == "decl_graph_round":
+                    round_index = getattr(latest_child.input, "round_index", None)
+                    round_id = getattr(latest_child.input, "round_id", None)
+                    if latest_child.status in {FlowStatus.COMPLETED, FlowStatus.FAILED}:
+                        latest_terminal_round_id = round_id
+            terminal_rounds = [
+                item
+                for item in nested
+                if item.flow_type == "decl_graph_round"
+                and item.status in {FlowStatus.COMPLETED, FlowStatus.FAILED}
+            ]
+            if terminal_rounds:
+                latest_terminal = max(
+                    terminal_rounds,
+                    key=lambda item: getattr(item.input, "round_index", -1) or -1,
+                )
+                latest_terminal_round_id = getattr(latest_terminal.input, "round_id", None)
+            result = getattr(child, "result", None)
+            child_views.append(
+                ContentBatchChildBookmarkView(
+                    content_task_flow_id=child.flow_id,
+                    node_path=str(getattr(child.input, "node_path", "")),
+                    contract_version=getattr(child.input, "contract_version", None),
+                    task_completion_mode=str(getattr(result, "task_completion_mode", None) or "") or None,
+                    status=str(child.status),
+                    phase=getattr(getattr(child_state, "position", None), "phase", None),
+                    outcome=getattr(result, "outcome", None),
+                    active_or_latest_child_flow_id=latest_child_id,
+                    child_kind=getattr(child_state, "waiting_child_kind", None),
+                    decl_round_index=round_index,
+                    round_id=round_id,
+                    latest_terminal_round_id=latest_terminal_round_id,
+                    current_step_id=child.current_step_id,
+                    terminal_result_kind=getattr(result, "result_type", None),
+                )
+            )
+        pre_ref = None
+        post_ref = None
+        for step_id in coordinator.step_ids:
+            try:
+                step = self.runtime.ark.step_service.store.get_step(step_id)
+            except Exception:
+                continue
+            result = getattr(step, "result", None)
+            if getattr(result, "outcome", None) != "snapshot_created":
+                continue
+            if getattr(result, "checkpoint_kind", None) == "before_content_task_dispatch":
+                pre_ref = getattr(result, "snapshot_id", None)
+            elif getattr(result, "checkpoint_kind", None) == "after_content_task_batch_terminal":
+                post_ref = getattr(result, "snapshot_id", None)
+        phase = getattr(getattr(state, "position", None), "phase", None)
+        eligible = False
+        ineligible_reason = "active_content_batch_not_at_repo_consistent_boundary"
+        if phase == "before_content_task_dispatch_snapshot":
+            gate = self.runtime.app.snapshot_runtime.check_repo_stable_point(
+                Path(coordinator.input.repo_root),
+                checkpoint_kind="before_content_task_dispatch",
+                node_paths=list(state.pending_content_node_paths),
+            )
+            eligible = bool(gate.ok and gate.value is not None and gate.value.passed)
+            if not eligible and gate.issues:
+                ineligible_reason = gate.issues[0].kind
+            elif not eligible and gate.value is not None and gate.value.issues:
+                ineligible_reason = gate.value.issues[0].kind
+        elif phase == "coordinator_callback" and post_ref is not None:
+            repo_root = Path(coordinator.input.repo_root)
+            interlock = self.runtime.app.snapshot_runtime.check_repo_recovery_interlock(repo_root)
+            eligible = interlock.ok and not self.runtime.repo_activity.has_active_transactions(repo_root)
+            ineligible_reason = (
+                "repo_catalog_transaction_active"
+                if interlock.ok
+                else interlock.issues[0].kind
+            )
+        return ContentBatchLogicalBookmarkView(
+            coordinator_flow_id=coordinator.flow_id,
+            source_submission_id=observation.expected_source_submission_id or "",
+            dispatch_step_id=dispatch_step_id,
+            pre_batch_snapshot_ref=pre_ref,
+            children=child_views,
+            snapshot_eligible=eligible,
+            snapshot_ineligible_reason=None if eligible else ineligible_reason,
+            post_batch_snapshot_ref=post_ref,
         )
 
     def _lease_lost_result(self, lease_id: str) -> ServiceResult[RuntimeLeaseMonitorView]:

@@ -375,7 +375,40 @@ class NodeService:
         return admission
 
     def submit_content_node_batch_preflight(self, repo_root: Path, *, node_paths: list[str]) -> ServiceResult[GateReport]:
-        return self.dependency.check_content_batch_independent(repo_root, node_paths=node_paths)
+        independent = self.dependency.check_content_batch_independent(repo_root, node_paths=node_paths)
+        if not independent.ok or independent.value is None or not independent.value.passed:
+            return independent
+        requested = {path.strip() for path in node_paths if path.strip()}
+        active_paths: dict[str, str] = {}
+        try:
+            for flow in self.runtime.list_flows():
+                if flow.flow_type != "content_node_task":
+                    continue
+                status = getattr(flow.status, "value", flow.status)
+                if status in {"completed", "failed"}:
+                    continue
+                path = getattr(flow.input, "node_path", None)
+                if path in requested:
+                    active_paths[str(path)] = flow.flow_id
+        except RuntimeError:
+            active_paths = {}
+        if active_paths:
+            return self.runtime.foundation.ok(
+                self.runtime.foundation.gate_failed(
+                    "content_batch_independent",
+                    [
+                        self.runtime.foundation.issue(
+                            "content_batch_node_already_active",
+                            f"Content node already has a non-terminal task: {path}.",
+                            object_ref=path,
+                            details={"flow_id": flow_id},
+                        )
+                        for path, flow_id in sorted(active_paths.items())
+                    ],
+                    summary=f"{len(active_paths)} content nodes already have active tasks.",
+                )
+            )
+        return independent
 
     def commit_scope_contract(self, repo_root: Path, *, scope_path: str, summary: str) -> ServiceResult[NodeContractView]:
         preflight = self.contract.check_scope_contract_commit(

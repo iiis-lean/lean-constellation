@@ -43,6 +43,7 @@ def create_lean_runtime_services(
     """Create a fully wired Lean Constellation service graph."""
 
     from lean_constellation.services.adapter import AdapterService
+    from lean_constellation.services.concurrency import RepoActivityComponent
     from lean_constellation.services.decl_graph import DeclGraphService
     from lean_constellation.services.external_clients import ExternalClientConfig, ExternalClientService
     from lean_constellation.services.foundation import FoundationService
@@ -71,6 +72,7 @@ def create_lean_runtime_services(
         raise TypeError("external_config must be an ExternalClientConfig instance.")
 
     app.foundation = FoundationService(runtime)
+    app.repo_activity = RepoActivityComponent(runtime)
     app.external = ExternalClientService(
         runtime,
         config,

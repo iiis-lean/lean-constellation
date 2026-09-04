@@ -185,14 +185,24 @@ class ToolkitIngestionComponent:
                 )
             )
         candidates = [self._candidate_from_search_item(normalized_query, item, index) for index, item in enumerate(result.items[:limit])]
-        cache_result = self._load_candidate_cache(repo_root)
-        if not cache_result.ok or cache_result.value is None:
-            return self.runtime.foundation.fail(cache_result.issues)
-        for candidate in candidates:
-            cache_result.value.candidates[candidate.candidate_id] = candidate
-        saved = self._save_candidate_cache(repo_root, cache_result.value)
-        if not saved.ok:
-            return self.runtime.foundation.fail(saved.issues)
+        with self.runtime.repo_activity.catalog_write(repo_root, "mathlib_candidates"):
+            cache_result = self._load_candidate_cache(repo_root)
+            if not cache_result.ok or cache_result.value is None:
+                return self.runtime.foundation.fail(cache_result.issues)
+            for candidate in candidates:
+                existing = cache_result.value.candidates.get(candidate.candidate_id)
+                if existing is not None and existing != candidate:
+                    return self.runtime.foundation.fail(
+                        self.runtime.foundation.issue(
+                            "mathlib_candidate_identity_conflict",
+                            "A Mathlib candidate id resolved to a different payload.",
+                            object_ref=candidate.candidate_id,
+                        )
+                    )
+                cache_result.value.candidates[candidate.candidate_id] = candidate
+            saved = self._save_candidate_cache(repo_root, cache_result.value)
+            if not saved.ok:
+                return self.runtime.foundation.fail(saved.issues)
         return self.runtime.foundation.ok(
             MathlibExternalSearchView(
                 query=normalized_query,
@@ -818,6 +828,7 @@ class ToolkitIngestionComponent:
             repo_root,
             entries=decl_entries,
             module_entries=module_entries,
+            allow_verified_replacement=True,
         )
         if not ensured.ok:
             return self.runtime.foundation.fail(ensured.issues)

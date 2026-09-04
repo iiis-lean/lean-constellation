@@ -25,6 +25,10 @@ from lean_constellation.app.agent_provider_config import (
 from lean_constellation.app.config import LeanAppConfig
 from lean_constellation.app.runtime import create_app_runtime_services, external_client_config_from_app_config
 from lean_constellation.domain.common import StrictModel
+from lean_constellation.services.concurrency import (
+    RepoActivityConflictError,
+    RepoRuntimeWriterLease,
+)
 from lean_constellation.services import create_lean_runtime_services
 from lean_constellation.services.foundation import ServiceIssue, ServiceResult
 from lean_constellation.services.foundation.result_error import ResultErrorComponent
@@ -72,6 +76,7 @@ class RepoRuntimeRecord:
     agent_homes: ProductionAgentHomesView | None = None
     last_error: str | None = None
     startup_warnings: list[str] = field(default_factory=list)
+    writer_lease: RepoRuntimeWriterLease | None = field(default=None, repr=False)
     lock: RLock = field(default_factory=RLock, repr=False)
 
     @property
@@ -538,6 +543,9 @@ class RepoRuntimeRegistry:
                     return self.result.fail(stable.issues)
             record.runtime = None
             record.agent_homes = None
+            if record.writer_lease is not None:
+                record.writer_lease.release()
+                record.writer_lease = None
             record.state = "unloaded"
             return self.result.ok(self._status_for_record(record))
 
@@ -549,6 +557,9 @@ class RepoRuntimeRegistry:
             with record.lock:
                 record.runtime = None
                 record.agent_homes = None
+                if record.writer_lease is not None:
+                    record.writer_lease.release()
+                    record.writer_lease = None
                 if record.state != "failed":
                     record.state = "unloaded"
 
@@ -583,6 +594,9 @@ class RepoRuntimeRegistry:
         record.state = "loading"
         record.last_error = None
         try:
+            writer_lease = RepoRuntimeWriterLease(record.repo_root)
+            writer_lease.acquire()
+            record.writer_lease = writer_lease
             record.runtime_root.mkdir(parents=True, exist_ok=True)
             runtime_agent_type_specs = list(self.agent_type_specs)
             if self.config.test_control_enabled:
@@ -624,11 +638,19 @@ class RepoRuntimeRegistry:
             return self.result.ok(runtime)
         except Exception as exc:  # noqa: BLE001 - registry load boundary.
             record.runtime = None
+            if record.writer_lease is not None:
+                record.writer_lease.release()
+                record.writer_lease = None
             record.state = "failed"
             record.last_error = str(exc)
+            issue_kind = (
+                "repo_runtime_writer_conflict"
+                if isinstance(exc, RepoActivityConflictError)
+                else "repo_runtime_load_failed"
+            )
             return self.result.fail(
                 self.result.issue(
-                    "repo_runtime_load_failed",
+                    issue_kind,
                     f"Failed to load repo runtime: {exc}",
                     object_ref=str(record.repo_root),
                 )

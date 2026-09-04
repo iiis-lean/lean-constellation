@@ -326,6 +326,8 @@ class SemanticWatcher:
         suggested_next_action = lease_view.get("suggested_next_action") or self._fallback_next_action(
             terminal_disposition
         )
+        if isinstance(reason, str) and reason.startswith("content_batch_recovery_required:"):
+            suggested_next_action = "inspect_agent_step_recovery"
         strict_failure = requires_review or terminal_disposition in {
             "review_required",
             "business_blocked",
@@ -340,6 +342,7 @@ class SemanticWatcher:
             terminal_disposition=terminal_disposition,
             requires_review=requires_review,
             suggested_next_action=suggested_next_action,
+            content_batch_bookmark=lease_view.get("content_batch_bookmark"),
             content_task_progress=progress,
             summary=(
                 "Semantic lease observation completed; terminal state requires review."
@@ -354,6 +357,8 @@ class SemanticWatcher:
     def _fallback_terminal_disposition(reason: object) -> str:
         if isinstance(reason, str) and reason.startswith("runtime_failure"):
             return "runtime_failure"
+        if isinstance(reason, str) and reason.startswith("content_batch_recovery_required:"):
+            return "review_required"
         if isinstance(reason, str) and reason.startswith("flow_terminal:"):
             return "cross_flow_handoff"
         normal_prefixes = (
@@ -364,6 +369,8 @@ class SemanticWatcher:
             "waiting_for_parent_callback:",
             "content_task_terminal:",
             "content_task_batch_checkpointed:",
+            "content_batch_checkpointed:",
+            "content_batch_progress_epoch:",
             "coordinator_terminal:",
         )
         if reason == "semantic_boundary_reached" or (

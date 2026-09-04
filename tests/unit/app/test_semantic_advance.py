@@ -13,6 +13,7 @@ from agent_runtime_kit.flow import (
     SchedulerSemanticRunPolicy,
     StepStatus,
 )
+from agent_runtime_kit.flow.models import FlowRequest
 from agent_runtime_kit.flow.standard_steps import AgentStepState
 from pydantic import ValidationError
 
@@ -22,9 +23,17 @@ from lean_constellation.app import (
     StartFlowInput,
     create_app_runtime_services,
 )
-from lean_constellation.app.semantic_scheduler import build_semantic_run_policy
+from lean_constellation.app.semantic_scheduler import (
+    SemanticAdvancePolicyError,
+    _reserve_independent_content_batch,
+    _unresolved_suspended_agent_steps,
+    build_semantic_run_policy,
+    register_semantic_lease_observation,
+)
+from lean_constellation.services.concurrency import RepoActivityRecoveryRequiredError
 from lean_constellation.flows.common.agent_steps import ContentPlanAgentStep, RepoFormatDiscoveryAgentStep
 from lean_constellation.flows.content_node_task.flows import ContentNodeTaskState
+from lean_constellation.flows.content_node_task.decl_round.flow import DeclGraphRoundResult
 
 
 def _start_coordinator(admin: LeanAdminApi, repo_root: Path) -> str:
@@ -46,11 +55,48 @@ def test_semantic_advance_input_has_strict_discriminated_shapes() -> None:
         granularity="content_phase", action="plan", content_task_flow_id="f_1"
     ).action == "plan"
     assert RuntimeSemanticAdvanceInput(granularity="content_task", content_task_flow_id="f_1").action is None
+    content_batch = RuntimeSemanticAdvanceInput(
+        granularity="content_batch",
+        repo_key="Repo",
+        coordinator_flow_id="f_coordinator",
+        expected_source_submission_id="sub_batch",
+    )
+    assert content_batch.coordinator_flow_id == "f_coordinator"
+    assert content_batch.expected_source_submission_id == "sub_batch"
+    assert content_batch.progress_epoch_decl_rounds is None
 
     with pytest.raises(ValidationError, match="step.logic requires scope_id"):
         RuntimeSemanticAdvanceInput(granularity="step", action="logic")
     with pytest.raises(ValidationError, match="content_task semantic advance does not accept action"):
         RuntimeSemanticAdvanceInput(granularity="content_task", action="plan", content_task_flow_id="f_1")
+    with pytest.raises(ValidationError, match="content_batch semantic advance requires coordinator_flow_id"):
+        RuntimeSemanticAdvanceInput(
+            granularity="content_batch",
+            repo_key="Repo",
+            expected_source_submission_id="sub_batch",
+        )
+
+
+def test_semantic_batch_admission_translates_activity_recovery_required(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime = create_app_runtime_services(runtime_root=tmp_path / ".runtime")
+    repo_root = tmp_path / "Repo"
+    repo_root.mkdir()
+
+    def fail_frontier(_repo_root: Path):
+        raise RepoActivityRecoveryRequiredError("frontier recovery required")
+
+    monkeypatch.setattr(runtime.repo_activity, "_persisted_content_batches", fail_frontier)
+
+    with pytest.raises(SemanticAdvancePolicyError, match="frontier recovery required"):
+        _reserve_independent_content_batch(
+            runtime,
+            repo_root,
+            batch_id="content_batch_test",
+            node_paths=("Main.A", "Main.B"),
+        )
 
 
 def test_production_step_logic_runs_to_agent_boundary_and_auto_pauses(tmp_path: Path) -> None:
@@ -254,6 +300,47 @@ def test_runtime_lease_monitor_keeps_unexplained_no_runnable_reviewable(tmp_path
     assert view.value.suggested_next_action == "audit_candidates_before_next_admission"
 
 
+@pytest.mark.parametrize(
+    ("reason", "disposition", "requires_review", "next_action"),
+    [
+        ("content_batch_checkpointed:batch-1", "normal_boundary", False, "inspect_boundary_and_continue"),
+        ("content_batch_progress_epoch:batch-1", "normal_boundary", False, "inspect_boundary_and_continue"),
+        ("content_batch_recovery_required:step-1", "review_required", True, "inspect_agent_step_recovery"),
+    ],
+)
+def test_runtime_lease_monitor_classifies_content_batch_terminal_reasons(
+    tmp_path: Path,
+    reason: str,
+    disposition: str,
+    requires_review: bool,
+    next_action: str,
+) -> None:
+    runtime = create_app_runtime_services(runtime_root=tmp_path / ".runtime")
+    admin = LeanAdminApi(runtime)
+    control = runtime.ark.schedule_service.configure_semantic_run(
+        SchedulerSemanticRunPolicy(
+            name="content_batch_reason",
+            allow_flow_advance=lambda _flow: False,
+            allow_step_start=lambda _step: False,
+            decide=lambda _scheduler: SchedulerRunDecision(action="pause", reason=reason),
+            max_flow_advances=1,
+            max_step_starts=1,
+        )
+    )
+    with runtime.ark.schedule_service.lock:
+        runtime.ark.schedule_service._update_semantic_lease_locked(  # noqa: SLF001
+            status="terminal",
+            terminal_reason=reason,
+        )
+
+    view = admin.get_runtime_lease(control.lease_id or "")
+
+    assert view.ok and view.value is not None
+    assert view.value.terminal_disposition == disposition
+    assert view.value.requires_review is requires_review
+    assert view.value.suggested_next_action == next_action
+
+
 def test_runtime_lease_monitor_classifies_suspended_step_as_recovery_required(
     tmp_path: Path,
 ) -> None:
@@ -320,6 +407,32 @@ def test_runtime_lease_monitor_classifies_suspended_step_as_recovery_required(
     assert view.value.terminal_disposition == "review_required"
     assert view.value.requires_review is True
     assert view.value.suggested_next_action == "inspect_agent_step_recovery"
+
+
+def test_content_batch_recovery_ignores_superseded_suspended_step() -> None:
+    source = ContentPlanAgentStep(
+        step_id="suspended-source",
+        flow_id="member-flow",
+        scope_id="repo:Repo:node:Main.Member",
+        status=StepStatus.SUSPENDED,
+        state=AgentStepState(agent_role="content_plan", agent_type="ContentPlanAgent"),
+    )
+    replacement = ContentPlanAgentStep(
+        step_id="completed-replacement",
+        flow_id=source.flow_id,
+        scope_id=source.scope_id,
+        status=StepStatus.COMPLETED,
+        state=AgentStepState(
+            agent_role="content_plan",
+            agent_type="ContentPlanAgent",
+            restart_of_step_id=source.step_id,
+        ),
+    )
+
+    assert _unresolved_suspended_agent_steps([source, replacement]) == ()
+
+    replacement.status = StepStatus.SUSPENDED
+    assert _unresolved_suspended_agent_steps([source, replacement]) == (replacement,)
 
 
 def test_semantic_advance_requires_global_pause_and_valid_target(tmp_path: Path) -> None:
@@ -392,6 +505,143 @@ def test_runtime_lease_monitor_keeps_its_semantic_content_target(tmp_path: Path)
     assert first_lease.ok and first_lease.value is not None
     assert first_lease.value.current_content_task_flow_id == flow_ids[0]
     assert first_lease.value.current_content_task_phase == "admission"
+
+
+def test_runtime_lease_monitor_derives_content_batch_bookmark_from_current_truth(tmp_path: Path) -> None:
+    repo_root = tmp_path / "Repo"
+    repo_root.mkdir()
+    runtime = create_app_runtime_services(runtime_root=tmp_path / ".runtime")
+    admin = LeanAdminApi(runtime)
+    coordinator_id = _start_coordinator(admin, repo_root)
+    dispatch_step_id = "dispatch-content-batch"
+
+    def mark_batch(flow) -> None:  # noqa: ANN001
+        flow.state.position = flow.state.position.model_copy(update={"phase": "waiting_content_tasks"})
+        flow.state.waiting_dispatch_step_id = dispatch_step_id
+        flow.state.pending_dispatch_source_submission_id = "sub-batch"
+        flow.state.pending_content_node_paths = ["Main.A", "Main.B"]
+
+    runtime.ark.flow_service.store.update_flow_record(coordinator_id, mark_batch)
+    child_ids = []
+    for node_path in ("Main.A", "Main.B"):
+        child_ids.append(
+            runtime.ark.flow_service.start_flow(
+                FlowRequest(
+                    flow_type="content_node_task",
+                    scope_id=f"repo:Repo:node:{node_path}",
+                    params={
+                        "repo_key": "Repo",
+                        "repo_path": str(repo_root),
+                        "node_path": node_path,
+                        "contract_version": 1,
+                    },
+                ),
+                parent_flow_id=coordinator_id,
+                parent_dispatch_step_id=dispatch_step_id,
+                enqueue=False,
+            )
+        )
+    old_round_id = runtime.ark.flow_service.start_flow(
+        FlowRequest(
+            flow_type="decl_graph_round",
+            scope_id="repo:Repo:node:Main.A",
+            params={
+                "repo_key": "Repo",
+                "repo_path": str(repo_root),
+                "node_path": "Main.A",
+                "contract_version": 1,
+                "strategy_id": "strategy-1",
+                "round_id": "round-old",
+                "round_index": 1,
+            },
+        ),
+        parent_flow_id=child_ids[0],
+        parent_dispatch_step_id="old-dispatch",
+        enqueue=False,
+    )
+    runtime.ark.flow_service.store.update_flow_record(
+        old_round_id,
+        lambda flow: (
+            setattr(flow, "status", FlowStatus.COMPLETED),
+            setattr(flow, "current_step_id", None),
+            setattr(
+                flow,
+                "result",
+                DeclGraphRoundResult(
+                    outcome="completed",
+                    repo_key="Repo",
+                    node_path="Main.A",
+                    round_id="round-old",
+                    strategy_id="strategy-1",
+                    round_index=1,
+                    summary="Old round completed.",
+                ),
+            ),
+        ),
+    )
+    current_round_id = runtime.ark.flow_service.start_flow(
+        FlowRequest(
+            flow_type="decl_graph_round",
+            scope_id="repo:Repo:node:Main.A",
+            params={
+                "repo_key": "Repo",
+                "repo_path": str(repo_root),
+                "node_path": "Main.A",
+                "contract_version": 1,
+                "strategy_id": "strategy-1",
+                "round_id": "round-current",
+                "round_index": 2,
+            },
+        ),
+        parent_flow_id=child_ids[0],
+        parent_dispatch_step_id="current-dispatch",
+        enqueue=False,
+    )
+
+    def mark_current_child(flow) -> None:  # noqa: ANN001
+        flow.state.waiting_dispatch_step_id = "current-dispatch"
+        flow.state.waiting_child_kind = "decl_graph_round"
+        flow.state.completed_child_flow_id = old_round_id
+        flow.state.completed_child_outcome = "completed"
+
+    runtime.ark.flow_service.store.update_flow_record(child_ids[0], mark_current_child)
+    policy = SchedulerSemanticRunPolicy(
+        name="content_batch",
+        allow_flow_advance=lambda _flow: False,
+        allow_step_start=lambda _step: False,
+        decide=lambda _scheduler: SchedulerRunDecision(action="pause", reason="content_batch_progress_epoch:test"),
+        max_flow_advances=1,
+        max_step_starts=1,
+    )
+    control = runtime.ark.schedule_service.configure_semantic_run(policy)
+    assert control.lease_id is not None
+    register_semantic_lease_observation(
+        runtime.ark.schedule_service,
+        control.lease_id,
+        RuntimeSemanticAdvanceInput(
+            granularity="content_batch",
+            repo_key="Repo",
+            coordinator_flow_id=coordinator_id,
+            expected_source_submission_id="sub-batch",
+            expected_dispatch_step_id=dispatch_step_id,
+            progress_epoch_decl_rounds=1,
+        ),
+    )
+
+    view = admin.get_runtime_lease(control.lease_id)
+
+    assert view.ok and view.value is not None
+    bookmark = view.value.content_batch_bookmark
+    assert bookmark is not None
+    assert bookmark.coordinator_flow_id == coordinator_id
+    assert bookmark.dispatch_step_id == dispatch_step_id
+    assert bookmark.snapshot_eligible is False
+    assert bookmark.snapshot_ineligible_reason == "active_content_batch_not_at_repo_consistent_boundary"
+    assert [child.content_task_flow_id for child in bookmark.children] == child_ids
+    assert [child.node_path for child in bookmark.children] == ["Main.A", "Main.B"]
+    assert bookmark.children[0].active_or_latest_child_flow_id == current_round_id
+    assert bookmark.children[0].round_id == "round-current"
+    assert bookmark.children[0].latest_terminal_round_id == "round-old"
 
 
 def test_runtime_lease_monitor_does_not_borrow_running_agent_from_newer_lease(tmp_path: Path) -> None:

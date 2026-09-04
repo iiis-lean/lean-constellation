@@ -425,6 +425,7 @@ Bibliographic metadata normalization may change spelling, field completeness, or
                 "A new Content contract version defaults its task completion mode to the repository mode. Use `set_node_contract_task_completion_mode` only on an open Content contract when a deliberate theorem-statement staging boundary is justified.",
                 "Do not lower a task target to defer definitions, types, instances, or canonical constructions. Before choosing interface_declared or graph_declared under a deeper repo target, verify that every definition used by the staged statements already comes from a repo-ready visible boundary or is fully declared in this task's bottom-up layers.",
                 "Record that a shallower task target is partial progress: it cannot become another node's dependency, feed a Scope export, or close its parent Scope until a later contract version reaches the repo target.",
+                "Use an independent declared wave only when statement boundaries are stable and any unfinished cross-node dependency is future proof-body consumption rather than a definition or statement dependency. Record every real dependency when the successor contract advances toward the repository target; never conceal one to make a batch appear independent.",
                 "Follow `$source-evidence-referencing` before adding or changing source evidence; record both exact line endpoints and confirm the excerpt supports the ref reason, target interface, and node boundary.",
                 "Treat SourceCorpus locators such as `article/sections/...` as semantic-tool identities, not paths relative to the current workdir.",
                 "Attach durable source or resource context to a target node with `add_node_material_ref`. To remove stale material, first read `list_node_material_refs`, then pass its system-generated exact `ref` to `remove_node_material_ref`; list indices are display-only.",
@@ -808,6 +809,19 @@ may follow the selected theorem-proof schedule. If an upper consumer already own
 duplicate representation, repair ownership instead of preserving both definitions
 with casts or one-off bridges.
 
+## Choose Shallow Wave Or Bottom-up
+
+When trusted Lean code or a clear source decomposition fixes disjoint Node interfaces,
+independent Nodes may first receive shallow contracts that establish their declared
+boundaries. This is useful only when unfinished cross-node relationships belong to
+later proof bodies: partial Nodes are not providers, exports, or evidence of readiness.
+Use successor contracts to record the real proof dependencies before proving them.
+
+Keep the decomposition bottom-up when representations or canonical constructions are
+unsettled, lower results may change an upper Statement, source meaning is ambiguous,
+the proof architecture is being designed from scratch, or a repair may change several
+interfaces. Never omit a known dependency merely to admit parallel work.
+
 ## Decide Where Missing Work Belongs
 
 A blocked Content result does not by itself justify a new node. After recovering the authoritative consumer and dependency frontier, choose the smallest coherent action:
@@ -1119,8 +1133,9 @@ Use this Skill only after candidate Content nodes have clear mathematical bounda
 8. Confirm that declared node dependencies expose public declarations whose actual assumptions, indices, conclusions, representations, and composed use fit the planned work.
 9. Call `check_content_task_admission` for each candidate.
 10. Use `list_runnable_content_nodes` for orientation when several nodes may run.
-11. Call `check_content_node_batch` for the exact proposed batch.
-12. If a ref is misplaced or admission fails, repair Coordinator-owned structure or contracts and return to the next-action loop. Do not submit a partially invalid batch.
+11. Within the configured run maximum, prefer a bounded set from the current runnable frontier whose recorded dependencies and write owners do not conflict. Do not fill the maximum merely to increase concurrency, and do not omit a real dependency to make siblings appear independent.
+12. Call `check_content_node_batch` for the exact proposed batch. Its accepted batch freezes the sibling topology for that execution; a later dependency mutation cannot introduce a path between active members.
+13. If a ref is misplaced or admission fails, repair Coordinator-owned structure or contracts and return to the next-action loop. Do not submit a partially invalid batch.
 
 ## Submit
 
@@ -1443,6 +1458,7 @@ Analyze:
 - whether an interface statement hint supplies a consumer-side shape that the strategy must serve without strengthening its assumptions, replacing its objects or indices, or weakening its conclusion.
 - the definition frontier and canonical owner for every shared type, index, instance, equivalence, dependent family, matrix/object construction, or coercion convention used by planned Statements;
 - whether a staged theorem-statement task is justified and how a later contract version will close the reported repository gap.
+- which declarations form the current topological frontier and could share one coherent round without an unfinished provider-to-consumer edge or conflicting repair decision.
 
 For each construction, first search current active declarations, visible public
 providers, contract/interface refs, and Mathlib. Keep it local only when it serves
@@ -1543,7 +1559,7 @@ Before planning changes:
 
 1. Re-read the current node contract with `get_current_node_contract`.
 2. Read the current Round with `get_decl_round` without a selector. When a deliberate historical comparison is needed, list the Rounds and select one by its stable round sequence; use the other DeclGraph read tools for graph and Strategy state.
-3. Ensure the next batch is small, coherent, and aligned with the open strategy.
+3. Choose a moderate coherent batch from one current stage and topological frontier. Group peer targets only when they share Source/contract context, have no unfinished provider-to-consumer edge or conflicting writes, and one failure would not force broad rework of otherwise stable peers. Split the round when a representation or Statement decision determines later targets, a high-risk semantic repair needs isolation, targets cross stages or owners, or a Reviewer could not perform one full-current pass over the whole batch.
 4. Create or reuse the draft round with `create_decl_round_draft`.
 
 ## Semantic Declaration Planning

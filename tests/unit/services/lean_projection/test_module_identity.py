@@ -1,5 +1,7 @@
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Event, Lock
 
 from tests.unit_services_helpers import make_runtime
 
@@ -38,6 +40,36 @@ class RecordingLake:
         )
 
 
+class BlockingBuildLake(RecordingLake):
+    def __init__(self) -> None:
+        super().__init__()
+        self.entered = Event()
+        self.overlapped = Event()
+        self.release = Event()
+        self._counter_lock = Lock()
+        self.active_calls = 0
+        self.max_active_calls = 0
+
+    def run_lake_build(self, repo_root: Path, target: str | None = None, targets=None, timeout_seconds=None):  # noqa: ANN001, ANN201
+        with self._counter_lock:
+            self.active_calls += 1
+            self.max_active_calls = max(self.max_active_calls, self.active_calls)
+            if self.active_calls > 1:
+                self.overlapped.set()
+            self.entered.set()
+        self.release.wait(timeout=5)
+        try:
+            return super().run_lake_build(
+                repo_root,
+                target=target,
+                targets=targets,
+                timeout_seconds=timeout_seconds,
+            )
+        finally:
+            with self._counter_lock:
+                self.active_calls -= 1
+
+
 def _location() -> LeanDeclarationLocationView:
     return LeanDeclarationLocationView(
         source_name="actualResult",
@@ -69,6 +101,24 @@ def test_module_identity_builds_standard_target_and_queries_environment_owner(tm
     assert lake.imports == [module, "Lean"]
     assert "getModuleIdxFor? decl.getId" in lake.code
     assert f"lc_verify_decl_module WeightedSieve.actualResult from {module}" in lake.code
+
+
+def test_module_identity_serializes_shared_repo_build_cache_writers(tmp_path: Path) -> None:
+    lake = BlockingBuildLake()
+    component = ModuleIdentityComponent(make_runtime(external_overrides={"lake": lake}))
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(component.build_module, tmp_path, module="Main.A")
+        assert lake.entered.wait(timeout=2)
+        second = pool.submit(component.build_module, tmp_path, module="Main.B")
+        try:
+            assert lake.overlapped.wait(timeout=0.2) is False
+        finally:
+            lake.release.set()
+        assert first.result(timeout=5).ok
+        assert second.result(timeout=5).ok
+
+    assert lake.max_active_calls == 1
 
 
 def test_module_identity_build_uses_configured_cache_gateway(tmp_path: Path) -> None:

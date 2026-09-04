@@ -22,6 +22,7 @@ from lean_constellation.services.foundation import (
     ServiceIssue,
     ServiceResult,
 )
+from lean_constellation.services.concurrency import RepoActivityRecoveryRequiredError
 from lean_constellation.services.node.contract import ContractComponent, ContractVersionStatus
 from lean_constellation.services.node.contract_fields import NodeDep, NodeDepActor
 from lean_constellation.services.node.export import ContentPublicDeclProvider
@@ -257,6 +258,38 @@ class DependencyComponent:
         expected_decl_names: list[str] | None = None,
         target_repo: str | None = None,
     ) -> ServiceResult[NodeDependencyMutationReceipt]:
+        try:
+            with self.runtime.repo_activity.topology_write(repo_root):
+                with self.runtime.repo_activity.node_write(repo_root, node_path):
+                    return self._add_node_dep_locked(
+                        repo_root,
+                        node_path=node_path,
+                        target_node=target_node,
+                        reason=reason,
+                        actor=actor,
+                        expected_decl_names=expected_decl_names,
+                        target_repo=target_repo,
+                    )
+        except RepoActivityRecoveryRequiredError as exc:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "repo_activity_recovery_required",
+                    str(exc),
+                    object_ref=node_path,
+                )
+            )
+
+    def _add_node_dep_locked(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        target_node: str,
+        reason: str,
+        actor: str | NodeDepActor,
+        expected_decl_names: list[str] | None = None,
+        target_repo: str | None = None,
+    ) -> ServiceResult[NodeDependencyMutationReceipt]:
         normalized_actor = self._normalize_actor(actor)
         if not normalized_actor.ok or normalized_actor.value is None:
             return self.runtime.foundation.fail(normalized_actor.issues)
@@ -307,6 +340,15 @@ class DependencyComponent:
         if not expected_refs.ok or expected_refs.value is None:
             return self.runtime.foundation.fail(expected_refs.issues)
 
+        topology = self._check_active_batch_topology_candidate(
+            repo_root,
+            node_path=node_path,
+            target_node=boundary.node_path,
+            target_repo=boundary.repo,
+        )
+        if not topology.ok:
+            return self.runtime.foundation.fail(topology.issues)
+
         opened = self.contract.get_edit_contract(repo_root, node_path=node_path)
         if not opened.ok or opened.value is None:
             return self.runtime.foundation.fail(opened.issues)
@@ -350,6 +392,32 @@ class DependencyComponent:
         )
 
     def remove_node_dep(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        index: int,
+        actor: str | NodeDepActor,
+    ) -> ServiceResult[NodeDependencyMutationReceipt]:
+        try:
+            with self.runtime.repo_activity.topology_write(repo_root):
+                with self.runtime.repo_activity.node_write(repo_root, node_path):
+                    return self._remove_node_dep_locked(
+                        repo_root,
+                        node_path=node_path,
+                        index=index,
+                        actor=actor,
+                    )
+        except RepoActivityRecoveryRequiredError as exc:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "repo_activity_recovery_required",
+                    str(exc),
+                    object_ref=node_path,
+                )
+            )
+
+    def _remove_node_dep_locked(
         self,
         repo_root: Path,
         *,
@@ -647,6 +715,44 @@ class DependencyComponent:
                 warnings=warnings,
             )
         )
+
+    def _check_active_batch_topology_candidate(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        target_node: str,
+        target_repo: str | None,
+    ) -> ServiceResult[None]:
+        if target_repo is not None:
+            return self.runtime.foundation.ok(None)
+        batches = self.runtime.repo_activity.active_batches(repo_root)
+        if not batches:
+            return self.runtime.foundation.ok(None)
+        context = self.create_evaluation_context(repo_root)
+        if not context.ok or context.value is None:
+            return self.runtime.foundation.fail(context.issues)
+        graph = {path: set(targets) for path, targets in context.value.local_graph.items()}
+        graph.setdefault(node_path, set()).add(target_node)
+        for batch in batches:
+            for source in batch.node_paths:
+                for target in batch.node_paths:
+                    if source == target:
+                        continue
+                    if self._has_local_dep_path(graph, start=source, target=target):
+                        return self.runtime.foundation.fail(
+                            self.runtime.foundation.issue(
+                                "content_batch_topology_conflict",
+                                "Node dependency mutation would make active content batch members dependent.",
+                                object_ref=node_path,
+                                details={
+                                    "batch_id": batch.batch_id,
+                                    "source": source,
+                                    "target": target,
+                                },
+                            )
+                        )
+        return self.runtime.foundation.ok(None)
 
     def check_content_batch_independent(self, repo_root: Path, *, node_paths: list[str]) -> ServiceResult[GateReport]:
         normalized_paths = [path.strip() for path in node_paths if path and path.strip()]

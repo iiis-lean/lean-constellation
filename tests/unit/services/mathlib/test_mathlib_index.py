@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from lean_constellation.domain.mathlib import MathlibIndex
+from lean_constellation.services.mathlib.mathlib_index import MathlibDeclEntryView
 
 
 def test_upsert_module_create_update_and_persist(tmp_path: Path) -> None:
@@ -81,6 +82,79 @@ def test_add_important_decl_autocreates_module_with_warning_and_dedupes(tmp_path
     assert duplicate.value is not None
     assert [issue.kind for issue in duplicate.issues] == ["mathlib_module_important_decl_duplicate"]
     assert duplicate.value.important_decl_names == ["TopologicalSpace"]
+
+
+def test_verified_entry_ensure_is_order_independent_and_preserves_free_text(tmp_path: Path) -> None:
+    first_root = tmp_path / "first"
+    second_root = tmp_path / "second"
+    entries = [
+        MathlibDeclEntryView(
+            name="Nat.mul_assoc",
+            module="Init.Prelude",
+            kind="theorem",
+            signature="Nat.mul_assoc",
+            snippet="first transient snippet",
+            summary="first transient summary",
+        ),
+        MathlibDeclEntryView(
+            name="Nat.add_assoc",
+            module="Init.Prelude",
+            kind="theorem",
+            signature="Nat.add_assoc",
+            snippet="second transient snippet",
+            summary="second transient summary",
+        ),
+    ]
+    first = make_runtime().mathlib.mathlib_index.ensure_mathlib_decl_entries(
+        first_root,
+        entries=entries,
+    )
+    second = make_runtime().mathlib.mathlib_index.ensure_mathlib_decl_entries(
+        second_root,
+        entries=list(reversed(entries)),
+    )
+    assert first.ok and second.ok
+    first_path = first_root / ".lean_constellation" / "indexes" / "mathlib.json"
+    second_path = second_root / ".lean_constellation" / "indexes" / "mathlib.json"
+    assert first_path.read_bytes() == second_path.read_bytes()
+
+    retained = make_runtime().mathlib.mathlib_index.ensure_mathlib_decl_entries(
+        first_root,
+        entries=[
+            entries[0].model_copy(
+                update={
+                    "snippet": "must not replace",
+                    "summary": "must not replace",
+                    "note": "must not replace",
+                }
+            )
+        ],
+    )
+    assert retained.ok
+    current = make_runtime().mathlib.get_mathlib_decl_entry(first_root, name="Nat.mul_assoc")
+    assert current.ok and current.value is not None
+    assert current.value.snippet == "first transient snippet"
+    assert current.value.summary == "first transient summary"
+    assert current.value.note is None
+
+
+def test_verified_entry_ensure_rejects_core_identity_conflict(tmp_path: Path) -> None:
+    component = make_runtime().mathlib.mathlib_index
+    original = MathlibDeclEntryView(
+        name="Nat.add_assoc",
+        module="Init.Prelude",
+        kind="theorem",
+        signature="Nat.add_assoc",
+    )
+    assert component.ensure_mathlib_decl_entries(tmp_path, entries=[original]).ok
+
+    conflict = component.ensure_mathlib_decl_entries(
+        tmp_path,
+        entries=[original.model_copy(update={"module": "Mathlib.Algebra.Group.Basic"})],
+    )
+
+    assert not conflict.ok
+    assert conflict.issues[0].kind == "mathlib_decl_identity_conflict"
 
 
 def test_add_important_decl_rejects_invalid_module_and_decl_names(tmp_path: Path) -> None:

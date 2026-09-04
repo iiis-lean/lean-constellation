@@ -1,4 +1,6 @@
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event, Lock
 
 import pytest
 from pydantic import ValidationError
@@ -22,6 +24,31 @@ class FakeToolkit:
     def run_file_diagnostics(self, repo_root: Path, file_path: Path) -> LeanDiagnosticsResult:
         self.calls.append((Path(repo_root), Path(file_path)))
         return self.diagnostics
+
+
+class BlockingToolkit(FakeToolkit):
+    def __init__(self, diagnostics: LeanDiagnosticsResult) -> None:
+        super().__init__(diagnostics)
+        self.entered = Event()
+        self.overlapped = Event()
+        self.release = Event()
+        self._counter_lock = Lock()
+        self.active_calls = 0
+        self.max_active_calls = 0
+
+    def run_file_diagnostics(self, repo_root: Path, file_path: Path) -> LeanDiagnosticsResult:
+        with self._counter_lock:
+            self.active_calls += 1
+            self.max_active_calls = max(self.max_active_calls, self.active_calls)
+            if self.active_calls > 1:
+                self.overlapped.set()
+            self.entered.set()
+        self.release.wait(timeout=5)
+        try:
+            return super().run_file_diagnostics(repo_root, file_path)
+        finally:
+            with self._counter_lock:
+                self.active_calls -= 1
 
 
 class FakeLake:
@@ -120,6 +147,38 @@ def test_run_file_diagnostics_uses_toolkit_and_reports_errors(tmp_path: Path) ->
     assert result.value is not None
     assert result.value.passed is False
     assert result.value.diagnostics[0].message == "type mismatch"
+
+
+def test_run_file_diagnostics_serializes_shared_repo_cache_writers(tmp_path: Path) -> None:
+    first_file = tmp_path / "A.lean"
+    second_file = tmp_path / "B.lean"
+    first_file.write_text("example : True := by trivial\n", encoding="utf-8")
+    second_file.write_text("example : True := by trivial\n", encoding="utf-8")
+    toolkit = BlockingToolkit(
+        LeanDiagnosticsResult(
+            ok=True,
+            repo_root=str(tmp_path),
+            file_path=str(first_file),
+            diagnostics=[],
+            summary="toolkit diagnostics",
+        )
+    )
+    component = make_runtime(
+        external_overrides={"lean_mcp_toolkit": toolkit, "lake": FakeLake()}
+    ).lean_projection.lean_check
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(component.run_file_diagnostics, tmp_path, file_path=first_file)
+        assert toolkit.entered.wait(timeout=2)
+        second = pool.submit(component.run_file_diagnostics, tmp_path, file_path=second_file)
+        try:
+            assert toolkit.overlapped.wait(timeout=0.2) is False
+        finally:
+            toolkit.release.set()
+        assert first.result(timeout=5).ok
+        assert second.result(timeout=5).ok
+
+    assert toolkit.max_active_calls == 1
 
 
 def test_run_file_diagnostics_falls_back_to_lake_when_toolkit_unavailable(tmp_path: Path) -> None:

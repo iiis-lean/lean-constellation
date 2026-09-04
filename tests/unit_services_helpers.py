@@ -58,6 +58,15 @@ class CleanDeclarationSoundnessDispatcher:
         }
 
 
+class EmptyUnitFlowService:
+    """Explicitly represent an inspected, empty Flow frontier in service-only tests."""
+
+    @staticmethod
+    def list_flows(**filters: Any) -> list[Any]:
+        del filters
+        return []
+
+
 def initialize_native_test_repo(repo_root: Path, *, project_name: str = "TestProject") -> None:
     """Write the minimum native Lake identity required by module derivation tests."""
 
@@ -536,7 +545,7 @@ def make_runtime(
 ) -> LeanRuntimeServices:
     """Create a real Lean runtime service graph backed by real ARKServices."""
 
-    return create_test_runtime_services(
+    runtime = create_test_runtime_services(
         ark_services=ARKServices(),
         external_config=external_config,
         external_overrides=external_overrides,
@@ -544,6 +553,8 @@ def make_runtime(
         native_lake_project_config=native_lake_project_config,
         workspace_config=workspace_config,
     )
+    runtime.ark.flow_service = EmptyUnitFlowService()
+    return runtime
 
 
 def valid_resource_readme(

@@ -191,6 +191,22 @@ class MathlibIndexComponent:
         summary: str | None = None,
         note: str | None = None,
     ) -> ServiceResult[MathlibModuleEntryView]:
+        with self.runtime.repo_activity.catalog_write(repo_root, "mathlib_index"):
+            return self._upsert_mathlib_module_entry_locked(
+                repo_root,
+                module=module,
+                summary=summary,
+                note=note,
+            )
+
+    def _upsert_mathlib_module_entry_locked(
+        self,
+        repo_root: Path,
+        *,
+        module: str,
+        summary: str | None = None,
+        note: str | None = None,
+    ) -> ServiceResult[MathlibModuleEntryView]:
         normalized = self._normalize_module_or_fail(module)
         if not normalized.ok or normalized.value is None:
             return self.runtime.foundation.fail(normalized.issues)
@@ -209,6 +225,20 @@ class MathlibIndexComponent:
         return self.runtime.foundation.ok(self._module_view(entry))
 
     def add_module_important_decl(
+        self,
+        repo_root: Path,
+        *,
+        module: str,
+        decl_name: str,
+    ) -> ServiceResult[MathlibModuleEntryView]:
+        with self.runtime.repo_activity.catalog_write(repo_root, "mathlib_index"):
+            return self._add_module_important_decl_locked(
+                repo_root,
+                module=module,
+                decl_name=decl_name,
+            )
+
+    def _add_module_important_decl_locked(
         self,
         repo_root: Path,
         *,
@@ -278,8 +308,28 @@ class MathlibIndexComponent:
         entries: list[MathlibDeclEntryView],
         modules: list[str] | None = None,
         module_entries: list[MathlibModuleEntryView] | None = None,
+        allow_verified_replacement: bool = False,
     ) -> ServiceResult[MathlibIndexEnsureEffect]:
         """Persist canonical verified declaration/module entries in one index write."""
+
+        with self.runtime.repo_activity.catalog_write(repo_root, "mathlib_index"):
+            return self._ensure_mathlib_decl_entries_locked(
+                repo_root,
+                entries=entries,
+                modules=modules,
+                module_entries=module_entries,
+                allow_verified_replacement=allow_verified_replacement,
+            )
+
+    def _ensure_mathlib_decl_entries_locked(
+        self,
+        repo_root: Path,
+        *,
+        entries: list[MathlibDeclEntryView],
+        modules: list[str] | None,
+        module_entries: list[MathlibModuleEntryView] | None,
+        allow_verified_replacement: bool,
+    ) -> ServiceResult[MathlibIndexEnsureEffect]:
 
         loaded = self._load_index(repo_root)
         if not loaded.ok or loaded.value is None:
@@ -314,11 +364,13 @@ class MathlibIndexComponent:
                 )
                 created_modules.append(normalized_module.value)
                 continue
-            existing_module.summary = candidate.summary if candidate.summary is not None else existing_module.summary
-            existing_module.note = candidate.note if candidate.note is not None else existing_module.note
+            if allow_verified_replacement:
+                existing_module.summary = candidate.summary
+                existing_module.note = candidate.note
             for name in candidate.important_decl_names:
                 if name not in existing_module.important_decl_names:
                     existing_module.important_decl_names.append(name)
+            existing_module.important_decl_names.sort()
 
         for candidate in entries:
             normalized_name = self._normalize_decl_or_fail(candidate.name)
@@ -332,6 +384,27 @@ class MathlibIndexComponent:
             module = normalized_module.value
             existing = index.declarations.get(name)
 
+            if existing is not None:
+                conflicts = {
+                    field: (getattr(existing, field), getattr(candidate, field))
+                    for field in ("module", "kind", "signature")
+                    if getattr(existing, field) is not None
+                    and getattr(candidate, field) is not None
+                    and getattr(existing, field) != getattr(candidate, field)
+                }
+                if conflicts and not allow_verified_replacement:
+                    return self.runtime.foundation.fail(
+                        self.runtime.foundation.issue(
+                            "mathlib_decl_identity_conflict",
+                            "Verified Mathlib declaration identity conflicts with the current canonical entry.",
+                            object_ref=name,
+                            details={
+                                field: f"current={current!r}; incoming={incoming!r}"
+                                for field, (current, incoming) in sorted(conflicts.items())
+                            },
+                        )
+                    )
+
             module_entry = index.modules.get(module)
             if module_entry is None:
                 module_entry = MathlibModuleEntry(module=module)
@@ -339,6 +412,7 @@ class MathlibIndexComponent:
                 created_modules.append(module)
             if name not in module_entry.important_decl_names:
                 module_entry.important_decl_names.append(name)
+                module_entry.important_decl_names.sort()
 
             if existing is None:
                 index.declarations[name] = MathlibDeclEntry(
@@ -353,21 +427,21 @@ class MathlibIndexComponent:
                 created_declarations.append(name)
                 continue
 
-            if existing.module != module and existing.module in index.modules:
-                index.modules[existing.module].important_decl_names = [
-                    item
-                    for item in index.modules[existing.module].important_decl_names
-                    if item != name
-                ]
+            if allow_verified_replacement and existing.module != module:
+                previous_module = index.modules.get(existing.module)
+                if previous_module is not None:
+                    previous_module.important_decl_names = [
+                        item for item in previous_module.important_decl_names if item != name
+                    ]
 
             updated = existing.model_copy(
                 update={
-                    "module": module,
+                    "module": module if allow_verified_replacement else existing.module,
                     "kind": candidate.kind if candidate.kind is not None else existing.kind,
                     "signature": candidate.signature if candidate.signature is not None else existing.signature,
-                    "snippet": candidate.snippet if candidate.snippet is not None else existing.snippet,
-                    "summary": candidate.summary if candidate.summary is not None else existing.summary,
-                    "note": candidate.note if candidate.note is not None else existing.note,
+                    "snippet": candidate.snippet if allow_verified_replacement else existing.snippet,
+                    "summary": candidate.summary if allow_verified_replacement else existing.summary,
+                    "note": candidate.note if allow_verified_replacement else existing.note,
                 }
             )
             if updated != existing:
@@ -399,6 +473,30 @@ class MathlibIndexComponent:
         return self._index_path(repo_root)
 
     def upsert_mathlib_decl_entry(
+        self,
+        repo_root: Path,
+        *,
+        name: str,
+        module: str,
+        kind: str | None,
+        signature: str | None,
+        summary: str | None,
+        note: str | None,
+        snippet: str | None = None,
+    ) -> ServiceResult[MathlibDeclEntryView]:
+        with self.runtime.repo_activity.catalog_write(repo_root, "mathlib_index"):
+            return self._upsert_mathlib_decl_entry_locked(
+                repo_root,
+                name=name,
+                module=module,
+                kind=kind,
+                signature=signature,
+                summary=summary,
+                note=note,
+                snippet=snippet,
+            )
+
+    def _upsert_mathlib_decl_entry_locked(
         self,
         repo_root: Path,
         *,
@@ -484,7 +582,12 @@ class MathlibIndexComponent:
         return self.runtime.foundation.ok(normalized)
 
     def _normalize_index(self, index: MathlibIndex) -> MathlibIndex:
-        modules = {entry.module: entry for _, entry in sorted(index.modules.items(), key=lambda item: item[0])}
+        modules = {
+            entry.module: entry.model_copy(
+                update={"important_decl_names": sorted(set(entry.important_decl_names))}
+            )
+            for _, entry in sorted(index.modules.items(), key=lambda item: item[0])
+        }
         declarations = {entry.name: entry for _, entry in sorted(index.declarations.items(), key=lambda item: item[0])}
         return MathlibIndex(modules=modules, declarations=declarations)
 

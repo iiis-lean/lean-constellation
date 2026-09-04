@@ -233,6 +233,8 @@ def test_content_plan_instruction_spells_out_operational_flow_and_tools() -> Non
     assert "anticipated_statement_dep_names" not in text
     assert "actual typed dependency" in text
     assert "Never omit a known dependency to make validation pass" in text
+    assert "current topological frontier" in text
+    assert "split high-risk repairs" in text
     assert "current-node-public-boundary-curation" in text
     assert "content-node-completion-decision" in text
     assert "visibility just observed" in text
@@ -253,6 +255,8 @@ def test_bottom_up_policy_instruction_is_navigation_not_a_duplicate_decision_tre
     content = render_agent_instruction("ContentPlanAgent")
 
     assert "bottom-up Source-visible dependency-frontier check" in coordinator
+    assert "bounded batch from the current runnable frontier" in coordinator
+    assert "never hide a real dependency to manufacture parallelism" in coordinator
     assert "Mathlib/existing-boundary/local-helper/coherent-package classification" in content
     assert "No declaration-count cutoff" not in content
     assert "layered definitions or lemmas" not in content

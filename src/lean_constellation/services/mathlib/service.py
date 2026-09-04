@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import os
-import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -119,7 +117,7 @@ class MathlibService:
         dependency_stage: str,
         add_dependencies: Callable[[list[MathlibDeclDep]], ServiceResult[DeclDependencyMutationReceipt]],
     ) -> ServiceResult[DeclDependencyMutationReceipt]:
-        """Ensure index truth and add exact dependencies with byte-for-byte rollback."""
+        """Commit verified index truth, then attach exact dependencies without global rollback."""
 
         if dependency_stage not in {"statement", "proof"}:
             return self.runtime.foundation.fail(
@@ -213,33 +211,16 @@ class MathlibService:
                 )
             )
 
-        index_path = self.mathlib_index.index_path(repo_root)
-        index_existed = index_path.exists()
-        try:
-            index_bytes = index_path.read_bytes() if index_existed else None
-        except OSError as exc:
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue(
-                    "mathlib_index_snapshot_failed",
-                    f"Failed to snapshot MathlibIndex before dependency transaction: {exc}",
-                    details={"path": str(index_path)},
-                )
+        with self.runtime.repo_activity.catalog_write(repo_root, "mathlib_index"):
+            ensured = self.mathlib_index.ensure_mathlib_decl_entries(
+                repo_root,
+                entries=resolved_entries,
             )
-
-        ensured = self.mathlib_index.ensure_mathlib_decl_entries(
-            repo_root,
-            entries=resolved_entries,
-        )
-        if not ensured.ok or ensured.value is None:
-            return self.runtime.foundation.fail(ensured.issues)
-        added = add_dependencies(dependencies)
-        if not added.ok or added.value is None:
-            rollback_issues = self._restore_index(
-                path=index_path,
-                existed=index_existed,
-                contents=index_bytes,
-            )
-            return self.runtime.foundation.fail([*added.issues, *rollback_issues])
+            if not ensured.ok or ensured.value is None:
+                return self.runtime.foundation.fail(ensured.issues)
+            added = add_dependencies(dependencies)
+            if not added.ok or added.value is None:
+                return self.runtime.foundation.fail(added.issues)
 
         receipt = added.value.model_copy(
             update={
@@ -252,41 +233,6 @@ class MathlibService:
             receipt,
             warnings=[*ensured.issues, *added.issues],
         )
-
-    def _restore_index(
-        self,
-        *,
-        path: Path,
-        existed: bool,
-        contents: bytes | None,
-    ) -> list:
-        temp_path: Path | None = None
-        try:
-            if not existed:
-                path.unlink(missing_ok=True)
-                return []
-            if contents is None:
-                raise RuntimeError("existing MathlibIndex snapshot has no contents")
-            path.parent.mkdir(parents=True, exist_ok=True)
-            fd, raw_path = tempfile.mkstemp(prefix=f".{path.name}.rollback-", dir=path.parent)
-            temp_path = Path(raw_path)
-            with os.fdopen(fd, "wb") as handle:
-                handle.write(contents)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temp_path, path)
-            return []
-        except Exception as exc:  # noqa: BLE001 - normalized into ServiceIssue.
-            return [
-                self.runtime.foundation.issue(
-                    "mathlib_index_rollback_failed",
-                    f"Failed to restore MathlibIndex after dependency transaction failure: {exc}",
-                    details={"path": str(path)},
-                )
-            ]
-        finally:
-            if temp_path is not None:
-                temp_path.unlink(missing_ok=True)
 
     def upsert_mathlib_decl_entry(
         self,
@@ -699,33 +645,17 @@ class MathlibService:
         modules: list[str],
         mutate: Callable[[], ServiceResult],
     ) -> ServiceResult:
-        index_path = self.mathlib_index.index_path(repo_root)
-        index_existed = index_path.exists()
-        try:
-            index_bytes = index_path.read_bytes() if index_existed else None
-        except OSError as exc:
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue(
-                    "mathlib_index_snapshot_failed",
-                    f"Failed to snapshot MathlibIndex before hint transaction: {exc}",
-                    details={"path": str(index_path)},
-                )
+        with self.runtime.repo_activity.catalog_write(repo_root, "mathlib_index"):
+            ensured = self.mathlib_index.ensure_mathlib_decl_entries(
+                repo_root,
+                entries=entries,
+                modules=modules,
             )
-        ensured = self.mathlib_index.ensure_mathlib_decl_entries(
-            repo_root,
-            entries=entries,
-            modules=modules,
-        )
-        if not ensured.ok or ensured.value is None:
-            return self.runtime.foundation.fail(ensured.issues)
-        mutated = mutate()
-        if not mutated.ok or mutated.value is None:
-            rollback_issues = self._restore_index(
-                path=index_path,
-                existed=index_existed,
-                contents=index_bytes,
-            )
-            return self.runtime.foundation.fail([*mutated.issues, *rollback_issues])
+            if not ensured.ok or ensured.value is None:
+                return self.runtime.foundation.fail(ensured.issues)
+            mutated = mutate()
+            if not mutated.ok or mutated.value is None:
+                return self.runtime.foundation.fail(mutated.issues)
         value = mutated.value
         if hasattr(value, "model_copy"):
             value = value.model_copy(

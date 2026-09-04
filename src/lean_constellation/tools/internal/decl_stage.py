@@ -620,23 +620,24 @@ def _add_statement_mathlib_dependencies(runtime, ctx, args: MathlibDeclDependenc
     if not target.ok or target.value is None:
         return target
     def add_dependencies(dependencies):
-        def mutate():
-            return _add_dependency_batch(
+        with runtime.repo_activity.node_write(ctx.repo_root, _node(ctx)):
+            def mutate():
+                return _add_dependency_batch(
+                    runtime,
+                    ctx,
+                    decl_name=args.decl_name,
+                    stage="statement",
+                    dependencies=dependencies,
+                    round_id=target.value,
+                )
+
+            return _apply_dependency_capture_policy(
                 runtime,
                 ctx,
                 decl_name=args.decl_name,
-                stage="statement",
-                dependencies=dependencies,
-                round_id=target.value,
+                formal_stage="statement",
+                mutate=mutate,
             )
-
-        return _apply_dependency_capture_policy(
-            runtime,
-            ctx,
-            decl_name=args.decl_name,
-            formal_stage="statement",
-            mutate=mutate,
-        )
 
     return runtime.mathlib.add_decl_dependencies_transaction(
         ctx.repo_root,
@@ -1005,34 +1006,35 @@ def _add_proof_mathlib_dependencies(runtime, ctx, args: MathlibDeclDependenciesA
         return target
 
     def add_dependencies(dependencies):
-        if _actor_role(ctx) != "plan":
-            validation = validate_proof_deps(
-                runtime,
-                ctx.repo_root,
-                node_path=_node(ctx),
-                round_id=target.value,
-                decl_name=args.decl_name,
-                deps=dependencies,
-            )
-            if not validation.ok:
-                return validation
-        def mutate():
-            return _add_dependency_batch(
+        with runtime.repo_activity.node_write(ctx.repo_root, _node(ctx)):
+            if _actor_role(ctx) != "plan":
+                validation = validate_proof_deps(
+                    runtime,
+                    ctx.repo_root,
+                    node_path=_node(ctx),
+                    round_id=target.value,
+                    decl_name=args.decl_name,
+                    deps=dependencies,
+                )
+                if not validation.ok:
+                    return validation
+            def mutate():
+                return _add_dependency_batch(
+                    runtime,
+                    ctx,
+                    decl_name=args.decl_name,
+                    stage="proof",
+                    dependencies=dependencies,
+                    round_id=target.value,
+                )
+
+            return _apply_dependency_capture_policy(
                 runtime,
                 ctx,
                 decl_name=args.decl_name,
-                stage="proof",
-                dependencies=dependencies,
-                round_id=target.value,
+                formal_stage="proof",
+                mutate=mutate,
             )
-
-        return _apply_dependency_capture_policy(
-            runtime,
-            ctx,
-            decl_name=args.decl_name,
-            formal_stage="proof",
-            mutate=mutate,
-        )
 
     return runtime.mathlib.add_decl_dependencies_transaction(
         ctx.repo_root,

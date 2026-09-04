@@ -1,5 +1,7 @@
 import json
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 
 from tests.unit_services_helpers import make_runtime
 
@@ -98,6 +100,85 @@ def test_mathlib_candidate_cache_is_timestamp_free_and_deterministic(tmp_path: P
     payload = json.loads(first_bytes)
     assert "updated_at" not in payload
     assert all("created_at" not in candidate for candidate in payload["candidates"].values())
+
+
+def test_parallel_mathlib_searches_merge_candidate_cache_without_lost_ids(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    def dispatch(tool_name: str, payload: dict):
+        assert tool_name == "lean_explore.find"
+        name = "Nat.add_assoc" if payload["query"] == "addition" else "Nat.mul_assoc"
+        return {"results": [{"name": name, "module": "Init", "kind": "theorem"}]}
+
+    service = _service(dispatch)
+    barrier = Barrier(2)
+    original_search = service.runtime.external.lean_toolchain.search_mathlib_declarations
+
+    def synchronized_search(query: str, *, kinds: list[str], limit: int):
+        result = original_search(query, kinds=kinds, limit=limit)
+        barrier.wait(timeout=5)
+        return result
+
+    monkeypatch.setattr(
+        service.runtime.external.lean_toolchain,
+        "search_mathlib_declarations",
+        synchronized_search,
+    )
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(
+            executor.map(
+                lambda query: service.search_external_mathlib(
+                    tmp_path,
+                    query=query,
+                    search_kinds=["theorem"],
+                    limit=1,
+                ),
+                ["addition", "multiplication"],
+            )
+        )
+
+    assert all(result.ok for result in results)
+    cache_path = tmp_path / ".lean_constellation" / "work" / "cache" / "mathlib_candidates.json"
+    cached = service.runtime.foundation.read_json(cache_path, MathlibCandidateCache)
+    assert cached.ok and cached.value is not None
+    assert {candidate.name for candidate in cached.value.candidates.values()} == {
+        "Nat.add_assoc",
+        "Nat.mul_assoc",
+    }
+
+
+def test_mathlib_candidate_cache_rejects_same_id_with_different_payload(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    calls = 0
+
+    def dispatch(tool_name: str, payload: dict):
+        nonlocal calls
+        assert tool_name == "lean_explore.find"
+        calls += 1
+        name = "Nat.add_assoc" if calls == 1 else "Nat.mul_assoc"
+        return {"results": [{"name": name, "module": "Init", "kind": "theorem"}]}
+
+    service = _service(dispatch)
+    monkeypatch.setattr(service.toolkit_ingestion, "_candidate_id", lambda *_args: "mc_forced_collision")
+    first = service.search_external_mathlib(
+        tmp_path,
+        query="first",
+        search_kinds=["theorem"],
+        limit=1,
+    )
+    second = service.search_external_mathlib(
+        tmp_path,
+        query="second",
+        search_kinds=["theorem"],
+        limit=1,
+    )
+
+    assert first.ok
+    assert not second.ok
+    assert second.issues[0].kind == "mathlib_candidate_identity_conflict"
 
 
 def test_mathlib_candidate_cache_rejects_removed_timestamp_fields(tmp_path: Path) -> None:

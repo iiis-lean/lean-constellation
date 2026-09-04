@@ -5,8 +5,10 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
+import hashlib
 from pathlib import Path
 from threading import current_thread
+from typing import Literal
 
 from agent_runtime_kit.agent.report_policy import AgentTraceReportPolicy, TraceReportPersistence
 from agent_runtime_kit.agent.provider_contracts import ProviderRegistry
@@ -32,8 +34,13 @@ from lean_constellation.agents.registry import build_agent_type_specs
 from lean_constellation.agents.testing import build_controlled_test_agent_type_specs
 from lean_constellation.flows.registry import register_lean_flow_step_types
 from lean_constellation.flows.testing import CONTROLLED_BUSINESS_AGENT_STEP_OVERRIDES
-from lean_constellation.services.foundation import GateReport, MutationSummaryView, ServiceResult
+from lean_constellation.domain.common import StrictModel
+from lean_constellation.services.foundation import GateReport, MutationSummaryView, ServiceResult, WriteMode
 from lean_constellation.services import LeanProviderOverrides, LeanRuntimeServices, create_lean_runtime_services
+from lean_constellation.services.concurrency import (
+    RepoActivityConflictError,
+    RepoActivityRecoveryRequiredError,
+)
 from lean_constellation.services.external_clients import (
     ExternalClientConfig,
     ExternalResourceDiscoveryConfig,
@@ -345,6 +352,20 @@ class ArkRuntimeSnapshotRef:
     scope_ids: list[str]
 
 
+class PairedRestoreInterlock(StrictModel):
+    """Machine-local recovery truth for an interrupted paired restore."""
+
+    schema_version: Literal[1] = 1
+    repo_root: str
+    snapshot_id: str
+    ark_runtime_snapshot_id: str | None = None
+    ark_restored: bool = False
+    lc_restored: bool = False
+    recovery_required: bool = False
+    error_kind: str | None = None
+    error_message: str | None = None
+
+
 class ApplicationSnapshotRuntime:
     """Compose ARK runtime snapshots with pure Lean Constellation checkpoint archives."""
 
@@ -373,8 +394,31 @@ class ApplicationSnapshotRuntime:
         node_paths: list[str] | None = None,
         node_ids: list[str] | None = None,
     ) -> ServiceResult[GateReport]:
+        repo_root = Path(repo_root)
         kind = RepoCheckpointKind(checkpoint_kind)
-        resolved = self._resolve_node_scopes(Path(repo_root), kind, node_paths or [], node_ids or [])
+        interlock = self.check_repo_recovery_interlock(repo_root)
+        if not interlock.ok:
+            return self.runtime.foundation.fail(interlock.issues)
+        activity_issues = []
+        if self.runtime.repo_activity.has_active_transactions(repo_root):
+            activity_issues.append(
+                self.runtime.foundation.issue(
+                    "repo_catalog_transaction_active",
+                    "A repository catalog or Node transaction is still active.",
+                )
+            )
+        activity = self._snapshot_activity_eligibility(repo_root, kind, node_paths or [])
+        if not activity.ok:
+            activity_issues.extend(activity.issues)
+        if activity_issues:
+            return self.runtime.foundation.ok(
+                self.runtime.foundation.gate_failed(
+                    f"{kind.value}_stable_point",
+                    activity_issues,
+                    summary="Repository activity prevents a stable checkpoint.",
+                )
+            )
+        resolved = self._resolve_node_scopes(repo_root, kind, node_paths or [], node_ids or [])
         if not resolved.ok or resolved.value is None:
             return self.runtime.foundation.fail(resolved.issues)
         runtime_gate = self.runtime_stability.check_repo_stable_point(
@@ -407,6 +451,9 @@ class ApplicationSnapshotRuntime:
     ) -> ServiceResult[RepoCheckpointSnapshotView]:
         repo_root = Path(repo_root)
         kind = RepoCheckpointKind(checkpoint_kind)
+        interlock = self.check_repo_recovery_interlock(repo_root)
+        if not interlock.ok:
+            return self.runtime.foundation.fail(interlock.issues)
         if snapshot_id is not None:
             existing = self.runtime.validation_snapshot.validate_repo_checkpoint_snapshot(
                 repo_root, snapshot_id=snapshot_id
@@ -423,6 +470,49 @@ class ApplicationSnapshotRuntime:
                         )
                     )
                 return existing
+        activity = self._snapshot_activity_eligibility(repo_root, kind, node_paths or [])
+        if not activity.ok:
+            return self.runtime.foundation.fail(activity.issues)
+        try:
+            maintenance = self.runtime.repo_activity.maintenance(
+                repo_root,
+                owner=f"snapshot:create:{snapshot_id or kind.value}",
+                compatible_batch_id=activity.value,
+            )
+            maintenance.__enter__()
+        except RepoActivityConflictError as exc:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "repo_activity_recovery_required"
+                    if isinstance(exc, RepoActivityRecoveryRequiredError)
+                    else "repo_maintenance_conflict",
+                    str(exc),
+                )
+            )
+        try:
+            return self._create_repo_stable_point_snapshot_locked(
+                repo_root,
+                kind=kind,
+                label=label,
+                node_paths=node_paths,
+                node_ids=node_ids,
+                scope_ids=scope_ids,
+                snapshot_id=snapshot_id,
+            )
+        finally:
+            maintenance.__exit__(None, None, None)
+
+    def _create_repo_stable_point_snapshot_locked(
+        self,
+        repo_root: Path,
+        *,
+        kind: RepoCheckpointKind,
+        label: str | None,
+        node_paths: list[str] | None,
+        node_ids: list[str] | None,
+        scope_ids: list[str] | None,
+        snapshot_id: str | None,
+    ) -> ServiceResult[RepoCheckpointSnapshotView]:
         resolved = self._resolve_node_scopes(repo_root, kind, node_paths or [], node_ids or [])
         if not resolved.ok or resolved.value is None:
             return self.runtime.foundation.fail(resolved.issues)
@@ -494,19 +584,350 @@ class ApplicationSnapshotRuntime:
                 dry_run=True,
                 prune_extra_files=prune_extra_files,
             )
-        if validated.value.ark_runtime_snapshot_id is not None:
+        try:
+            active_batches = self.runtime.repo_activity.active_batches(repo_root)
+        except RepoActivityRecoveryRequiredError as exc:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("repo_activity_recovery_required", str(exc))
+            )
+        if active_batches:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "repo_maintenance_conflict",
+                    "Active Content batches must be explicitly paused before paired restore.",
+                )
+            )
+        try:
+            maintenance = self.runtime.repo_activity.maintenance(
+                repo_root,
+                owner=f"snapshot:restore:{snapshot_id}",
+            )
+            maintenance.__enter__()
+        except RepoActivityConflictError as exc:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "repo_activity_recovery_required"
+                    if isinstance(exc, RepoActivityRecoveryRequiredError)
+                    else "repo_maintenance_conflict",
+                    str(exc),
+                )
+            )
+        try:
+            return self._restore_repo_checkpoint_snapshot_locked(
+                repo_root,
+                snapshot_id=snapshot_id,
+                ark_runtime_snapshot_id=validated.value.ark_runtime_snapshot_id,
+                leave_runtime_paused=leave_runtime_paused,
+                prune_extra_files=prune_extra_files,
+            )
+        finally:
+            maintenance.__exit__(None, None, None)
+
+    def _restore_repo_checkpoint_snapshot_locked(
+        self,
+        repo_root: Path,
+        *,
+        snapshot_id: str,
+        ark_runtime_snapshot_id: str | None,
+        leave_runtime_paused: bool,
+        prune_extra_files: bool,
+    ) -> ServiceResult[SnapshotRestoreView]:
+        existing_interlock = self._restore_interlock_path(repo_root).exists()
+        if not existing_interlock:
+            runtime_gate = self.runtime_stability.check_repo_stable_point(
+                repo_root,
+                checkpoint_kind=RepoCheckpointKind.MANUAL_TEST_STABLE_POINT,
+                node_paths=[],
+            )
+            if not runtime_gate.ok or runtime_gate.value is None:
+                return self.runtime.foundation.fail(runtime_gate.issues)
+            if not runtime_gate.value.passed:
+                return self.runtime.foundation.fail(runtime_gate.value.issues)
+        interlock_result = self._load_or_create_restore_interlock(
+            repo_root,
+            snapshot_id=snapshot_id,
+            ark_runtime_snapshot_id=ark_runtime_snapshot_id,
+        )
+        if not interlock_result.ok or interlock_result.value is None:
+            return self.runtime.foundation.fail(interlock_result.issues)
+        interlock = interlock_result.value
+        if interlock.ark_runtime_snapshot_id is not None and not interlock.ark_restored:
             ark = self.ark_snapshot.restore_runtime_snapshot(
                 repo_root,
-                snapshot_id=validated.value.ark_runtime_snapshot_id,
+                snapshot_id=interlock.ark_runtime_snapshot_id,
                 leave_runtime_paused=leave_runtime_paused,
             )
             if not ark.ok:
+                self._mark_restore_failed(interlock, ark.issues)
                 return self.runtime.foundation.fail(ark.issues)
-        return self.runtime.validation_snapshot.restore_repo_checkpoint_snapshot(
+            interlock.ark_restored = True
+            interlock_write = self._write_restore_interlock(interlock)
+            if not interlock_write.ok:
+                return self.runtime.foundation.fail(interlock_write.issues)
+        restored = self.runtime.validation_snapshot.restore_repo_checkpoint_snapshot(
             repo_root,
             snapshot_id=snapshot_id,
             prune_extra_files=prune_extra_files,
         )
+        if not restored.ok:
+            self._mark_restore_failed(interlock, restored.issues)
+            return restored
+        interlock.lc_restored = True
+        interlock_write = self._write_restore_interlock(interlock)
+        if not interlock_write.ok:
+            return self.runtime.foundation.fail(interlock_write.issues)
+        self._restore_interlock_path(repo_root).unlink(missing_ok=True)
+        return restored
+
+    def check_repo_recovery_interlock(self, repo_root: Path) -> ServiceResult[None]:
+        path = self._restore_interlock_path(repo_root)
+        if not path.exists():
+            return self.runtime.foundation.ok(None)
+        loaded = self.runtime.foundation.store.read_json(path, PairedRestoreInterlock)
+        if not loaded.ok or loaded.value is None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "paired_restore_interlock_invalid",
+                    "The repository paired-restore recovery interlock is unreadable.",
+                    object_ref=str(path),
+                )
+            )
+        return self.runtime.foundation.fail(
+            self.runtime.foundation.issue(
+                "paired_restore_recovery_required",
+                "An interrupted paired restore must be completed before ordinary repository work resumes.",
+                object_ref=loaded.value.snapshot_id,
+                details=loaded.value.model_dump(mode="json"),
+            )
+        )
+
+    def _snapshot_activity_eligibility(
+        self,
+        repo_root: Path,
+        kind: RepoCheckpointKind,
+        node_paths: list[str],
+    ) -> ServiceResult[str | None]:
+        try:
+            batches = self.runtime.repo_activity.active_batches(repo_root)
+        except RepoActivityRecoveryRequiredError as exc:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("repo_activity_recovery_required", str(exc))
+            )
+        try:
+            coordinator_flows = self.runtime.list_flows(
+                flow_type="native_repo_coordinator"
+            )
+        except Exception as exc:  # noqa: BLE001 - snapshot eligibility must fail closed.
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "repo_activity_recovery_required",
+                    "Repository activity recovery is required because the Snapshot frontier cannot be read.",
+                    details={"error": str(exc)},
+                )
+            )
+        active_coordinators = []
+        for flow in coordinator_flows:
+            if str(flow.status) in {"completed", "failed"}:
+                continue
+            flow_repo = getattr(getattr(flow, "input", None), "repo_root", None)
+            if not flow_repo or Path(flow_repo).resolve(strict=False) != repo_root.resolve(strict=False):
+                continue
+            state = getattr(flow, "state", None)
+            phase = getattr(getattr(state, "position", None), "phase", None)
+            if getattr(state, "pending_dispatch_kind", None) == "content_tasks" and phase in {
+                "before_content_task_dispatch_snapshot",
+                "dispatch_content_tasks",
+                "waiting_content_tasks",
+                "after_content_task_batch_snapshot",
+                "coordinator_callback",
+            }:
+                active_coordinators.append(flow)
+        if not batches and not active_coordinators:
+            return self.runtime.foundation.ok(None)
+        requested_nodes = tuple(sorted(dict.fromkeys(node_paths)))
+        matches = []
+        for coordinator in active_coordinators:
+            state = coordinator.state
+            current_nodes = tuple(sorted(dict.fromkeys(state.pending_content_node_paths)))
+            if requested_nodes and requested_nodes != current_nodes:
+                continue
+            phase = state.position.phase
+            allowed = False
+            if kind is RepoCheckpointKind.BEFORE_CONTENT_TASK_DISPATCH:
+                # The Coordinator consumes the terminal snapshot Step result before
+                # its after-step hook materializes the paired checkpoint, so the
+                # durable Flow is already at the still-pre-dispatch phase here.
+                allowed = phase in {
+                    "before_content_task_dispatch_snapshot",
+                    "dispatch_content_tasks",
+                }
+            elif kind is RepoCheckpointKind.AFTER_CONTENT_TASK_BATCH_TERMINAL:
+                children = (
+                    self.runtime.ark.flow_service.store.list_child_flows(
+                        parent_flow_id=coordinator.flow_id,
+                        parent_dispatch_step_id=state.waiting_dispatch_step_id,
+                    )
+                    if state.waiting_dispatch_step_id
+                    else []
+                )
+                allowed = (
+                    phase in {
+                        "after_content_task_batch_snapshot",
+                        "coordinator_callback",
+                    }
+                    and bool(children)
+                    and all(str(child.status) in {"completed", "failed"} for child in children)
+                )
+            elif kind in {
+                RepoCheckpointKind.AFTER_CONTENT_PREPARATION_TERMINAL,
+                RepoCheckpointKind.AFTER_CONTENT_DECL_ROUND_TERMINAL,
+            }:
+                allowed = (
+                    len(current_nodes) == 1
+                    and phase == "waiting_content_tasks"
+                    and self._single_content_checkpoint_matches(
+                        coordinator,
+                        node_path=current_nodes[0],
+                        kind=kind,
+                    )
+                )
+            if allowed:
+                matches.append((coordinator, current_nodes))
+        if len(matches) != 1:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "active_content_batch_snapshot_ineligible",
+                    "The active Content batch is not at the exact persisted checkpoint boundary.",
+                    details={
+                        "checkpoint_kind": kind.value,
+                        "requested_node_paths": list(requested_nodes),
+                        "active_coordinator_flow_ids": [flow.flow_id for flow in active_coordinators],
+                    },
+                )
+            )
+        matching_nodes = matches[0][1]
+        matching_batches = [batch for batch in batches if batch.node_paths == matching_nodes]
+        if batches and len(matching_batches) != 1:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "active_content_batch_snapshot_ineligible",
+                    "The persisted Content batch does not match the active runtime reservation.",
+                )
+            )
+        return self.runtime.foundation.ok(matching_batches[0].batch_id if matching_batches else None)
+
+    def _single_content_checkpoint_matches(
+        self,
+        coordinator: object,
+        *,
+        node_path: str,
+        kind: RepoCheckpointKind,
+    ) -> bool:
+        """Validate the exact terminal child behind one size-one progress checkpoint."""
+
+        state = getattr(coordinator, "state", None)
+        dispatch_step_id = getattr(state, "waiting_dispatch_step_id", None)
+        if not dispatch_step_id or self.runtime.ark.flow_service is None:
+            return False
+        content_tasks = [
+            child
+            for child in self.runtime.ark.flow_service.store.list_child_flows(
+                parent_flow_id=getattr(coordinator, "flow_id", ""),
+                parent_dispatch_step_id=dispatch_step_id,
+            )
+            if getattr(child, "flow_type", None) == "content_node_task"
+            and getattr(getattr(child, "input", None), "node_path", None) == node_path
+        ]
+        if len(content_tasks) != 1:
+            return False
+        task = content_tasks[0]
+        task_state = getattr(task, "state", None)
+        if (
+            self._status_value(getattr(task, "status", None)) != "running"
+            or getattr(getattr(task_state, "position", None), "phase", None)
+            != "callback_plan_agent"
+            or getattr(getattr(task, "input", None), "max_parallel_content_node_tasks", None)
+            != 1
+        ):
+            return False
+        child_id = getattr(task_state, "completed_child_flow_id", None)
+        child_dispatch_id = getattr(task_state, "waiting_dispatch_step_id", None)
+        child_kind = getattr(task_state, "waiting_child_kind", None)
+        expected_kinds = (
+            {"decl_graph_round"}
+            if kind is RepoCheckpointKind.AFTER_CONTENT_DECL_ROUND_TERMINAL
+            else {"node_dir_dependency", "mathlib", "resource"}
+        )
+        if not child_id or not child_dispatch_id or child_kind not in expected_kinds:
+            return False
+        try:
+            child = self.runtime.ark.flow_service.get_flow(child_id)
+        except Exception:  # noqa: BLE001 - stale child identity is simply ineligible.
+            return False
+        return (
+            getattr(child, "parent_flow_id", None) == getattr(task, "flow_id", None)
+            and getattr(child, "parent_dispatch_step_id", None) == child_dispatch_id
+            and self._status_value(getattr(child, "status", None)) in {"completed", "failed"}
+        )
+
+    @staticmethod
+    def _status_value(value: object) -> str:
+        return str(getattr(value, "value", value))
+
+    def _restore_interlock_path(self, repo_root: Path) -> Path:
+        canonical = Path(repo_root).resolve(strict=False)
+        digest = hashlib.sha256(str(canonical).encode("utf-8")).hexdigest()
+        return canonical.parent / ".lean_constellation_workspace" / "recovery_interlocks" / f"{digest}.json"
+
+    def _load_or_create_restore_interlock(
+        self,
+        repo_root: Path,
+        *,
+        snapshot_id: str,
+        ark_runtime_snapshot_id: str | None,
+    ) -> ServiceResult[PairedRestoreInterlock]:
+        path = self._restore_interlock_path(repo_root)
+        if path.exists():
+            loaded = self.runtime.foundation.store.read_json(path, PairedRestoreInterlock)
+            if not loaded.ok or loaded.value is None:
+                return self.runtime.foundation.fail(loaded.issues)
+            interlock = loaded.value
+            if (
+                interlock.repo_root != str(Path(repo_root).resolve(strict=False))
+                or interlock.snapshot_id != snapshot_id
+                or interlock.ark_runtime_snapshot_id != ark_runtime_snapshot_id
+            ):
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "paired_restore_interlock_conflict",
+                        "A different paired restore is already incomplete for this repository.",
+                        object_ref=str(path),
+                    )
+                )
+            return self.runtime.foundation.ok(interlock)
+        interlock = PairedRestoreInterlock(
+            repo_root=str(Path(repo_root).resolve(strict=False)),
+            snapshot_id=snapshot_id,
+            ark_runtime_snapshot_id=ark_runtime_snapshot_id,
+        )
+        written = self._write_restore_interlock(interlock)
+        if not written.ok:
+            return self.runtime.foundation.fail(written.issues)
+        return self.runtime.foundation.ok(interlock)
+
+    def _write_restore_interlock(self, interlock: PairedRestoreInterlock) -> ServiceResult[object]:
+        return self.runtime.foundation.store.write_json_atomic(
+            self._restore_interlock_path(Path(interlock.repo_root)),
+            interlock,
+            mode=WriteMode.OVERWRITE,
+        )
+
+    def _mark_restore_failed(self, interlock: PairedRestoreInterlock, issues) -> None:  # noqa: ANN001
+        interlock.recovery_required = True
+        if issues:
+            interlock.error_kind = issues[0].kind
+            interlock.error_message = issues[0].message
+        self._write_restore_interlock(interlock)
 
     def _normalize_scope_ids(self, scope_ids: list[str] | None) -> ServiceResult[list[str] | None]:
         if scope_ids is None:

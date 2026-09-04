@@ -20,6 +20,7 @@ def _lease_payload(
     terminal_disposition: str | None = None,
     requires_review: bool | None = None,
     suggested_next_action: str | None = None,
+    content_batch_bookmark: dict | None = None,
 ) -> dict:
     value = {
         "lease": {
@@ -43,6 +44,8 @@ def _lease_payload(
         value["requires_review"] = requires_review
     if suggested_next_action is not None:
         value["suggested_next_action"] = suggested_next_action
+    if content_batch_bookmark is not None:
+        value["content_batch_bookmark"] = content_batch_bookmark
     return {
         "ok": True,
         "value": value,
@@ -71,7 +74,15 @@ def test_semantic_watcher_runs_step_lease_and_business_progress_to_completion() 
                 "issues": [],
             }
         if "/runtime/leases/lease-1/wait?" in url:
-            return _lease_payload(status="terminal", version=2, steps=[step])
+            return _lease_payload(
+                status="terminal",
+                version=2,
+                steps=[step],
+                content_batch_bookmark={
+                    "coordinator_flow_id": "coordinator-1",
+                    "snapshot_eligible": True,
+                },
+            )
         if url.endswith("/content-tasks/flow-1/progress"):
             return {
                 "ok": True,
@@ -112,6 +123,7 @@ def test_semantic_watcher_runs_step_lease_and_business_progress_to_completion() 
     ]
     assert any("/steps/step-1/wait?" in url and timeout == 15 for url, timeout in calls)
     assert events[-1]["content_task_progress"]["latest_content_progress_checkpoint_id"] == "checkpoint-1"
+    assert events[-1]["content_batch_bookmark"]["coordinator_flow_id"] == "coordinator-1"
 
 
 def test_semantic_watcher_verbose_mode_preserves_opaque_agent_cursor() -> None:
@@ -570,6 +582,44 @@ def test_semantic_watcher_strict_mode_accepts_classified_cross_flow_handoff() ->
     assert watcher.run() == 0
     assert events[-1]["terminal_disposition"] == "cross_flow_handoff"
     assert events[-1]["requires_review"] is False
+
+
+@pytest.mark.parametrize(
+    ("reason", "expected_disposition", "expected_review", "expected_action"),
+    [
+        ("content_batch_checkpointed:batch-1", "normal_boundary", False, "inspect_boundary_and_continue"),
+        ("content_batch_progress_epoch:batch-1", "normal_boundary", False, "inspect_boundary_and_continue"),
+        ("content_batch_recovery_required:step-1", "review_required", True, "inspect_agent_step_recovery"),
+    ],
+)
+def test_semantic_watcher_fallback_classifies_content_batch_reasons(
+    reason: str,
+    expected_disposition: str,
+    expected_review: bool,
+    expected_action: str,
+) -> None:
+    events: list[dict] = []
+    watcher = SemanticWatcher(
+        SemanticWatchOptions(
+            admin_base_url="http://admin.test",
+            repo_key="Repo",
+            lease_id="lease-1",
+            output="summary",
+        ),
+        request_json=lambda *_args: _lease_payload(
+            status="terminal",
+            version=1,
+            steps=[],
+            content_flow_id=None,
+            terminal_reason=reason,
+        ),
+        emit=events.append,
+    )
+
+    assert watcher.run() == 0
+    assert events[-1]["terminal_disposition"] == expected_disposition
+    assert events[-1]["requires_review"] is expected_review
+    assert events[-1]["suggested_next_action"] == expected_action
 
 
 def test_semantic_watcher_retries_bounded_http_failures() -> None:

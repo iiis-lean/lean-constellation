@@ -132,7 +132,7 @@ def test_mathlib_dependency_transaction_reuses_complete_index_without_toolkit(
     ]
 
 
-def test_mathlib_dependency_transaction_restores_index_bytes_when_decl_write_fails(
+def test_mathlib_dependency_transaction_keeps_verified_index_when_decl_write_fails(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -145,7 +145,6 @@ def test_mathlib_dependency_transaction_restores_index_bytes_when_decl_write_fai
         summary="Unrelated stable entry.",
     )
     assert seeded.ok, seeded.issues
-    before = index_path.read_bytes()
     monkeypatch.setattr(
         runtime.mathlib.toolkit_ingestion,
         "resolve_mathlib_decl_entry",
@@ -172,12 +171,12 @@ def test_mathlib_dependency_transaction_restores_index_bytes_when_decl_write_fai
 
     assert not result.ok
     assert result.issues[0].kind == "injected_decl_projection_failure"
-    assert index_path.read_bytes() == before
-    missing = runtime.mathlib.get_mathlib_decl_entry(
+    assert index_path.is_file()
+    retained = runtime.mathlib.get_mathlib_decl_entry(
         tmp_path,
         name="Finset.card_union_of_disjoint",
     )
-    assert not missing.ok
+    assert retained.ok and retained.value == _resolved_entry()
 
 
 def test_mathlib_dependency_transaction_rejects_conflicting_duplicate_requests(

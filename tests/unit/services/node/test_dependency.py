@@ -23,6 +23,7 @@ from lean_constellation.services.decl_graph.models import (
     DeclStatement,
 )
 from lean_constellation.services.foundation import FoundationService, ServiceResult
+from lean_constellation.services.concurrency import RepoActivityRecoveryRequiredError
 from lean_constellation.services.node import ContractVersionStatus, NodeContractSnapshot
 from lean_constellation.services.node.contract_fields import NodeDep, NodeDepActor
 from lean_constellation.services.node.dependency import (
@@ -240,6 +241,28 @@ def _advance_content_candidate(
         opened.value.contract,
         mode=WriteMode.UPDATE_EXISTING,
     ).ok
+
+
+def test_node_dependency_mutation_maps_unknown_frontier_to_recovery_required(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime = make_runtime()
+
+    def fail_frontier(_repo_root: Path):
+        raise RepoActivityRecoveryRequiredError("frontier recovery required")
+
+    monkeypatch.setattr(runtime.repo_activity, "_persisted_content_batches", fail_frontier)
+    result = runtime.node.dependency.add_node_dep(
+        tmp_path,
+        node_path="Main.Topic.Consumer",
+        target_node="Main.Topic.Provider",
+        reason="Test recovery mapping.",
+        actor="coordinator",
+    )
+
+    assert not result.ok
+    assert result.issues[0].kind == "repo_activity_recovery_required"
 
 
 def test_list_visible_node_boundaries_only_shows_committed_boundaries(tmp_path: Path) -> None:
@@ -836,7 +859,6 @@ def test_validate_node_deps_builds_one_graph_for_multiple_local_dependencies(
     assert contract_calls
     assert set(contract_calls.values()) == {1}
 
-
 def test_validate_node_deps_reports_invalid_expected_public_missing_unready_and_unattached_external(tmp_path: Path) -> None:
     _create_base_tree(tmp_path)
     ref = _commit_provider_scope(tmp_path)
@@ -1221,6 +1243,59 @@ def test_check_content_batch_independent_reports_pass_duplicates_missing_noncont
     assert contract_calls
     assert set(contract_calls.values()) == {1}
 
+
+def test_check_content_batch_independent_reports_pass_duplicates_missing_noncontent_and_transitive_dependency(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _create_base_tree(tmp_path)
+    tree = make_runtime().node.node_tree
+    assert tree.create_content_node(
+        tmp_path,
+        path="Main.Topic.C",
+        goal="C goal",
+        boundary="C boundary",
+        objective="Build C.",
+        success_criteria="C ready.",
+    ).ok
+    assert make_runtime().node.commit_content_contract(
+        tmp_path, node_path="Main.Topic.B", summary="B ready."
+    ).ok
+    assert make_runtime().node.commit_content_contract(
+        tmp_path, node_path="Main.Topic.C", summary="C ready."
+    ).ok
+    component = make_runtime().node.dependency
+    tree_calls = 0
+    contract_calls: dict[str, int] = {}
+    original_get_node_tree = component.node_tree.get_node_tree
+    original_get_current_contract = component.contract.get_current_contract
+
+    def counted_get_node_tree(repo_root: Path):
+        nonlocal tree_calls
+        tree_calls += 1
+        return original_get_node_tree(repo_root)
+
+    def counted_get_current_contract(repo_root: Path, *, node_path: str):
+        contract_calls[node_path] = contract_calls.get(node_path, 0) + 1
+        return original_get_current_contract(repo_root, node_path=node_path)
+
+    monkeypatch.setattr(component.node_tree, "get_node_tree", counted_get_node_tree)
+    monkeypatch.setattr(
+        component.contract,
+        "get_current_contract",
+        counted_get_current_contract,
+    )
+
+    independent = component.check_content_batch_independent(
+        tmp_path, node_paths=["Main.Topic.A", "Main.Topic.B"]
+    )
+    assert independent.ok
+    assert independent.value is not None
+    assert independent.value.passed is True
+    assert tree_calls == 1
+    assert contract_calls
+    assert set(contract_calls.values()) == {1}
+
     malformed = component.check_content_batch_independent(
         tmp_path,
         node_paths=["Main.Topic.A", "Main.Topic.A", "Main.Topic.Missing", "Main.Topic"],
@@ -1253,7 +1328,9 @@ def test_check_content_batch_independent_reports_pass_duplicates_missing_noncont
 
     tree_calls = 0
     contract_calls.clear()
-    transitive = component.check_content_batch_independent(tmp_path, node_paths=["Main.Topic.A", "Main.Topic.C"])
+    transitive = component.check_content_batch_independent(
+        tmp_path, node_paths=["Main.Topic.A", "Main.Topic.C"]
+    )
     assert transitive.ok
     assert transitive.value is not None
     assert transitive.value.passed is False
@@ -1261,3 +1338,33 @@ def test_check_content_batch_independent_reports_pass_duplicates_missing_noncont
     assert tree_calls == 1
     assert contract_calls
     assert set(contract_calls.values()) == {1}
+
+
+def test_active_content_batch_rejects_topology_edge_between_members(tmp_path: Path) -> None:
+    _create_base_tree(tmp_path)
+    runtime = make_runtime()
+    assert runtime.node.commit_content_contract(
+        tmp_path,
+        node_path="Main.Topic.B",
+        summary="B ready.",
+    ).ok
+    runtime.repo_activity.reserve_content_batch(
+        tmp_path,
+        batch_id="batch-a-b",
+        node_paths=["Main.Topic.A", "Main.Topic.B"],
+    )
+
+    rejected = runtime.node.dependency.add_node_dep(
+        tmp_path,
+        node_path="Main.Topic.A",
+        target_node="Main.Topic.B",
+        expected_decl_names=None,
+        reason="Late dependency must not invalidate the active batch.",
+        actor="coordinator",
+    )
+
+    assert not rejected.ok
+    assert rejected.issues[0].kind == "content_batch_topology_conflict"
+    current = runtime.node.dependency.list_node_deps(tmp_path, node_path="Main.Topic.A")
+    assert current.ok and current.value is not None
+    assert current.value.deps == []

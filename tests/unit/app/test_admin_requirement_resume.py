@@ -8,6 +8,7 @@ from lean_constellation.app import (
     create_app_runtime_services,
     initialize_repo_business_truth,
 )
+from lean_constellation.app.runtime import PairedRestoreInterlock
 from tests.unit_services_helpers import publish_native_provider_release
 
 
@@ -102,6 +103,71 @@ def test_admin_requirement_resume_marks_observed_and_enqueues_original_flow(tmp_
     waiting = runtime.repo_workspace.requirement.get_requirement(consumer, name="need_provider")
     assert waiting.value.requirement.provider_result_observed_at is not None
     assert waiting.value.requirement.note == "Resume after provider ready."
+
+
+def test_admin_requirement_resume_rejects_paired_restore_interlock_without_writing(
+    tmp_path,
+) -> None:
+    runtime = create_app_runtime_services(runtime_root=tmp_path / ".runtime")
+    consumer = tmp_path / "Consumer"
+    provider = tmp_path / "Provider"
+    _prepare_satisfied_requirement(runtime, consumer, provider)
+    _create_waiting_coordinator_flow(runtime, consumer)
+    interlock = PairedRestoreInterlock(
+        repo_root=str(consumer.resolve()),
+        snapshot_id="snapshot-test",
+        recovery_required=True,
+    )
+    assert runtime.app.snapshot_runtime._write_restore_interlock(interlock).ok  # noqa: SLF001
+
+    result = LeanAdminApi(runtime).resume_requirement(
+        RequirementResumeInput(
+            consumer_repo_root=consumer,
+            requirement_name="need_provider",
+            provider_repo="Provider",
+        )
+    )
+
+    assert result.ok is False
+    assert result.issues[0].kind == "paired_restore_recovery_required"
+    waiting = runtime.repo_workspace.requirement.get_requirement(
+        consumer,
+        name="need_provider",
+    )
+    assert waiting.ok and waiting.value is not None
+    assert waiting.value.requirement.provider_result_observed_at is None
+
+
+def test_admin_requirement_resume_rejects_active_content_batch_without_writing(
+    tmp_path,
+) -> None:
+    runtime = create_app_runtime_services(runtime_root=tmp_path / ".runtime")
+    consumer = tmp_path / "Consumer"
+    provider = tmp_path / "Provider"
+    _prepare_satisfied_requirement(runtime, consumer, provider)
+    _create_waiting_coordinator_flow(runtime, consumer)
+    runtime.repo_activity.reserve_content_batch(
+        consumer,
+        batch_id="content-batch",
+        node_paths=["Main.Core"],
+    )
+
+    result = LeanAdminApi(runtime).resume_requirement(
+        RequirementResumeInput(
+            consumer_repo_root=consumer,
+            requirement_name="need_provider",
+            provider_repo="Provider",
+        )
+    )
+
+    assert result.ok is False
+    assert result.issues[0].kind == "repo_maintenance_conflict"
+    waiting = runtime.repo_workspace.requirement.get_requirement(
+        consumer,
+        name="need_provider",
+    )
+    assert waiting.ok and waiting.value is not None
+    assert waiting.value.requirement.provider_result_observed_at is None
 
 
 def test_admin_requirement_resume_enqueue_false_does_not_queue_original_flow(tmp_path) -> None:

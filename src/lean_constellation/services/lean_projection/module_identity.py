@@ -78,10 +78,11 @@ class ModuleIdentityComponent:
                 )
             )
         target = f"+{module}"
-        built = self.runtime.repo_workspace.lake_dependency.run_lake_build(
-            Path(repo_root),
-            target=target,
-        )
+        with self.runtime.repo_activity.build_cache_write(repo_root):
+            built = self.runtime.repo_workspace.lake_dependency.run_lake_build(
+                Path(repo_root),
+                target=target,
+            )
         if not built.ok or built.value is None:
             issue = built.issues[0]
             return self.runtime.foundation.fail(

@@ -554,9 +554,18 @@ def test_content_blocker_and_dependency_planning_skills_preserve_consumer_semant
 
     assert "set_node_contract_task_completion_mode" in contract_design
     assert "cannot become another node's dependency" in contract_design
+    assert "independent declared wave" in contract_design
+    assert "future proof-body consumption" in contract_design
     assert "lowest coherent semantic owner" in decomposition
+    assert "Choose Shallow Wave Or Bottom-up" in decomposition
+    assert "Never omit a known dependency" in decomposition
     assert "partial committed task is never a runnable dependency provider" in dispatch
+    assert "configured run maximum" in dispatch
+    assert "accepted batch freezes the sibling topology" in dispatch
+    assert "current topological frontier" in strategy
     assert "Canonical Constructions And Local Helpers" in round_planning
+    assert "one current stage and topological frontier" in round_planning
+    assert "Reviewer could not perform one full-current pass" in round_planning
     assert "named instance Decl" in round_planning
     assert "split them into provider-before-consumer rounds" in round_planning
 

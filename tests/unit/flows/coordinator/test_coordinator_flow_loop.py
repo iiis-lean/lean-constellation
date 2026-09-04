@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 from agent_runtime_kit.flow.contexts import StableStepTerminalContext
-from agent_runtime_kit.flow.models import FlowStatus
+from agent_runtime_kit.flow.models import FlowStatus, FlowStepValidationError
 from lean_constellation.app.runtime import ApplicationSnapshotRuntime
 from lean_constellation.app.config import AutomaticCheckpointAppConfig
+from lean_constellation.app.semantic_scheduler import (
+    RuntimeSemanticAdvanceInput,
+    build_semantic_run_policy,
+)
 
 from lean_constellation.domain.preparation import (
     AutoProviderRoute,
@@ -487,6 +494,206 @@ def test_coordinator_enforces_content_task_batch_parallelism_from_run_context(tm
     rejected = runtime.flow_service.get_flow(rejected_flow_id)
     assert rejected.status is FlowStatus.FAILED
     assert rejected.error.error_type == "content_task_batch_parallelism_exceeded"
+
+
+def test_content_batch_policy_owns_exact_members_and_stops_before_unique_callback(
+    tmp_path: Path,
+) -> None:
+    runtime, lean_runtime, runtime_stability, ark_snapshot = _runtime(tmp_path)
+    repo_root = tmp_path / "workspace" / "Repo"
+    first_id = _ensure_main_core_node(lean_runtime, repo_root)
+    second = lean_runtime.node.create_content_node(
+        repo_root,
+        path="Main.Other",
+        goal="Other goal",
+        boundary="Other boundary",
+        objective="Build other.",
+        success_criteria="Other ready.",
+    )
+    assert second.ok and second.value is not None
+    flow_id = _start_coordinator(runtime, repo_root, max_parallel_content_node_tasks=2)
+    submission_id = new_submission_id("sub")
+    runtime.agent_service.queue_submission(
+        CoordinatorContentTasksSubmission(
+            submission_id=submission_id,
+            submission_type="coordinator_content_tasks",
+            tool_name="submit_content_node_tasks",
+            repo_key="Repo",
+            node_paths=["Main.Core", "Main.Other"],
+            requests=[
+                build_content_node_task_request(
+                    repo_key="Repo",
+                    node_path="Main.Core",
+                    scope_id=f"repo:Repo:node:{first_id}",
+                    max_parallel_content_node_tasks=2,
+                ),
+                build_content_node_task_request(
+                    repo_key="Repo",
+                    node_path="Main.Other",
+                    scope_id=f"repo:Repo:node:{second.value.node_id}",
+                    max_parallel_content_node_tasks=2,
+                ),
+            ],
+            continuation="wait_for_callback",
+            summary="Run exact two-member batch.",
+        )
+    )
+    _advance_and_run(runtime, flow_id)
+
+    request = RuntimeSemanticAdvanceInput(
+        granularity="content_batch",
+        repo_key="Repo",
+        coordinator_flow_id=flow_id,
+        expected_source_submission_id=submission_id,
+    )
+    policy = build_semantic_run_policy(lean_runtime, request)
+    coordinator = runtime.flow_service.get_flow(flow_id)
+    assert policy.allow_flow_advance(coordinator) is True
+    assert policy.allow_flow_advance(
+        type("Unrelated", (), {"flow_id": "other-flow"})()
+    ) is False
+    assert [item.node_paths for item in lean_runtime.repo_activity.active_batches(repo_root)] == [
+        ("Main.Core", "Main.Other")
+    ]
+
+    before_snapshot_step_id = _advance_and_run(runtime, flow_id)
+    assert (
+        runtime.flow_service.get_step(before_snapshot_step_id).step_type
+        == "coordinator_content_batch_snapshot_step"
+    )
+    current = runtime.flow_service.get_flow(flow_id)
+    assert (current.status, current.state.position.phase, current.current_step_id) == (
+        FlowStatus.RUNNING,
+        "dispatch_content_tasks",
+        None,
+    )
+    dispatch_step_id = _advance_and_run(runtime, flow_id)
+    children = runtime.flow_service.store.list_child_flows(
+        parent_flow_id=flow_id,
+        parent_dispatch_step_id=dispatch_step_id,
+    )
+    assert len(children) == 2
+    policy = build_semantic_run_policy(
+        lean_runtime,
+        request.model_copy(update={"expected_dispatch_step_id": dispatch_step_id}),
+    )
+    assert all(policy.allow_flow_advance(child) for child in children)
+
+    _complete_child_flow(
+        runtime,
+        children[0].flow_id,
+        ContentNodeTaskResult(
+            outcome="ready",
+            repo_key="Repo",
+            node_path=children[0].input.node_path,
+            summary="First task ready.",
+        ),
+    )
+    runtime.flow_service.store.update_flow_record(
+        children[1].flow_id,
+        lambda child: (
+            setattr(child, "status", FlowStatus.FAILED),
+            setattr(child, "current_step_id", None),
+        ),
+    )
+    after_snapshot_step_id = _advance_and_run(runtime, flow_id)
+    assert runtime.flow_service.get_step(after_snapshot_step_id).step_type == "coordinator_content_batch_snapshot_step"
+    assert runtime.flow_service.get_flow(flow_id).state.position.phase == "coordinator_callback"
+    assert policy.decide(None).action == "continue"
+    assert policy.allow_flow_advance(runtime.flow_service.get_flow(flow_id)) is True
+    callback_step_id = runtime.flow_service.advance_flow(flow_id)
+    callback_step = runtime.flow_service.get_step(callback_step_id)
+    assert policy.allow_step_start(callback_step) is False
+    decision = policy.decide(None)
+    assert decision.action == "pause"
+    assert decision.reason.startswith("content_batch_checkpointed:content_batch_")
+    assert lean_runtime.repo_activity.active_batches(repo_root) == ()
+    assert runtime_stability.calls == [
+        (RepoCheckpointKind.BEFORE_CONTENT_TASK_DISPATCH, ["Main.Core", "Main.Other"]),
+        (RepoCheckpointKind.AFTER_CONTENT_TASK_BATCH_TERMINAL, ["Main.Core", "Main.Other"]),
+    ]
+    assert len(ark_snapshot.created) == 2
+
+    with pytest.raises(FlowStepValidationError, match="flow cannot advance"):
+        runtime.flow_service.advance_flow(flow_id)
+    callback_steps = [
+        step
+        for step in runtime.step_service.store.list_steps(flow_id=flow_id)
+        if step.step_type == "coordinator_agent_step"
+    ]
+    assert len(callback_steps) == 2  # initial decision plus one batch closeout callback
+
+
+def test_content_batch_policy_rejects_checkpoint_disabled_runtime(tmp_path: Path) -> None:
+    runtime, lean_runtime, _, _ = _runtime(tmp_path)
+    lean_runtime.app.automatic_checkpoints = AutomaticCheckpointAppConfig(
+        repo_flow_boundaries_enabled=False
+    )
+    repo_root = tmp_path / "workspace" / "Repo"
+    first_id = _ensure_main_core_node(lean_runtime, repo_root)
+    flow_id = _start_coordinator(runtime, repo_root, max_parallel_content_node_tasks=1)
+    submission_id = new_submission_id("sub")
+    runtime.agent_service.queue_submission(
+        CoordinatorContentTasksSubmission(
+            submission_id=submission_id,
+            submission_type="coordinator_content_tasks",
+            tool_name="submit_content_node_tasks",
+            repo_key="Repo",
+            node_paths=["Main.Core"],
+            requests=[
+                build_content_node_task_request(
+                    repo_key="Repo",
+                    node_path="Main.Core",
+                    scope_id=f"repo:Repo:node:{first_id}",
+                    max_parallel_content_node_tasks=1,
+                )
+            ],
+            continuation="wait_for_callback",
+            summary="Run one content task.",
+        )
+    )
+    _advance_and_run(runtime, flow_id)
+
+    with pytest.raises(ValueError, match="requires repo flow-boundary checkpoints"):
+        build_semantic_run_policy(
+            lean_runtime,
+            RuntimeSemanticAdvanceInput(
+                granularity="content_batch",
+                repo_key="Repo",
+                coordinator_flow_id=flow_id,
+                expected_source_submission_id=submission_id,
+            ),
+        )
+
+
+def test_content_batch_preflight_rejects_node_with_nonterminal_task(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _, lean_runtime, _, _ = _runtime(tmp_path)
+    repo_root = tmp_path / "workspace" / "Repo"
+    _ensure_main_core_node(lean_runtime, repo_root)
+    monkeypatch.setattr(
+        lean_runtime,
+        "list_flows",
+        lambda **_filters: [
+            SimpleNamespace(
+                flow_id="active-content-task",
+                flow_type="content_node_task",
+                status=FlowStatus.RUNNING,
+                input=SimpleNamespace(node_path="Main.Core"),
+            )
+        ],
+    )
+
+    rejected = lean_runtime.node.submit_content_node_batch_preflight(
+        repo_root,
+        node_paths=["Main.Core"],
+    )
+
+    assert rejected.ok and rejected.value is not None
+    assert rejected.value.passed is False
+    assert rejected.value.issues[0].kind == "content_batch_node_already_active"
 
 
 def test_repo_exploration_ensures_agents_dispatches_atomic_batch_and_callbacks(

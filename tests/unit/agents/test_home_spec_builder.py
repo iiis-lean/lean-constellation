@@ -70,6 +70,43 @@ def test_coordinator_home_carries_concise_contract_field_semantics() -> None:
     assert "Do not infer the assignment from the stable goal" in content_plan.developer_instructions
 
 
+def test_planning_concurrency_guidance_is_equivalent_across_provider_homes() -> None:
+    for agent_type in ("CoordinatorAgent", "ContentPlanAgent"):
+        homes = [
+            build_agent_home_bootstrap_spec(
+                agent_type,
+                provider_type=provider_type,
+                mcp_http_base_url="http://127.0.0.1:8765",
+            )
+            for provider_type in ("codex", "opencode", "claude_code")
+        ]
+        assert len({home.developer_instructions for home in homes}) == 1
+        assert len(
+            {
+                tuple(
+                    (key, skill.body)
+                    for key, skill in sorted(home.skill_specs.items())
+                )
+                for home in homes
+            }
+        ) == 1
+
+    coordinator = build_agent_home_bootstrap_spec(
+        "CoordinatorAgent",
+        mcp_http_base_url="http://127.0.0.1:8765",
+    )
+    assert "bounded batch from the current runnable frontier" in coordinator.developer_instructions
+    assert "independent declared wave" in coordinator.skill_specs["node-contract-design"].body
+    content_plan = build_agent_home_bootstrap_spec(
+        "ContentPlanAgent",
+        mcp_http_base_url="http://127.0.0.1:8765",
+    )
+    assert "current topological frontier" in content_plan.developer_instructions
+    assert "one current stage and topological frontier" in content_plan.skill_specs[
+        "decl-round-change-planning"
+    ].body
+
+
 def test_home_bootstrap_spec_embeds_provider_home_spec() -> None:
     spec = build_agent_home_bootstrap_spec(
         "ProofFormalWorkerAgent",

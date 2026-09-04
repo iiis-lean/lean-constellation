@@ -357,38 +357,84 @@ class ResourceLibraryComponent:
             return self.runtime.foundation.fail(gate.issues)
         if not gate.value.passed:
             return self.runtime.foundation.fail(gate.value.issues)
-        duplicate = self.find_duplicate_resource(repo_root, target=draft.target)
-        if not duplicate.ok or duplicate.value is None:
-            return self.runtime.foundation.fail(duplicate.issues)
-        if duplicate.value.duplicate:
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue("resource_duplicate", duplicate.value.summary, object_ref=duplicate.value.resource_key)
-            )
         draft_root = self._draft_root(repo_root, draft.draft_id)
         manifest = self._load_material_manifest(draft_root)
         if not manifest.ok or manifest.value is None:
             return self.runtime.foundation.fail(manifest.issues)
-        entry = draft_root / manifest.value.canonical_entry
+        with self.runtime.repo_activity.catalog_write(repo_root, "resources"):
+            return self._finalize_resource_draft_locked(
+                repo_root,
+                draft=draft,
+                draft_root=draft_root,
+                manifest=manifest.value,
+                summary=summary.strip(),
+            )
+
+    def _finalize_resource_draft_locked(
+        self,
+        repo_root: Path,
+        *,
+        draft: ResourceDraft,
+        draft_root: Path,
+        manifest: ResourceMaterialManifest,
+        summary: str,
+    ) -> ServiceResult[ResourceView]:
+        entry = draft_root / manifest.canonical_entry
         resource_key = self._resource_key(draft.target)
         ctx = FoundationContext(repo_root=Path(repo_root))
         dest = self.runtime.foundation.layout.resource_dir(ctx, resource_key)
         if dest.exists():
-            return self.runtime.foundation.fail(self.runtime.foundation.issue("resource_duplicate", f"Resource key already exists: {resource_key}", object_ref=resource_key))
+            existing_resource = self.get_resource(repo_root, resource_key=resource_key)
+            existing_manifest = self._load_material_manifest(dest)
+            if (
+                existing_resource.ok
+                and existing_resource.value is not None
+                and existing_manifest.ok
+                and existing_manifest.value is not None
+                and existing_resource.value.resource.target == draft.target
+                and existing_manifest.value == manifest
+            ):
+                draft.status = ResourceDraftStatus.FINALIZED
+                draft.finalized_at = draft.finalized_at or utc_now_iso()
+                draft.resource_key = resource_key
+                draft.summary = summary
+                draft_write = self.runtime.foundation.store.write_json_atomic(
+                    self._draft_metadata_path(repo_root, draft.draft_id),
+                    draft,
+                    mode=WriteMode.UPDATE_EXISTING,
+                )
+                if not draft_write.ok:
+                    return self.runtime.foundation.fail(draft_write.issues)
+                return self.runtime.foundation.ok(
+                    ResourceView(
+                        repo_root=str(Path(repo_root)),
+                        resource=existing_resource.value.resource,
+                        resource_root=str(dest),
+                        summary=f"Reused identical resource {resource_key} for draft {draft.draft_id}.",
+                    )
+                )
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "resource_identity_content_conflict",
+                    "Resource identity already exists with different canonical content.",
+                    object_ref=resource_key,
+                )
+            )
         draft.status = ResourceDraftStatus.FINALIZED
         draft.finalized_at = utc_now_iso()
         draft.resource_key = resource_key
-        draft.summary = summary.strip()
+        draft.summary = summary
         canonical_file = next(
             item
-            for item in manifest.value.files
-            if item.path == manifest.value.canonical_entry
+            for item in manifest.files
+            if item.path == manifest.canonical_entry
         )
         if self._hash_file(entry) != canonical_file.sha256:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
                     "resource_manifest_content_changed",
                     "Canonical entry bytes changed after the draft gate.",
-                    object_ref=manifest.value.canonical_entry,
+                    object_ref=manifest.canonical_entry,
                 )
             )
         try:
@@ -404,7 +450,7 @@ class ResourceLibraryComponent:
                     shutil.copy2(item, destination)
             manifest_write = self.runtime.foundation.store.write_json_atomic(
                 dest / "manifest.json",
-                manifest.value,
+                manifest,
                 mode=WriteMode.CREATE_ONLY,
             )
             if not manifest_write.ok:
@@ -426,7 +472,7 @@ class ResourceLibraryComponent:
                 self.runtime.foundation.issue(
                     "resource_manifest_content_changed",
                     "Canonical entry bytes changed after the draft gate.",
-                    object_ref=manifest.value.canonical_entry,
+                    object_ref=manifest.canonical_entry,
                 )
             )
         resource = ResourceMetadata(
@@ -434,7 +480,7 @@ class ResourceLibraryComponent:
             target=draft.target,
             title=draft.title_hint,
             source_url=draft.target.target if draft.target.kind == "web_url" else None,
-            notes=summary.strip(),
+            notes=summary,
             canonical_entry=dest_entry.relative_to(dest).as_posix(),
         )
         resource_write = self.runtime.foundation.store.write_json_atomic(
@@ -516,6 +562,31 @@ class ResourceLibraryComponent:
         if not normalized.ok or normalized.value is None:
             return self.runtime.foundation.fail(normalized.issues)
         target_model = normalized.value
+        temp_dir = Path(temp_dir)
+        manifest = self._refresh_material_manifest(
+            temp_dir,
+            missing_entry_issue_kind="resource_not_readable",
+        )
+        if not manifest.ok or manifest.value is None:
+            return self.runtime.foundation.fail(manifest.issues)
+        with self.runtime.repo_activity.catalog_write(repo_root, "resources"):
+            return self._register_local_resource_locked(
+                repo_root,
+                target_model=target_model,
+                temp_dir=temp_dir,
+                metadata=metadata,
+                manifest=manifest.value,
+            )
+
+    def _register_local_resource_locked(
+        self,
+        repo_root: Path,
+        *,
+        target_model: ResourceTarget,
+        temp_dir: Path,
+        metadata: ResourceMetadataInput,
+        manifest: ResourceMaterialManifest,
+    ) -> ServiceResult[ResourceView]:
         duplicate = self.find_duplicate_resource(repo_root, target=target_model)
         if duplicate.ok and duplicate.value and duplicate.value.duplicate:
             return self.runtime.foundation.fail(
@@ -525,14 +596,7 @@ class ResourceLibraryComponent:
                     object_ref=duplicate.value.resource_key,
                 )
             )
-        temp_dir = Path(temp_dir)
-        manifest = self._refresh_material_manifest(
-            temp_dir,
-            missing_entry_issue_kind="resource_not_readable",
-        )
-        if not manifest.ok or manifest.value is None:
-            return self.runtime.foundation.fail(manifest.issues)
-        entry = temp_dir / manifest.value.canonical_entry
+        entry = temp_dir / manifest.canonical_entry
         resource_key = self._resource_key(target_model)
         ctx = FoundationContext(repo_root=Path(repo_root))
         dest = self.runtime.foundation.layout.resource_dir(ctx, resource_key)
@@ -553,7 +617,7 @@ class ResourceLibraryComponent:
                     shutil.copy2(item, destination)
             manifest_write = self.runtime.foundation.store.write_json_atomic(
                 dest / "manifest.json",
-                manifest.value,
+                manifest,
                 mode=WriteMode.CREATE_ONLY,
             )
             if not manifest_write.ok:

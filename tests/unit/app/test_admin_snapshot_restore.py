@@ -9,7 +9,10 @@ from agent_runtime_kit.flow.models import FlowRequest, FlowStatus
 
 from lean_constellation.app import (
     LeanAdminApi,
+    RepoConfigUpdateInput,
+    RepoPublicationPrepareInput,
     RequirementResumeInput,
+    RuntimeSemanticAdvanceInput,
     SnapshotCreateInput,
     SnapshotListInput,
     SnapshotRestoreInput,
@@ -20,6 +23,7 @@ from lean_constellation.domain.preparation import RepoPreparationInput, SourceCo
 from lean_constellation.flows.common.agent_steps import DeclStageReviewerAgentStep
 from lean_constellation.flows.content_node_task.decl_round.steps import DeclStageReviewerStepState
 from lean_constellation.services.decl_graph import DeclReviewMarkRecord, DeclStage
+from lean_constellation.services.concurrency import RepoActivityRecoveryRequiredError
 from tests.unit_services_helpers import publish_native_provider_release
 
 
@@ -431,3 +435,317 @@ def test_restore_previous_paired_checkpoint_rewinds_later_failed_round_truth(tmp
     assert restored_flow.state.completed_child_outcome == "completed"
     assert restored_flow.state.latest_callback_summary == "round_1 completed"
     assert runtime.ark.pause_controller.is_paused() is True
+
+
+def test_active_multi_node_batch_and_catalog_transaction_reject_physical_snapshot(tmp_path) -> None:
+    repo_root = tmp_path / "Repo"
+    runtime = create_app_runtime_services(runtime_root=tmp_path / ".runtime")
+    assert initialize_repo_business_truth(runtime, repo_root).ok
+    runtime.repo_activity.reserve_content_batch(
+        repo_root,
+        batch_id="content_batch_test",
+        node_paths=["Main.A", "Main.B"],
+    )
+    admin = LeanAdminApi(runtime)
+    blocked_config = admin.update_repo_config(RepoConfigUpdateInput(repo_root=repo_root))
+    assert blocked_config.ok is False
+    assert blocked_config.issues[0].kind == "repo_maintenance_conflict"
+    blocked_release = admin.preview_repo_release(repo_root)
+    assert blocked_release.ok is False
+    assert blocked_release.issues[0].kind == "repo_maintenance_conflict"
+    active_batch = runtime.app.snapshot_runtime.check_repo_stable_point(
+        repo_root,
+        checkpoint_kind="manual_test_stable_point",
+    )
+    assert active_batch.ok and active_batch.value is not None
+    assert active_batch.value.passed is False
+    assert active_batch.value.issues[0].kind == "active_content_batch_snapshot_ineligible"
+
+    runtime.repo_activity.release_content_batch(repo_root, batch_id="content_batch_test")
+    with runtime.repo_activity.catalog_write(repo_root, "mathlib"):
+        active_transaction = runtime.app.snapshot_runtime.check_repo_stable_point(
+            repo_root,
+            checkpoint_kind="manual_test_stable_point",
+        )
+    assert active_transaction.ok and active_transaction.value is not None
+    assert active_transaction.value.passed is False
+    assert active_transaction.value.issues[0].kind == "repo_catalog_transaction_active"
+
+
+def test_admin_and_snapshot_map_unknown_frontier_to_recovery_required(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    repo_root = tmp_path / "Repo"
+    runtime = create_app_runtime_services(runtime_root=tmp_path / ".runtime")
+    assert initialize_repo_business_truth(runtime, repo_root).ok
+    existing = runtime.app.snapshot_runtime.create_repo_stable_point_snapshot(
+        repo_root,
+        checkpoint_kind="manual_test_stable_point",
+    )
+    assert existing.ok and existing.value is not None
+
+    def fail_frontier(_repo_root: Path):
+        raise RepoActivityRecoveryRequiredError("frontier recovery required")
+
+    monkeypatch.setattr(runtime.repo_activity, "_persisted_content_batches", fail_frontier)
+    admin_result = LeanAdminApi(runtime).update_repo_config(
+        RepoConfigUpdateInput(repo_root=repo_root)
+    )
+    snapshot_result = runtime.app.snapshot_runtime.create_repo_stable_point_snapshot(
+        repo_root,
+        checkpoint_kind="manual_test_stable_point",
+    )
+    eligibility = runtime.app.snapshot_runtime.check_repo_stable_point(
+        repo_root,
+        checkpoint_kind="manual_test_stable_point",
+    )
+    restore_result = runtime.app.snapshot_runtime.restore_repo_checkpoint_snapshot(
+        repo_root,
+        snapshot_id=existing.value.snapshot_id,
+    )
+
+    assert not admin_result.ok
+    assert admin_result.issues[0].kind == "repo_activity_recovery_required"
+    assert not snapshot_result.ok
+    assert snapshot_result.issues[0].kind == "repo_activity_recovery_required"
+    assert eligibility.ok and eligibility.value is not None
+    assert not eligibility.value.passed
+    assert eligibility.value.issues[0].kind == "repo_activity_recovery_required"
+    assert not restore_result.ok
+    assert restore_result.issues[0].kind == "repo_activity_recovery_required"
+
+
+def test_snapshot_eligibility_maps_second_frontier_read_failure(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    repo_root = tmp_path / "Repo"
+    runtime = create_app_runtime_services(runtime_root=tmp_path / ".runtime")
+    assert initialize_repo_business_truth(runtime, repo_root).ok
+    calls = 0
+
+    def list_flows(**filters):  # noqa: ANN003, ANN201
+        nonlocal calls
+        del filters
+        calls += 1
+        if calls == 1:
+            return []
+        raise RuntimeError("second frontier read failed")
+
+    monkeypatch.setattr(runtime, "list_flows", list_flows)
+    result = runtime.app.snapshot_runtime.check_repo_stable_point(
+        repo_root,
+        checkpoint_kind="manual_test_stable_point",
+    )
+
+    assert calls == 2
+    assert result.ok and result.value is not None
+    assert not result.value.passed
+    assert result.value.issues[0].kind == "repo_activity_recovery_required"
+
+
+def test_paired_restore_half_failure_persists_interlock_and_exact_retry_skips_completed_half(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    repo_root = tmp_path / "Repo"
+    runtime = create_app_runtime_services(runtime_root=tmp_path / ".runtime")
+    assert initialize_repo_business_truth(runtime, repo_root).ok
+    marker = repo_root / "Marker.txt"
+    marker.write_text("before\n", encoding="utf-8")
+    admin = LeanAdminApi(runtime)
+    coordinator_id = runtime.ark.flow_service.start_flow(
+        FlowRequest(
+            flow_type="native_repo_coordinator",
+            scope_id="repo:Repo",
+            params={"repo_key": "Repo", "repo_root": str(repo_root), "start_mode": "admin_start"},
+        ),
+        enqueue=False,
+    )
+    created = admin.create_snapshot(
+        SnapshotCreateInput(repo_root=repo_root, checkpoint_kind="manual_test_stable_point")
+    )
+    assert created.ok and created.value is not None
+    marker.write_text("after\n", encoding="utf-8")
+
+    ark_calls = 0
+    original_ark_restore = runtime.app.snapshot_runtime.ark_snapshot.restore_runtime_snapshot
+
+    def counted_ark_restore(*args, **kwargs):
+        nonlocal ark_calls
+        ark_calls += 1
+        return original_ark_restore(*args, **kwargs)
+
+    original_lc_restore = runtime.validation_snapshot.restore_repo_checkpoint_snapshot
+    lc_calls = 0
+
+    def fail_lc_once(*args, **kwargs):
+        nonlocal lc_calls
+        lc_calls += 1
+        if not kwargs.get("dry_run") and lc_calls == 1:
+            return runtime.foundation.fail(
+                runtime.foundation.issue("injected_lc_restore_failure", "Injected LC restore failure.")
+            )
+        return original_lc_restore(*args, **kwargs)
+
+    monkeypatch.setattr(runtime.app.snapshot_runtime.ark_snapshot, "restore_runtime_snapshot", counted_ark_restore)
+    monkeypatch.setattr(runtime.validation_snapshot, "restore_repo_checkpoint_snapshot", fail_lc_once)
+
+    first = admin.restore_snapshot(
+        SnapshotRestoreInput(repo_root=repo_root, snapshot_id=created.value.snapshot_id)
+    )
+    assert first.ok is False
+    assert runtime.app.snapshot_runtime._restore_interlock_path(repo_root).exists()  # noqa: SLF001
+    blocked_snapshot = admin.create_snapshot(
+        SnapshotCreateInput(repo_root=repo_root, checkpoint_kind="manual_test_stable_point")
+    )
+    assert blocked_snapshot.ok is False
+    assert blocked_snapshot.issues[0].kind == "paired_restore_recovery_required"
+    restarted_runtime = create_app_runtime_services(runtime_root=tmp_path / ".restarted-runtime")
+    restarted_gate = restarted_runtime.app.snapshot_runtime.check_repo_recovery_interlock(repo_root)
+    assert restarted_gate.ok is False
+    assert restarted_gate.issues[0].kind == "paired_restore_recovery_required"
+
+    blocked_admission = admin.semantic_advance(
+        RuntimeSemanticAdvanceInput(
+            granularity="content_batch",
+            repo_key="Repo",
+            coordinator_flow_id=coordinator_id,
+            expected_source_submission_id="sub_exact",
+        )
+    )
+    assert blocked_admission.ok is False
+    assert blocked_admission.issues[0].kind == "paired_restore_recovery_required"
+    blocked_step_admission = admin.semantic_advance(
+        RuntimeSemanticAdvanceInput(
+            granularity="step",
+            action="logic",
+            scope_id="repo:Repo",
+        )
+    )
+    assert blocked_step_admission.ok is False
+    assert blocked_step_admission.issues[0].kind == "paired_restore_recovery_required"
+    blocked_repo_mutation = admin.update_repo_config(
+        RepoConfigUpdateInput(repo_root=repo_root)
+    )
+    assert blocked_repo_mutation.ok is False
+    assert blocked_repo_mutation.issues[0].kind == "paired_restore_recovery_required"
+    blocked_release = admin.preview_repo_release(repo_root)
+    assert blocked_release.ok is False
+    assert blocked_release.issues[0].kind == "paired_restore_recovery_required"
+    blocked_publication = admin.prepare_repo_publication(
+        RepoPublicationPrepareInput(repo_root=repo_root)
+    )
+    assert blocked_publication.ok is False
+    assert blocked_publication.issues[0].kind == "paired_restore_recovery_required"
+
+    retried = admin.restore_snapshot(
+        SnapshotRestoreInput(repo_root=repo_root, snapshot_id=created.value.snapshot_id)
+    )
+    assert retried.ok and retried.value is not None, retried.issues
+    assert ark_calls == 1
+    assert marker.read_text(encoding="utf-8") == "before\n"
+    assert not runtime.app.snapshot_runtime._restore_interlock_path(repo_root).exists()  # noqa: SLF001
+
+
+def test_size_one_internal_checkpoint_requires_exact_terminal_current_child(
+    tmp_path: Path,
+) -> None:
+    repo_root = tmp_path / "Repo"
+    runtime = create_app_runtime_services(runtime_root=tmp_path / ".runtime")
+    assert initialize_repo_business_truth(runtime, repo_root).ok
+    coordinator_id = runtime.ark.flow_service.start_flow(
+        FlowRequest(
+            flow_type="native_repo_coordinator",
+            scope_id="repo:Repo",
+            params={
+                "repo_key": "Repo",
+                "repo_root": str(repo_root),
+                "start_mode": "admin_start",
+            },
+        ),
+        enqueue=False,
+    )
+
+    def mark_batch(flow) -> None:  # noqa: ANN001
+        flow.state.position = flow.state.position.model_copy(
+            update={"phase": "waiting_content_tasks"}
+        )
+        flow.state.pending_dispatch_kind = "content_tasks"
+        flow.state.pending_dispatch_source_step_id = "coordinator-callback"
+        flow.state.pending_dispatch_source_submission_id = "sub-batch"
+        flow.state.pending_content_node_paths = ["Main.Core"]
+        flow.state.waiting_dispatch_step_id = "dispatch-batch"
+
+    runtime.ark.flow_service.store.update_flow_record(coordinator_id, mark_batch)
+    task_id = runtime.ark.flow_service.start_flow(
+        FlowRequest(
+            flow_type="content_node_task",
+            scope_id="repo:Repo:node:Main.Core",
+            params={
+                "repo_key": "Repo",
+                "repo_path": str(repo_root),
+                "node_path": "Main.Core",
+                "contract_version": 1,
+                "max_parallel_content_node_tasks": 1,
+            },
+        ),
+        parent_flow_id=coordinator_id,
+        parent_dispatch_step_id="dispatch-batch",
+        enqueue=False,
+    )
+
+    def fake_internal_boundary(flow) -> None:  # noqa: ANN001
+        flow.state.position = flow.state.position.model_copy(
+            update={"phase": "callback_plan_agent"}
+        )
+        flow.state.waiting_dispatch_step_id = "round-dispatch"
+        flow.state.waiting_child_kind = "decl_graph_round"
+        flow.state.completed_child_flow_id = "missing-round-child"
+
+    runtime.ark.flow_service.store.update_flow_record(task_id, fake_internal_boundary)
+
+    created = LeanAdminApi(runtime).create_snapshot(
+        SnapshotCreateInput(
+            repo_root=repo_root,
+            checkpoint_kind="after_content_decl_round_terminal",
+            node_paths=["Main.Core"],
+        )
+    )
+
+    assert created.ok is False
+    assert created.issues[0].kind == "active_content_batch_snapshot_ineligible"
+
+
+def test_restore_runtime_preflight_failure_does_not_create_recovery_interlock(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    repo_root = tmp_path / "Repo"
+    runtime = create_app_runtime_services(runtime_root=tmp_path / ".runtime")
+    assert initialize_repo_business_truth(runtime, repo_root).ok
+    admin = LeanAdminApi(runtime)
+    created = admin.create_snapshot(
+        SnapshotCreateInput(repo_root=repo_root, checkpoint_kind="manual_test_stable_point")
+    )
+    assert created.ok and created.value is not None
+
+    monkeypatch.setattr(
+        runtime.app.snapshot_runtime.runtime_stability,
+        "check_repo_stable_point",
+        lambda *_args, **_kwargs: runtime.foundation.ok(
+            runtime.foundation.gate_failed(
+                "ark_runtime_stability",
+                runtime.foundation.issue("runtime_not_stable", "A runner is still active."),
+                summary="Runtime is not stable.",
+            )
+        ),
+    )
+    restored = admin.restore_snapshot(
+        SnapshotRestoreInput(repo_root=repo_root, snapshot_id=created.value.snapshot_id)
+    )
+
+    assert restored.ok is False
+    assert restored.issues[0].kind == "runtime_not_stable"
+    assert not runtime.app.snapshot_runtime._restore_interlock_path(repo_root).exists()  # noqa: SLF001

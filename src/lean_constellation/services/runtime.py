@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from lean_constellation.app.config import AutomaticCheckpointAppConfig
     from lean_constellation.app.runtime import ApplicationSnapshotRuntime
     from lean_constellation.services.adapter import AdapterService
+    from lean_constellation.services.concurrency import RepoActivityComponent
     from lean_constellation.services.decl_graph import DeclGraphService
     from lean_constellation.services.external_clients import ExternalClientService
     from lean_constellation.services.foundation import FoundationService
@@ -42,6 +43,7 @@ class LeanConstellationServices(AppServices):
     snapshot_runtime: "ApplicationSnapshotRuntime | None" = None
     tool_facade: "ToolFacadeService | None" = None
     automatic_checkpoints: "AutomaticCheckpointAppConfig | None" = None
+    repo_activity: "RepoActivityComponent | None" = None
 
     def validate(self) -> None:
         missing = [
@@ -58,6 +60,7 @@ class LeanConstellationServices(AppServices):
                 "decl_graph",
                 "validation_snapshot",
                 "tool_facade",
+                "repo_activity",
             )
             if getattr(self, name) is None
         ]
@@ -116,6 +119,10 @@ class LeanRuntimeServices:
     @property
     def tool_facade(self) -> "ToolFacadeService":
         return self.require_app_service("tool_facade")
+
+    @property
+    def repo_activity(self) -> "RepoActivityComponent":
+        return self.require_app_service("repo_activity")
 
     def require_app_service(self, name: str) -> Any:
         if not hasattr(self.app, name):

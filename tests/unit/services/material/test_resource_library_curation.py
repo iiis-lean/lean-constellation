@@ -1,6 +1,8 @@
 from tests.unit_services_helpers import make_runtime
 
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Barrier
 
 import pytest
 
@@ -68,6 +70,132 @@ def test_resource_library_register_duplicate_preview_and_validate(tmp_path: Path
     assert search.ok
     assert search.value is not None
     assert search.value.hits[0].reusable_ref_fields["resource_key"] == resource_key
+
+
+def test_finalize_equivalent_resource_drafts_is_idempotent(tmp_path: Path) -> None:
+    service = make_runtime().material
+    target = service.normalize_resource_target("https://example.com/same-work")
+    assert target.ok and target.value is not None
+
+    drafts = []
+    for _ in range(2):
+        allocated = service.resource_library.allocate_resource_draft(
+            tmp_path,
+            target=target.value,
+            allow_duplicate=True,
+        )
+        assert allocated.ok and allocated.value is not None
+        draft_root = Path(allocated.value.draft_root)
+        (draft_root / "README.md").write_text("# Same work\n", encoding="utf-8")
+        (draft_root / "article.md").write_text("same exact source\n", encoding="utf-8")
+        checked = service.resource_library.check_resource_draft(
+            tmp_path,
+            draft_id=allocated.value.draft.draft_id,
+        )
+        assert checked.ok and checked.value is not None and checked.value.passed
+        drafts.append(allocated.value.draft.draft_id)
+
+    first = service.resource_library.finalize_resource_draft(
+        tmp_path,
+        draft_id=drafts[0],
+        summary="Same work.",
+    )
+    second = service.resource_library.finalize_resource_draft(
+        tmp_path,
+        draft_id=drafts[1],
+        summary="Same work.",
+    )
+
+    assert first.ok and first.value is not None
+    assert second.ok and second.value is not None
+    assert second.value.resource.resource_key == first.value.resource.resource_key
+
+
+def test_finalize_same_resource_identity_rejects_different_canonical_content(tmp_path: Path) -> None:
+    service = make_runtime().material
+    target = service.normalize_resource_target("https://example.com/conflicting-work")
+    assert target.ok and target.value is not None
+    draft_ids = []
+    for body in ("first canonical source\n", "different canonical source\n"):
+        allocated = service.resource_library.allocate_resource_draft(
+            tmp_path,
+            target=target.value,
+            allow_duplicate=True,
+        )
+        assert allocated.ok and allocated.value is not None
+        draft_root = Path(allocated.value.draft_root)
+        (draft_root / "README.md").write_text("# Conflicting work\n", encoding="utf-8")
+        (draft_root / "article.md").write_text(body, encoding="utf-8")
+        checked = service.resource_library.check_resource_draft(
+            tmp_path,
+            draft_id=allocated.value.draft.draft_id,
+        )
+        assert checked.ok and checked.value is not None and checked.value.passed
+        draft_ids.append(allocated.value.draft.draft_id)
+
+    assert service.resource_library.finalize_resource_draft(
+        tmp_path,
+        draft_id=draft_ids[0],
+        summary="First version.",
+    ).ok
+    conflict = service.resource_library.finalize_resource_draft(
+        tmp_path,
+        draft_id=draft_ids[1],
+        summary="Conflicting version.",
+    )
+
+    assert not conflict.ok
+    assert conflict.issues[0].kind == "resource_identity_content_conflict"
+
+
+def test_finalize_distinct_resource_drafts_merges_concurrent_catalog_writes(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = make_runtime().material
+    library = service.resource_library
+    drafts = []
+    for suffix in ("a", "b"):
+        target = service.normalize_resource_target(f"https://example.com/work-{suffix}")
+        assert target.ok and target.value is not None
+        allocated = library.allocate_resource_draft(tmp_path, target=target.value)
+        assert allocated.ok and allocated.value is not None
+        draft_root = Path(allocated.value.draft_root)
+        (draft_root / "README.md").write_text(f"# Work {suffix}\n", encoding="utf-8")
+        (draft_root / "article.md").write_text(f"canonical {suffix}\n", encoding="utf-8")
+        checked = library.check_resource_draft(
+            tmp_path,
+            draft_id=allocated.value.draft.draft_id,
+        )
+        assert checked.ok and checked.value is not None and checked.value.passed
+        drafts.append(allocated.value.draft.draft_id)
+
+    barrier = Barrier(2)
+    original_load = library._load_material_manifest
+
+    def synchronized_load(path: Path):
+        result = original_load(path)
+        if path.name in drafts:
+            barrier.wait(timeout=5)
+        return result
+
+    monkeypatch.setattr(library, "_load_material_manifest", synchronized_load)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(
+            executor.map(
+                lambda draft_id: library.finalize_resource_draft(
+                    tmp_path,
+                    draft_id=draft_id,
+                    summary=f"Finalized {draft_id}.",
+                ),
+                drafts,
+            )
+        )
+
+    assert all(result.ok for result in results)
+    listed = library.list_resources(tmp_path)
+    assert listed.ok and listed.value is not None
+    assert len(listed.value) == 2
 
 
 def test_resource_target_normalization_arxiv_url_and_local(tmp_path: Path) -> None:

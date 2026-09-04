@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
+import json
+from pathlib import Path
 from threading import RLock
 from typing import Literal
 from weakref import WeakKeyDictionary
@@ -18,6 +21,7 @@ from pydantic import Field, model_validator
 
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.flows.content_node_task.flows import ContentNodeTaskInput, ContentNodeTaskState
+from lean_constellation.flows.common.checkpoint_policy import repo_flow_boundary_checkpoints_enabled
 
 
 class SemanticAdvanceSafety(StrictModel):
@@ -32,15 +36,27 @@ class SemanticAdvanceSafety(StrictModel):
 
 
 class RuntimeSemanticAdvanceInput(StrictModel):
-    granularity: Literal["step", "content_phase", "content_task"]
+    granularity: Literal["step", "content_phase", "content_task", "content_batch"]
     action: Literal["logic", "agent", "plan", "child"] | None = None
     scope_id: str | None = None
     step_id: str | None = None
     content_task_flow_id: str | None = None
+    repo_key: str | None = None
+    coordinator_flow_id: str | None = None
+    expected_source_submission_id: str | None = None
+    expected_dispatch_step_id: str | None = None
+    progress_epoch_decl_rounds: int | None = Field(default=None, ge=1)
     safety: SemanticAdvanceSafety = Field(default_factory=SemanticAdvanceSafety)
 
     @model_validator(mode="after")
     def validate_discriminated_shape(self) -> "RuntimeSemanticAdvanceInput":
+        batch_fields = (
+            self.repo_key,
+            self.coordinator_flow_id,
+            self.expected_source_submission_id,
+            self.expected_dispatch_step_id,
+            self.progress_epoch_decl_rounds,
+        )
         if self.granularity == "step":
             if self.action not in {"logic", "agent"}:
                 raise ValueError("step semantic advance requires action=logic or action=agent")
@@ -52,6 +68,20 @@ class RuntimeSemanticAdvanceInput(StrictModel):
                 raise ValueError("step.logic cannot specify step_id")
             if self.action == "agent" and not self.step_id:
                 raise ValueError("step.agent requires step_id")
+            if any(value is not None for value in batch_fields):
+                raise ValueError("step semantic advance cannot specify content_batch fields")
+            return self
+        if self.granularity == "content_batch":
+            if self.action is not None:
+                raise ValueError("content_batch semantic advance does not accept action")
+            if self.scope_id is not None or self.step_id is not None or self.content_task_flow_id is not None:
+                raise ValueError("content_batch semantic advance cannot specify step/content_task target fields")
+            if not self.repo_key:
+                raise ValueError("content_batch semantic advance requires repo_key")
+            if not self.coordinator_flow_id:
+                raise ValueError("content_batch semantic advance requires coordinator_flow_id")
+            if not self.expected_source_submission_id:
+                raise ValueError("content_batch semantic advance requires expected_source_submission_id")
             return self
         if self.granularity == "content_phase":
             if self.action not in {"plan", "child"}:
@@ -62,6 +92,8 @@ class RuntimeSemanticAdvanceInput(StrictModel):
             raise ValueError(f"{self.granularity} semantic advance requires content_task_flow_id")
         if self.scope_id is not None or self.step_id is not None:
             raise ValueError(f"{self.granularity} semantic advance cannot specify scope_id or step_id")
+        if any(value is not None for value in batch_fields):
+            raise ValueError(f"{self.granularity} semantic advance cannot specify content_batch fields")
         return self
 
 
@@ -76,6 +108,11 @@ class SemanticLeaseObservationContext:
     scope_id: str | None
     step_id: str | None
     content_task_flow_id: str | None
+    repo_key: str | None
+    coordinator_flow_id: str | None
+    expected_source_submission_id: str | None
+    expected_dispatch_step_id: str | None
+    progress_epoch_decl_rounds: int | None
 
 
 _observation_lock = RLock()
@@ -93,6 +130,11 @@ def register_semantic_lease_observation(
         scope_id=request.scope_id,
         step_id=request.step_id,
         content_task_flow_id=request.content_task_flow_id,
+        repo_key=request.repo_key,
+        coordinator_flow_id=request.coordinator_flow_id,
+        expected_source_submission_id=request.expected_source_submission_id,
+        expected_dispatch_step_id=request.expected_dispatch_step_id,
+        progress_epoch_decl_rounds=request.progress_epoch_decl_rounds,
     )
     with _observation_lock:
         observations = _observations_by_scheduler.setdefault(schedule_service, {})
@@ -117,6 +159,8 @@ def build_semantic_run_policy(runtime, request: RuntimeSemanticAdvanceInput) -> 
         if request.action == "plan":
             return _build_content_plan_policy(runtime, request)
         return _build_content_child_policy(runtime, request)
+    if request.granularity == "content_batch":
+        return _build_content_batch_policy(runtime, request)
     return _build_content_task_policy(runtime, request)
 
 
@@ -297,6 +341,263 @@ def _build_content_child_policy(runtime, request: RuntimeSemanticAdvanceInput) -
     )
 
 
+def _unresolved_suspended_agent_steps(steps: list[object]) -> tuple[AgentStep, ...]:
+    agent_steps = [step for step in steps if isinstance(step, AgentStep)]
+    superseded_step_ids = {
+        step.state.restart_of_step_id
+        for step in agent_steps
+        if step.state.restart_of_step_id is not None
+    }
+    return tuple(
+        step
+        for step in agent_steps
+        if step.status is StepStatus.SUSPENDED
+        and step.step_id not in superseded_step_ids
+    )
+
+
+def _build_content_batch_policy(runtime, request: RuntimeSemanticAdvanceInput) -> SchedulerSemanticRunPolicy:  # noqa: ANN001
+    from lean_constellation.flows.coordinator.flows import (
+        NativeRepoCoordinatorInput,
+        NativeRepoCoordinatorState,
+    )
+    from lean_constellation.flows.coordinator.submissions import (
+        CoordinatorContentTasksSubmission,
+    )
+
+    assert request.coordinator_flow_id is not None
+    assert request.expected_source_submission_id is not None
+    if not repo_flow_boundary_checkpoints_enabled(runtime.app):
+        raise SemanticAdvancePolicyError(
+            "content_batch requires repo flow-boundary checkpoints to be enabled"
+        )
+    coordinator = _flow_service(runtime).get_flow(request.coordinator_flow_id)
+    if coordinator.flow_type != "native_repo_coordinator":
+        raise SemanticAdvancePolicyError(
+            f"content_batch target is not native_repo_coordinator: {coordinator.flow_id}"
+        )
+    if not isinstance(coordinator.input, NativeRepoCoordinatorInput) or not isinstance(
+        coordinator.state, NativeRepoCoordinatorState
+    ):
+        raise SemanticAdvancePolicyError(
+            f"content_batch coordinator has invalid input/state: {coordinator.flow_id}"
+        )
+    repo_root_value = coordinator.input.repo_root
+    if not repo_root_value:
+        raise SemanticAdvancePolicyError("content_batch coordinator is missing repo_root")
+    if coordinator.input.repo_key and coordinator.input.repo_key != request.repo_key:
+        raise SemanticAdvancePolicyError(
+            f"content_batch repo_key mismatch: expected {coordinator.input.repo_key}, got {request.repo_key}"
+        )
+    state = coordinator.state
+    if state.pending_dispatch_kind != "content_tasks":
+        raise SemanticAdvancePolicyError("content_batch coordinator has no pending content task batch")
+    if state.pending_dispatch_source_submission_id != request.expected_source_submission_id:
+        raise SemanticAdvancePolicyError(
+            "content_batch source submission changed since the request was prepared"
+        )
+    if not state.pending_dispatch_source_step_id:
+        raise SemanticAdvancePolicyError("content_batch source Step is missing")
+    source_step = _step_service(runtime).store.get_step(state.pending_dispatch_source_step_id)
+    submission = source_step.submission
+    if not isinstance(submission, CoordinatorContentTasksSubmission):
+        raise SemanticAdvancePolicyError("content_batch source submission is not CoordinatorContentTasksSubmission")
+    if submission.submission_id != request.expected_source_submission_id:
+        raise SemanticAdvancePolicyError("content_batch source submission identity mismatch")
+
+    node_paths = tuple(path.strip() for path in state.pending_content_node_paths if path.strip())
+    if not node_paths or tuple(submission.node_paths) != node_paths:
+        raise SemanticAdvancePolicyError("content_batch member paths do not match current Coordinator truth")
+    max_parallel = (
+        coordinator.input.run_context.run_spec.max_parallel_content_node_tasks
+        if coordinator.input.run_context is not None
+        else 1
+    )
+    if len(node_paths) > max_parallel:
+        raise SemanticAdvancePolicyError(
+            f"content_batch has {len(node_paths)} members but workspace run maximum is {max_parallel}"
+        )
+    repo_root = Path(repo_root_value).resolve(strict=False)
+    independent = runtime.node.dependency.check_content_batch_independent(
+        repo_root,
+        node_paths=list(node_paths),
+    )
+    if not independent.ok or independent.value is None:
+        message = independent.issues[0].message if independent.issues else "content batch preflight failed"
+        raise SemanticAdvancePolicyError(message)
+    if not independent.value.passed:
+        message = independent.value.issues[0].message if independent.value.issues else independent.value.summary
+        raise SemanticAdvancePolicyError(message)
+
+    requests_by_path = {
+        str(flow_request.params.get("node_path")): flow_request
+        for flow_request in submission.requests
+        if flow_request.flow_type == "content_node_task"
+    }
+    if set(requests_by_path) != set(node_paths):
+        raise SemanticAdvancePolicyError("content_batch requests do not exactly cover current member paths")
+    for node_path in node_paths:
+        contract_version = requests_by_path[node_path].params.get("contract_version")
+        admission = runtime.node.contract.check_content_task_admission(
+            repo_root,
+            node_path=node_path,
+            contract_version=contract_version,
+        )
+        if not admission.ok or admission.value is None:
+            message = admission.issues[0].message if admission.issues else "content task admission failed"
+            raise SemanticAdvancePolicyError(message)
+        if not admission.value.passed:
+            message = admission.value.issues[0].message if admission.value.issues else admission.value.summary
+            raise SemanticAdvancePolicyError(message)
+
+    dispatch_step_id = state.waiting_dispatch_step_id
+    if (
+        request.expected_dispatch_step_id is not None
+        and dispatch_step_id != request.expected_dispatch_step_id
+    ):
+        raise SemanticAdvancePolicyError("content_batch dispatch Step changed since the request was prepared")
+    identity_payload = {
+        "coordinator_flow_id": coordinator.flow_id,
+        "source_step_id": state.pending_dispatch_source_step_id,
+        "source_submission_id": request.expected_source_submission_id,
+        "node_paths": list(node_paths),
+    }
+    batch_id = "content_batch_" + hashlib.sha256(
+        json.dumps(identity_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()[:20]
+    _reserve_independent_content_batch(
+        runtime,
+        repo_root,
+        batch_id=batch_id,
+        node_paths=node_paths,
+    )
+
+    flow_service = _flow_service(runtime)
+    step_service = _step_service(runtime)
+    baseline_rounds = _completed_decl_round_count(runtime, coordinator.flow_id, dispatch_step_id)
+    released = False
+
+    def release() -> None:
+        nonlocal released
+        if not released:
+            runtime.repo_activity.release_content_batch(repo_root, batch_id=batch_id)
+            released = True
+
+    def current_coordinator():  # noqa: ANN202
+        return flow_service.get_flow(coordinator.flow_id)
+
+    def current_dispatch_id() -> str | None:
+        current_state = current_coordinator().state
+        return getattr(current_state, "waiting_dispatch_step_id", None)
+
+    def pending_callback_step():  # noqa: ANN202
+        current = current_coordinator()
+        if getattr(getattr(current.state, "position", None), "phase", None) != "coordinator_callback":
+            return None
+        if current.current_step_id is None:
+            return None
+        step = step_service.store.get_step(current.current_step_id)
+        if step.step_type != "coordinator_agent_step":
+            return None
+        if getattr(step.state, "prompt_mode", None) != "callback":
+            return None
+        return step
+
+    def member_roots() -> tuple[str, ...]:
+        current_dispatch = current_dispatch_id()
+        if current_dispatch is None:
+            return ()
+        children = _list_child_flows(
+            flow_service,
+            parent_flow_id=coordinator.flow_id,
+            parent_dispatch_step_id=current_dispatch,
+        )
+        by_path = {
+            getattr(getattr(child, "input", None), "node_path", None): child.flow_id
+            for child in children
+            if child.flow_type == "content_node_task"
+        }
+        if set(by_path) != set(node_paths):
+            return ()
+        return tuple(by_path[path] for path in node_paths)
+
+    def in_member_subtree(flow_id: str) -> bool:
+        return any(_is_descendant_or_self(flow_service, flow_id, root) for root in member_roots())
+
+    def coordinator_advance_allowed(flow) -> bool:  # noqa: ANN001
+        if flow.flow_id != coordinator.flow_id:
+            return False
+        phase = getattr(getattr(flow.state, "position", None), "phase", None)
+        return phase in {
+            "before_content_task_dispatch_snapshot",
+            "dispatch_content_tasks",
+            "waiting_content_tasks",
+            "after_content_task_batch_snapshot",
+        } or (phase == "coordinator_callback" and pending_callback_step() is None)
+
+    def coordinator_step_allowed(step) -> bool:  # noqa: ANN001
+        if step.flow_id != coordinator.flow_id or isinstance(step, AgentStep):
+            return False
+        return step.step_type in {
+            "coordinator_content_batch_snapshot_step",
+            "dispatch_step",
+        }
+
+    def decide(_scheduler) -> SchedulerRunDecision:  # noqa: ANN001
+        current = current_coordinator()
+        if current.status in {FlowStatus.COMPLETED, FlowStatus.FAILED}:
+            release()
+            return SchedulerRunDecision(action="pause", reason=f"coordinator_terminal:{current.flow_id}")
+        member_steps = [
+            step
+            for step in runtime.list_steps()
+            if any(
+                _is_descendant_or_self(flow_service, step.flow_id, root)
+                for root in member_roots()
+            )
+        ]
+        suspended = _unresolved_suspended_agent_steps(member_steps)
+        if suspended:
+            release()
+            return SchedulerRunDecision(
+                action="pause",
+                reason=f"content_batch_recovery_required:{suspended[0].step_id}",
+            )
+        phase = getattr(getattr(current.state, "position", None), "phase", None)
+        callback = pending_callback_step()
+        if phase == "coordinator_callback" and callback is not None:
+            release()
+            return SchedulerRunDecision(action="pause", reason=f"content_batch_checkpointed:{batch_id}")
+        if request.progress_epoch_decl_rounds is not None:
+            completed = _completed_decl_round_count(
+                runtime,
+                coordinator.flow_id,
+                current_dispatch_id(),
+            )
+            if completed - baseline_rounds >= request.progress_epoch_decl_rounds:
+                running = step_service.list_running_steps()
+                if running:
+                    return SchedulerRunDecision(
+                        action="drain",
+                        reason=f"content_batch_progress_epoch_draining:{batch_id}",
+                    )
+                return SchedulerRunDecision(
+                    action="pause",
+                    reason=f"content_batch_progress_epoch:{batch_id}",
+                )
+        return SchedulerRunDecision()
+
+    return SchedulerSemanticRunPolicy(
+        name="content_batch",
+        allow_flow_advance=lambda flow: coordinator_advance_allowed(flow) or in_member_subtree(flow.flow_id),
+        allow_step_start=lambda step: coordinator_step_allowed(step) or in_member_subtree(step.flow_id),
+        decide=decide,
+        max_flow_advances=request.safety.max_flow_advances,
+        max_step_starts=request.safety.max_step_starts,
+        idle_grace_s=0.2,
+    )
+
+
 def _build_content_task_policy(runtime, request: RuntimeSemanticAdvanceInput) -> SchedulerSemanticRunPolicy:  # noqa: ANN001
     task = _content_task(runtime, request.content_task_flow_id)
     _require_single_content_task(task)
@@ -434,6 +735,73 @@ def _is_descendant_or_self(flow_service, flow_id: str, root_flow_id: str) -> boo
         seen.add(current_id)
         current_id = flow_service.get_flow(current_id).parent_flow_id
     return False
+
+
+def _completed_decl_round_count(runtime, coordinator_flow_id: str, dispatch_step_id: str | None) -> int:  # noqa: ANN001
+    if dispatch_step_id is None:
+        return 0
+    flow_service = _flow_service(runtime)
+    roots = [
+        child.flow_id
+        for child in _list_child_flows(
+            flow_service,
+            parent_flow_id=coordinator_flow_id,
+            parent_dispatch_step_id=dispatch_step_id,
+        )
+        if child.flow_type == "content_node_task"
+    ]
+    return sum(
+        1
+        for flow in runtime.list_flows()
+        if flow.flow_type == "decl_graph_round"
+        and flow.status in {FlowStatus.COMPLETED, FlowStatus.FAILED}
+        and any(_is_descendant_or_self(flow_service, flow.flow_id, root) for root in roots)
+    )
+
+
+def _list_child_flows(
+    flow_service,  # noqa: ANN001
+    *,
+    parent_flow_id: str,
+    parent_dispatch_step_id: str | None = None,
+):  # noqa: ANN202
+    store = getattr(flow_service, "store", None)
+    if store is None or not hasattr(store, "list_child_flows"):
+        raise SemanticAdvancePolicyError("flow store does not support child flow inspection")
+    return store.list_child_flows(
+        parent_flow_id=parent_flow_id,
+        parent_dispatch_step_id=parent_dispatch_step_id,
+    )
+
+
+def _reserve_independent_content_batch(
+    runtime,  # noqa: ANN001
+    repo_root: Path,
+    *,
+    batch_id: str,
+    node_paths: tuple[str, ...],
+) -> None:
+    try:
+        with runtime.repo_activity.topology_write(repo_root):
+            current = runtime.node.dependency.check_content_batch_independent(
+                repo_root,
+                node_paths=list(node_paths),
+            )
+            if not current.ok or current.value is None:
+                message = current.issues[0].message if current.issues else "content batch preflight failed"
+                raise SemanticAdvancePolicyError(message)
+            if not current.value.passed:
+                message = current.value.issues[0].message if current.value.issues else current.value.summary
+                raise SemanticAdvancePolicyError(message)
+            runtime.repo_activity.reserve_content_batch(
+                repo_root,
+                batch_id=batch_id,
+                node_paths=node_paths,
+            )
+    except SemanticAdvancePolicyError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - translate runtime ownership conflicts.
+        raise SemanticAdvancePolicyError(str(exc)) from exc
 
 
 def _flow_service(runtime):  # noqa: ANN001, ANN202
