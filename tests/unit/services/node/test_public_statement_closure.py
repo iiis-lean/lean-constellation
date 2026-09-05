@@ -8,7 +8,11 @@ from tests.unit_services_helpers import (
 )
 
 from lean_constellation.domain.lean_check import LeanCheck
-from lean_constellation.domain.repo import RepoPublicationState, RepoPublicationStatus
+from lean_constellation.domain.repo import (
+    ProofAvailability,
+    RepoPublicationState,
+    RepoPublicationStatus,
+)
 from lean_constellation.domain.refs import DeclRef, NodeRef
 from lean_constellation.services.decl_graph import DeclState
 from lean_constellation.services.decl_graph.models import (
@@ -861,12 +865,11 @@ def test_scope_explicit_root_adds_existing_boundary_and_stops_at_target_scope(
     )
     _commit_content_head(tmp_path, "Family", "MainResult")
     runtime = make_runtime()
-    batch_calls = 0
+    readiness_roots: list[list[tuple[str, str, ProofAvailability]]] = []
     original_batch = runtime.decl_graph.check_decl_proof_policy_batch
 
     def count_batch(*args, **kwargs):
-        nonlocal batch_calls
-        batch_calls += 1
+        readiness_roots.append(list(kwargs["roots"]))
         return original_batch(*args, **kwargs)
 
     monkeypatch.setattr(
@@ -881,7 +884,9 @@ def test_scope_explicit_root_adds_existing_boundary_and_stops_at_target_scope(
     )
 
     assert promoted.ok and promoted.value is not None
-    assert batch_calls == 1
+    assert readiness_roots == [
+        [(NODE_PATH, "Family", ProofAvailability.DECLARED)]
+    ]
     assert [ref.name for ref in promoted.value.promoted_declarations] == ["Family"]
     assert set(promoted.value.added_exports) == {"Main.Topic"}
     topic_exports = runtime.node.export.list_scope_exports(
@@ -898,6 +903,38 @@ def test_scope_explicit_root_adds_existing_boundary_and_stops_at_target_scope(
         "MainResult",
     }
     assert main_exports.ok and main_exports.value == []
+
+
+def test_semantic_ref_resolution_uses_declared_availability(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    round_id = _prepare_repo(tmp_path)
+    _seed_definition(
+        tmp_path,
+        round_id=round_id,
+        name="MainResult",
+        public=True,
+    )
+    _commit_content_head(tmp_path, "MainResult")
+    runtime = make_runtime()
+    resolver = runtime.decl_graph.ref_compatibility
+    original_batch = resolver.resolve_decl_refs_batch
+    targets: list[ProofAvailability] = []
+
+    def record_target(*args, **kwargs):
+        targets.append(kwargs["required_availability"])
+        return original_batch(*args, **kwargs)
+
+    monkeypatch.setattr(resolver, "resolve_decl_refs_batch", record_target)
+    resolved = runtime.node.public_statement_closure._resolve_semantic_ref(  # noqa: SLF001 - direct policy contract
+        tmp_path,
+        DeclRef(node=NODE_PATH, name="MainResult", revision=1),
+        operation_context=resolver.create_operation_context(),
+    )
+
+    assert resolved.ok and resolved.value is not None
+    assert targets == [ProofAvailability.DECLARED]
 
 
 def test_scope_promotion_allows_open_only_target_and_never_commits_it(

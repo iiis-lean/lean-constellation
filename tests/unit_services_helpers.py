@@ -350,6 +350,13 @@ def publish_native_provider_release(
     git_state = runtime.repo_workspace.git_release.ensure_independent_repo(repo_root)
     assert git_state.ok and git_state.value is not None
     assert runtime.repo_workspace.release.create_release(repo_root, release=release).ok
+    availability = runtime.decl_graph.build_release_decl_availability_index(repo_root)
+    assert availability.ok and availability.value is not None, availability.issues
+    assert runtime.repo_workspace.release.write_decl_availability_index(
+        repo_root,
+        release_id=release_id,
+        index=availability.value,
+    ).ok
 
     publication = RepoPublicationState(
         status=RepoPublicationStatus.STABLE,
@@ -449,6 +456,13 @@ def publish_adapter_provider_release(
     git_state = runtime.repo_workspace.git_release.ensure_independent_repo(repo_root)
     assert git_state.ok and git_state.value is not None
     assert runtime.repo_workspace.release.create_release(repo_root, release=release).ok
+    availability = runtime.decl_graph.build_release_decl_availability_index(repo_root)
+    assert availability.ok and availability.value is not None, availability.issues
+    assert runtime.repo_workspace.release.write_decl_availability_index(
+        repo_root,
+        release_id=release_id,
+        index=availability.value,
+    ).ok
     publication = RepoPublicationState(
         status=RepoPublicationStatus.STABLE,
         latest_release_id=release_id,

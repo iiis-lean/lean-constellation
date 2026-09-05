@@ -314,7 +314,13 @@ def _export_main_result_from_provider_main(runtime: LeanRuntimeServices, repo_ro
         assert bound.ok, bound.issues
 
 
-def _seed_proved_public_theorem_with_provider_dep(runtime: LeanRuntimeServices, repo_root: Path, *, provider_repo: str):  # noqa: ANN201
+def _seed_proved_public_theorem_with_provider_dep(
+    runtime: LeanRuntimeServices,
+    repo_root: Path,
+    *,
+    provider_repo: str,
+    include_statement_dep: bool = False,
+):  # noqa: ANN201
     _create_content_node(runtime, repo_root)
     round_id = _create_round(runtime, repo_root)
     _create_decl(runtime, repo_root, round_id=round_id, name="consumer_result", public=True)
@@ -368,6 +374,24 @@ def _seed_proved_public_theorem_with_provider_dep(runtime: LeanRuntimeServices, 
     )
     if not added_dep.ok:
         return added_dep
+    if include_statement_dep:
+        added_statement_dep = runtime.decl_graph.add_statement_dep(
+            repo_root,
+            node_path=NODE_PATH,
+            round_id=round_id,
+            decl_name="consumer_result",
+            dep=RepoDeclDep(
+                ref=DeclRef(
+                    repo=provider_repo,
+                    node=NODE_PATH,
+                    name="main_result",
+                    revision=1,
+                ),
+                reason="The statement names the Provider's stable public theorem.",
+            ),
+        )
+        if not added_statement_dep.ok:
+            return added_statement_dep
     prepared_proof = runtime.lean_projection.prepare_proof_formal_stage_file(
         repo_root, node_path=NODE_PATH, decl_name="consumer_result"
     )
@@ -381,6 +405,46 @@ def _seed_proved_public_theorem_with_provider_dep(runtime: LeanRuntimeServices, 
     committed = runtime.decl_graph.commit_decl_revision(repo_root, node_path=NODE_PATH, name="consumer_result", state=DeclState.PROVED)
     assert committed.ok, committed.issues
     return committed
+
+
+def _close_active_rounds_for_contract_head(
+    runtime: LeanRuntimeServices,
+    repo_root: Path,
+) -> None:
+    rounds = runtime.decl_graph.list_rounds(repo_root, node_path=NODE_PATH)
+    assert rounds.ok and rounds.value is not None, rounds.issues
+    for round_record in rounds.value:
+        if round_record.status.value not in {"draft", "running"}:
+            continue
+        for ref in round_record.revision_refs:
+            assert runtime.decl_graph.write_decl_change_summary(
+                repo_root,
+                node_path=NODE_PATH,
+                round_id=round_record.round_id,
+                change_id=ref.change_id,
+                summary=f"Completed {ref.decl_name} for the contract-head fixture.",
+            ).ok
+        assert runtime.decl_graph.write_round_summary(
+            repo_root,
+            node_path=NODE_PATH,
+            round_id=round_record.round_id,
+            summary="Completed Provider policy contract-head fixture round.",
+        ).ok
+        assert runtime.decl_graph.strategy_round.record_round_execution_result(
+            repo_root,
+            node_path=NODE_PATH,
+            round_id=round_record.round_id,
+            result_kind="blocked",
+            reason="The fixture commits its revision before deterministic closeout.",
+        ).ok
+        assert runtime.decl_graph.strategy_round.persist_round_closeout(
+            repo_root,
+            node_path=NODE_PATH,
+            round_id=round_record.round_id,
+            result_kind="blocked",
+            reason="The fixture commits its revision before deterministic closeout.",
+            acknowledged_by="test-fixture",
+        ).ok
 
 
 def test_content_ready_gate_uses_default_decl_graph_provider_pass(tmp_path: Path) -> None:
@@ -640,7 +704,11 @@ def test_content_completion_rejects_declared_theorem_under_proved_target(tmp_pat
     assert "content_decl_proof_policy_unsatisfied" in completion.value.blocking_issue_kinds
 
 
-def _setup_stable_declared_provider_consumer(workspace: Path) -> tuple[LeanRuntimeServices, Path, Path]:
+def _setup_stable_declared_provider_consumer(
+    workspace: Path,
+    *,
+    include_statement_dep: bool = False,
+) -> tuple[LeanRuntimeServices, Path, Path]:
     consumer = workspace / "Consumer"
     provider = workspace / "Provider"
     consumer.mkdir()
@@ -684,7 +752,12 @@ def _setup_stable_declared_provider_consumer(workspace: Path) -> tuple[LeanRunti
         consumer,
         completion_mode=RepoCompletionMode.GRAPH_PROVED,
     ).ok
-    seeded = _seed_proved_public_theorem_with_provider_dep(runtime, consumer, provider_repo="Provider")
+    seeded = _seed_proved_public_theorem_with_provider_dep(
+        runtime,
+        consumer,
+        provider_repo="Provider",
+        include_statement_dep=include_statement_dep,
+    )
     assert seeded.ok, seeded.issues
     return runtime, consumer, provider
 
@@ -710,6 +783,86 @@ def test_content_completion_accepts_stable_declared_provider_dependency(tmp_path
     assert completion.ok and completion.value is not None
     assert completion.value.ready_to_submit is True
     assert completion.value.target_proof_availability == ProofAvailability.PROVED
+
+
+def test_content_head_accepts_stable_declared_provider_dependency_for_proved_consumer(
+    tmp_path: Path,
+) -> None:
+    runtime, consumer, _provider = _setup_stable_declared_provider_consumer(tmp_path)
+    _close_active_rounds_for_contract_head(runtime, consumer)
+
+    captured = runtime.node.release_guard.capture_content_contract_head(
+        consumer,
+        node_path=NODE_PATH,
+    )
+
+    assert captured.ok and captured.value is not None
+    assert captured.value == {"consumer_result": 1}
+
+
+def test_statement_closure_uses_declared_target_for_proved_consumer(
+    tmp_path: Path,
+) -> None:
+    runtime, consumer, _provider = _setup_stable_declared_provider_consumer(
+        tmp_path,
+        include_statement_dep=True,
+    )
+
+    closure = runtime.node.public_statement_closure.inspect_content(
+        consumer,
+        node_path=NODE_PATH,
+        root_decl_names=["consumer_result"],
+    )
+
+    assert closure.ok and closure.value is not None
+    assert len(closure.value.external_checks) == 1
+    assert closure.value.external_checks[0].ref.repo == "Provider"
+    assert closure.value.external_checks[0].provider_public is True
+    assert closure.value.issues == []
+    assert closure.value.closure_complete is True
+
+
+def test_statement_closure_propagates_provider_release_sidecar_failure(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime, consumer, provider = _setup_stable_declared_provider_consumer(
+        tmp_path,
+        include_statement_dep=True,
+    )
+    revision = runtime.decl_graph.get_decl_revision(
+        provider,
+        node_path=NODE_PATH,
+        name="main_result",
+        revision=1,
+    )
+    assert revision.ok and revision.value is not None, revision.issues
+    revision.value.state = DeclState.PROVED
+    assert runtime.foundation.store.write_json_atomic(
+        runtime.decl_graph.graph_store.revision_path(
+            provider,
+            node_path=NODE_PATH,
+            decl_name="main_result",
+            revision=1,
+        ),
+        revision.value,
+        mode=WriteMode.UPDATE_EXISTING,
+    ).ok
+    runtime.repo_workspace.release._decl_availability_cache.clear()
+    monkeypatch.setattr(
+        runtime.repo_workspace.git_release,
+        "read_release_file",
+        lambda *args, **kwargs: runtime.foundation.ok("{not-json"),
+    )
+
+    closure = runtime.node.public_statement_closure.inspect_content(
+        consumer,
+        node_path=NODE_PATH,
+        root_decl_names=["consumer_result"],
+    )
+
+    assert not closure.ok
+    assert closure.issues[0].kind == "release_decl_availability_invalid"
 
 
 def test_content_completion_shares_node_dependency_context_with_decl_identity(
@@ -831,7 +984,7 @@ def test_content_completion_batches_cross_node_interfaces_by_provider(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    runtime, consumer, provider = _setup_stable_declared_provider_consumer(tmp_path)
+    runtime, consumer, _provider = _setup_stable_declared_provider_consumer(tmp_path)
     current = runtime.node.contract.get_edit_contract(consumer, node_path=NODE_PATH)
     assert current.ok and current.value is not None
     current.value.contract.interfaces = [
@@ -868,18 +1021,17 @@ def test_content_completion_batches_cross_node_interfaces_by_provider(
         current.value.contract,
         mode=WriteMode.UPDATE_EXISTING,
     ).ok
-    original = runtime.decl_graph.check_decl_proof_policy_batch
-    provider_batches: list[list[tuple[str, str, ProofAvailability]]] = []
+    original = runtime.decl_graph.check_decl_refs_proof_policy_batch
+    provider_batches: list[list[DeclRef]] = []
 
-    def counted_batch(repo_root: Path, *, roots, **kwargs):
-        selected = list(roots)
-        if Path(repo_root).resolve() == provider.resolve():
-            provider_batches.append(selected)
-        return original(repo_root, roots=selected, **kwargs)
+    def counted_batch(repo_root: Path, *, refs, **kwargs):
+        selected = list(refs)
+        provider_batches.append(selected)
+        return original(repo_root, refs=selected, **kwargs)
 
     monkeypatch.setattr(
         runtime.decl_graph,
-        "check_decl_proof_policy_batch",
+        "check_decl_refs_proof_policy_batch",
         counted_batch,
     )
     gate = ReadinessGateComponent(
@@ -895,17 +1047,90 @@ def test_content_completion_batches_cross_node_interfaces_by_provider(
     assert "content_decl_proof_policy_unsatisfied" in completion.value.blocking_issue_kinds
     assert provider_batches == [
         [
-            (NODE_PATH, "main_result", ProofAvailability.DECLARED),
-            (NODE_PATH, "missing_result", ProofAvailability.DECLARED),
+            DeclRef(
+                repo="Provider",
+                node=NODE_PATH,
+                name="main_result",
+                revision=1,
+            ),
+            DeclRef(
+                repo="Provider",
+                node=NODE_PATH,
+                name="missing_result",
+                revision=1,
+            ),
         ]
     ]
+
+
+def test_content_completion_reports_effective_provider_target_from_shared_batch(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime, consumer, _provider = _setup_stable_declared_provider_consumer(tmp_path)
+    current = runtime.node.contract.get_edit_contract(consumer, node_path=NODE_PATH)
+    assert current.ok and current.value is not None
+    current.value.contract.interfaces = [
+        DeclInterface(
+            name="provider_missing_result",
+            kind=DeclKind.THEOREM,
+            summary="Missing Provider declaration exposes the effective policy target.",
+            bound_decl=DeclRef(
+                repo="Provider",
+                node=NODE_PATH,
+                name="missing_result",
+                revision=1,
+            ),
+        )
+    ]
+    contract_path = runtime.node.node_tree.node_store.contract_path(
+        consumer,
+        node_id=current.value.node_id,
+        version=current.value.contract.version,
+    )
+    assert runtime.foundation.store.write_json_atomic(
+        contract_path,
+        current.value.contract,
+        mode=WriteMode.UPDATE_EXISTING,
+    ).ok
+    original = runtime.decl_graph.check_decl_refs_proof_policy_batch
+    calls = 0
+
+    def counted_batch(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(
+        runtime.decl_graph,
+        "check_decl_refs_proof_policy_batch",
+        counted_batch,
+    )
+    gate = ReadinessGateComponent(
+        runtime,
+        consistency=ProjectionPassConsistency(runtime),
+        content_readiness_provider=runtime.decl_graph,
+    )
+
+    completion = gate.check_content_node_completion(consumer, node_path=NODE_PATH)
+
+    assert completion.ok and completion.value is not None
+    policy_issues = [
+        issue
+        for issue in completion.value.gate.issues
+        if issue.kind == "content_decl_proof_policy_unsatisfied"
+        and issue.field == "interfaces.provider_missing_result.bound_decl"
+    ]
+    assert calls == 1
+    assert len(policy_issues) == 1
+    assert policy_issues[0].details["target_proof_availability"] == "declared"
 
 
 def test_content_completion_preserves_duplicate_external_interface_positions(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    runtime, consumer, provider = _setup_stable_declared_provider_consumer(tmp_path)
+    runtime, consumer, _provider = _setup_stable_declared_provider_consumer(tmp_path)
     duplicate_ref = DeclRef(
         repo="Provider",
         node=NODE_PATH,
@@ -939,18 +1164,17 @@ def test_content_completion_preserves_duplicate_external_interface_positions(
         mode=WriteMode.UPDATE_EXISTING,
     ).ok
     before = contract_path.read_bytes()
-    original = runtime.decl_graph.check_decl_proof_policy_batch
-    provider_batches: list[list[tuple[str, str, ProofAvailability]]] = []
+    original = runtime.decl_graph.check_decl_refs_proof_policy_batch
+    provider_batches: list[list[DeclRef]] = []
 
-    def counted_batch(repo_root: Path, *, roots, **kwargs):
-        selected = list(roots)
-        if Path(repo_root).resolve() == provider.resolve():
-            provider_batches.append(selected)
-        return original(repo_root, roots=selected, **kwargs)
+    def counted_batch(repo_root: Path, *, refs, **kwargs):
+        selected = list(refs)
+        provider_batches.append(selected)
+        return original(repo_root, refs=selected, **kwargs)
 
     monkeypatch.setattr(
         runtime.decl_graph,
-        "check_decl_proof_policy_batch",
+        "check_decl_refs_proof_policy_batch",
         counted_batch,
     )
     gate = ReadinessGateComponent(
@@ -978,8 +1202,8 @@ def test_content_completion_preserves_duplicate_external_interface_positions(
     ]
     assert provider_batches == [
         [
-            (NODE_PATH, "missing_result", ProofAvailability.DECLARED),
-            (NODE_PATH, "missing_result", ProofAvailability.DECLARED),
+            duplicate_ref,
+            duplicate_ref,
         ]
     ]
     assert completion.value.checked_decl_count == 2

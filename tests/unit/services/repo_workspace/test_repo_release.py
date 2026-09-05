@@ -26,7 +26,7 @@ from tests.unit_services_helpers import (
 )
 
 
-def test_release_decl_availability_reader_is_optional_and_lru_cached(
+def test_release_decl_availability_reader_is_strict_and_lru_cached(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -72,7 +72,7 @@ def test_release_decl_availability_reader_is_optional_and_lru_cached(
     assert reads == 1
 
 
-def test_release_decl_availability_reader_treats_invalid_sidecar_as_miss(
+def test_release_decl_availability_reader_rejects_missing_and_malformed_sidecar(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -81,6 +81,52 @@ def test_release_decl_availability_reader_treats_invalid_sidecar_as_miss(
         runtime.repo_workspace.git_release,
         "read_release_file",
         lambda *args, **kwargs: runtime.foundation.ok("{not-json"),
+    )
+
+    malformed = runtime.repo_workspace.release.lookup_decl_availability(
+        tmp_path,
+        release_id="release_test",
+        node_path="Main.Topic.Core",
+        decl_name="result",
+        revision=1,
+    )
+
+    assert not malformed.ok
+    assert malformed.issues[0].kind == "release_decl_availability_invalid"
+
+    runtime.repo_workspace.release._decl_availability_cache.clear()
+    monkeypatch.setattr(
+        runtime.repo_workspace.git_release,
+        "read_release_file",
+        lambda *args, **kwargs: runtime.foundation.fail(
+            runtime.foundation.issue(
+                "read_failed",
+                "Injected missing Release availability sidecar.",
+            )
+        ),
+    )
+    missing = runtime.repo_workspace.release.lookup_decl_availability(
+        tmp_path,
+        release_id="release_test",
+        node_path="Main.Topic.Core",
+        decl_name="result",
+        revision=1,
+    )
+
+    assert not missing.ok
+    assert missing.issues[0].kind == "read_failed"
+
+
+def test_release_decl_availability_lookup_distinguishes_missing_entry(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime = make_runtime()
+    payload = DeclAvailabilityIndex(entries=[]).model_dump_json()
+    monkeypatch.setattr(
+        runtime.repo_workspace.git_release,
+        "read_release_file",
+        lambda *args, **kwargs: runtime.foundation.ok(payload),
     )
 
     loaded = runtime.repo_workspace.release.lookup_decl_availability(
@@ -654,6 +700,91 @@ def test_adapter_release_availability_index_reads_flat_main_catalog(
         ("Main", "PublicResult", True),
         ("Main", "Support", False),
     ]
+
+
+def test_adapter_stable_public_resolution_uses_release_availability_sidecar(
+    tmp_path: Path,
+) -> None:
+    from lean_constellation.domain.interface import DeclInterface, DeclKind
+    from tests.unit.services.adapter.test_adapter_service import (
+        _finalize_theorem,
+        _service,
+    )
+
+    provider_root = tmp_path / "Provider"
+    service = _service(
+        provider_root,
+        interfaces=[
+            DeclInterface(
+                name="main_result",
+                kind=DeclKind.THEOREM,
+                summary="Public theorem.",
+            )
+        ],
+    )
+    runtime = service.runtime
+    assert runtime.node.interface.sync_protected_root_interfaces_from_preparation_input(
+        provider_root
+    ).ok
+    _finalize_theorem(service, provider_root)
+    assert service.bind_adapter_interface(
+        provider_root,
+        interface_name="main_result",
+        decl_name="main_result",
+        binding_summary="Expose the public theorem.",
+    ).ok
+    assert service.sync_adapter_public_exports(provider_root).ok
+    assert service.refresh_adapter_projection(provider_root).ok
+    release = publish_adapter_provider_release(
+        runtime,
+        provider_root,
+        release_id="adapter_r1",
+    )
+    current = runtime.decl_graph.get_decl_revision(
+        provider_root,
+        node_path="Main",
+        name="main_result",
+        revision=1,
+    )
+    assert current.ok and current.value is not None, current.issues
+    current.value.state = DeclState.DECLARED
+    assert runtime.foundation.store.write_json_atomic(
+        runtime.decl_graph.graph_store.revision_path(
+            provider_root,
+            node_path="Main",
+            decl_name="main_result",
+            revision=1,
+        ),
+        current.value,
+        mode=WriteMode.UPDATE_EXISTING,
+    ).ok
+    consumer_root = tmp_path / "Consumer"
+    consumer_root.mkdir()
+    ref = DeclRef(
+        repo="Provider",
+        node="Main",
+        name="main_result",
+        revision=1,
+    )
+
+    declared = runtime.decl_graph.ref_compatibility.resolve_public_decl_refs_batch(
+        consumer_root,
+        refs=[ref],
+        required_availability=ProofAvailability.DECLARED,
+    )
+    proved = runtime.decl_graph.ref_compatibility.resolve_public_decl_refs_batch(
+        consumer_root,
+        refs=[ref],
+        required_availability=ProofAvailability.PROVED,
+    )
+
+    assert release.release_id == "adapter_r1"
+    assert declared.ok and declared.value is not None
+    assert proved.ok and proved.value is not None
+    assert declared.value[0].compatible is True
+    assert proved.value[0].compatible is True
+    assert declared.value[0].current_state == DeclState.PROVED.value
+    assert proved.value[0].current_state == DeclState.PROVED.value
 
 
 def test_release_lineage_cycle_is_rejected_on_read(tmp_path: Path) -> None:

@@ -8,8 +8,16 @@ from typing import TYPE_CHECKING, Callable, TypeAlias, TypeVar, cast
 
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.domain.refs import DeclRef
-from lean_constellation.domain.repo import ProofAvailability, RepoFormat
-from lean_constellation.domain.repo_release import RepoRelease, ResolvedDeclRefView
+from lean_constellation.domain.repo import (
+    ProofAvailability,
+    RepoFormat,
+    proof_availability_satisfies,
+)
+from lean_constellation.domain.repo_release import (
+    DeclAvailabilityEntry,
+    RepoRelease,
+    ResolvedDeclRefView,
+)
 from lean_constellation.services.decl_graph.declared_api import DeclaredApiFingerprintComponent
 from lean_constellation.services.decl_graph.availability_policy import required_state_for_availability
 from lean_constellation.services.decl_graph.models import DeclLifecycle, DeclRevisionStatus, DeclState
@@ -125,6 +133,7 @@ class DeclRefCompatibilityComponent:
         ref: DeclRef,
         required_availability: ProofAvailability,
         target: DeclRefTarget | None = None,
+        enforce_mutable_availability: bool = True,
     ) -> ServiceResult[ResolvedDeclRefView]:
         repo_root = Path(repo_root)
         target = target or CurrentContractHeads()
@@ -179,16 +188,6 @@ class DeclRefCompatibilityComponent:
             return self.runtime.foundation.fail(resolved_revision.issues)
         if resolved_revision.value is None:
             return self.runtime.foundation.ok(self._unresolved(ref, "target_missing"))
-        current = self._decl(
-            context,
-            target_repo,
-            node_path=ref.node,
-            name=ref.name,
-        )
-        if not current.ok or current.value is None:
-            return self.runtime.foundation.ok(self._unresolved(ref, "target_missing"))
-        if current.value.lifecycle != DeclLifecycle.ACTIVE:
-            return self.runtime.foundation.ok(self._unresolved(ref, "target_deleted"))
         resolved = self._decl_revision(
             context,
             target_repo,
@@ -228,17 +227,31 @@ class DeclRefCompatibilityComponent:
                 return self.runtime.foundation.ok(self._unresolved(ref, "identity_changed"))
             if anchor_fp.value.sha256 != target_fp.value.sha256:
                 return self.runtime.foundation.ok(self._unresolved(ref, "declared_api_changed"))
-        floor = required_state_for_availability(current.value.kind, required_availability)
-        if _STATE_RANK[resolved.value.state] < _STATE_RANK[floor]:
-            return self.runtime.foundation.ok(
-                ResolvedDeclRefView(
-                    anchor=ref,
-                    resolved_revision=resolved_revision.value,
-                    compatible=False,
-                    current_state=resolved.value.state.value,
-                    reason="state_too_low",
-                )
+        if enforce_mutable_availability:
+            current = self._decl(
+                context,
+                target_repo,
+                node_path=ref.node,
+                name=ref.name,
             )
+            if not current.ok or current.value is None:
+                return self.runtime.foundation.ok(self._unresolved(ref, "target_missing"))
+            if current.value.lifecycle != DeclLifecycle.ACTIVE:
+                return self.runtime.foundation.ok(self._unresolved(ref, "target_deleted"))
+            floor = required_state_for_availability(
+                current.value.kind,
+                required_availability,
+            )
+            if _STATE_RANK[resolved.value.state] < _STATE_RANK[floor]:
+                return self.runtime.foundation.ok(
+                    ResolvedDeclRefView(
+                        anchor=ref,
+                        resolved_revision=resolved_revision.value,
+                        compatible=False,
+                        current_state=resolved.value.state.value,
+                        reason="state_too_low",
+                    )
+                )
         return self.runtime.foundation.ok(
             ResolvedDeclRefView(
                 anchor=ref,
@@ -664,12 +677,76 @@ class DeclRefCompatibilityComponent:
                 required_availability=required_availability,
             )
         assert target is not None
-        return self._resolve_decl_ref(
+        identity = self._resolve_decl_ref(
             context,
             provider_repo_root,
             ref=ref,
             required_availability=required_availability,
             target=target,
+            enforce_mutable_availability=False,
+        )
+        if not identity.ok or identity.value is None:
+            return self.runtime.foundation.fail(identity.issues)
+        if not identity.value.compatible or identity.value.resolved_revision is None:
+            return identity
+        availability = self._release_decl_availability(
+            context,
+            provider_repo_root,
+            release_id=target.release_id,
+            ref=ref,
+            resolved_revision=identity.value.resolved_revision,
+        )
+        if not availability.ok:
+            return self.runtime.foundation.fail(availability.issues)
+        if availability.value is None:
+            return self.runtime.foundation.ok(
+                ResolvedDeclRefView(
+                    anchor=ref,
+                    resolved_revision=identity.value.resolved_revision,
+                    compatible=False,
+                    reason="provider_release_decl_availability_missing",
+                )
+            )
+        entry = availability.value
+        compatible = proof_availability_satisfies(
+            entry.availability,
+            required_availability,
+        )
+        return self.runtime.foundation.ok(
+            identity.value.model_copy(
+                update={
+                    "compatible": compatible,
+                    "current_state": entry.decl_state,
+                    "reason": identity.value.reason if compatible else "state_too_low",
+                }
+            )
+        )
+
+    def _release_decl_availability(
+        self,
+        context: _DeclRefResolutionContext,
+        provider_repo_root: Path,
+        *,
+        release_id: str,
+        ref: DeclRef,
+        resolved_revision: int,
+    ) -> ServiceResult[DeclAvailabilityEntry | None]:
+        return context.get(
+            (
+                "release_decl_availability",
+                provider_repo_root,
+                release_id,
+                ref.node,
+                ref.name,
+                resolved_revision,
+            ),
+            lambda: self.runtime.repo_workspace.release.lookup_decl_availability(
+                provider_repo_root,
+                release_id=release_id,
+                node_path=ref.node,
+                decl_name=ref.name,
+                revision=resolved_revision,
+            ),
         )
 
     def _target_revision(

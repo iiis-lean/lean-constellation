@@ -77,13 +77,14 @@ class NodeReleaseGuard:
         decls = self.runtime.decl_graph.list_decls(repo_root, node_path=node_path)
         if not decls.ok or decls.value is None:
             return self.runtime.foundation.fail(decls.issues)
-        proof_availability = ProofAvailability.PROVED
         config = self.runtime.repo_workspace.metadata.get_repo_config(repo_root)
-        if config.ok and config.value is not None:
-            proof_availability = proof_availability_for_completion_mode(
-                config.value.config.completion_mode
-            )
+        if not config.ok or config.value is None:
+            return self.runtime.foundation.fail(config.issues)
+        proof_availability = proof_availability_for_completion_mode(
+            config.value.config.completion_mode
+        )
         head: dict[str, int] = {}
+        external_proof_dep_positions: list[tuple[str, RepoDeclDep]] = []
         for decl in decls.value:
             if decl.lifecycle != DeclLifecycle.ACTIVE:
                 continue
@@ -130,25 +131,69 @@ class NodeReleaseGuard:
             )
             if not guarded.ok:
                 return self.runtime.foundation.fail(guarded.issues)
-            for section, deps, availability in (
-                ("statement", revision.value.statement.deps, ProofAvailability.DECLARED),
-                ("proof", revision.value.proof.deps if revision.value.proof else [], proof_availability),
-            ):
-                for dep in deps:
-                    if not isinstance(dep, RepoDeclDep):
-                        continue
+            for dep in revision.value.statement.deps:
+                if not isinstance(dep, RepoDeclDep):
+                    continue
+                valid = self._validate_current_dep(
+                    repo_root,
+                    owner_node=node_path,
+                    owner_decl=decl.name,
+                    section="statement",
+                    dep=dep,
+                    required_availability=ProofAvailability.DECLARED,
+                    operation_context=release_audit_context.decl_ref_context,
+                )
+                if not valid.ok:
+                    return self.runtime.foundation.fail(valid.issues)
+            for dep in revision.value.proof.deps if revision.value.proof else []:
+                if not isinstance(dep, RepoDeclDep):
+                    continue
+                if dep.ref.repo is None:
                     valid = self._validate_current_dep(
                         repo_root,
                         owner_node=node_path,
                         owner_decl=decl.name,
-                        section=section,
+                        section="proof",
                         dep=dep,
-                        required_availability=availability,
+                        required_availability=proof_availability,
                         operation_context=release_audit_context.decl_ref_context,
                     )
                     if not valid.ok:
                         return self.runtime.foundation.fail(valid.issues)
+                    continue
+                external_proof_dep_positions.append((decl.name, dep))
             head[decl.name] = decl.current_revision
+        checked_proof_deps = self.runtime.decl_graph.check_decl_refs_proof_policy_batch(
+            repo_root,
+            refs=[dep.ref for _owner_decl, dep in external_proof_dep_positions],
+            fallback_node_path=node_path,
+            local_target=proof_availability,
+            operation_context=release_audit_context.decl_ref_context,
+        )
+        if not checked_proof_deps.ok or checked_proof_deps.value is None:
+            return self.runtime.foundation.fail(checked_proof_deps.issues)
+        for (owner_decl, dep), report in zip(
+            external_proof_dep_positions,
+            checked_proof_deps.value,
+            strict=True,
+        ):
+            if not report.ready:
+                object_ref = (
+                    f"{node_path}:{owner_decl}:proof->{dep.ref.repo or ''}:"
+                    f"{dep.ref.node}:{dep.ref.name}@{dep.ref.revision}"
+                )
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "content_head_proof_dependency_invalid",
+                        "Proof dependency is unavailable or incompatible.",
+                        object_ref=object_ref,
+                        current=(
+                            report.blocker.reason.value
+                            if report.blocker is not None
+                            else report.summary
+                        ),
+                    )
+                )
         return self.runtime.foundation.ok(dict(sorted(head.items())))
 
     def _validate_current_dep(

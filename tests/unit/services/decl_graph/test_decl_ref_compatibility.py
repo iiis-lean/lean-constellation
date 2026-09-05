@@ -3,6 +3,7 @@ from pathlib import Path
 
 from lean_constellation.domain.refs import DeclRef
 from lean_constellation.domain.repo import ProofAvailability
+from lean_constellation.domain.repo_release import DeclAvailabilityIndex
 from lean_constellation.services.decl_graph import DeclState, RepoReleaseHeads
 from lean_constellation.services.foundation import WriteMode
 from tests.unit.services.repo_workspace.test_repo_release import (
@@ -12,6 +13,7 @@ from tests.unit.services.repo_workspace.test_repo_release import (
     _release,
     _write_decl,
 )
+from tests.unit_services_helpers import publish_native_provider_release
 
 
 def _dumps(result) -> list[dict]:
@@ -31,6 +33,62 @@ def _set_active_contract_head(runtime, repo_root: Path, *, node_path: str, name:
     assert runtime.foundation.store.write_json_atomic(
         path, current.value.contract, mode=WriteMode.UPDATE_EXISTING
     ).ok
+
+
+def _set_revision_state(
+    runtime,
+    repo_root: Path,
+    *,
+    state: DeclState,
+) -> None:
+    revision = runtime.decl_graph.get_decl_revision(
+        repo_root,
+        node_path="Main.Results",
+        name="PublicResult",
+        revision=1,
+    )
+    assert revision.ok and revision.value is not None
+    revision.value.state = state
+    assert runtime.foundation.store.write_json_atomic(
+        runtime.decl_graph.graph_store.revision_path(
+            repo_root,
+            node_path="Main.Results",
+            decl_name="PublicResult",
+            revision=1,
+        ),
+        revision.value,
+        mode=WriteMode.UPDATE_EXISTING,
+    ).ok
+
+
+def _prepare_release_state_drift(
+    tmp_path: Path,
+    monkeypatch,
+    *,
+    released_state: DeclState,
+    mutable_state: DeclState,
+):
+    provider_root = tmp_path / "Provider"
+    runtime, _versions = _prepare_release_repo(provider_root)
+    _set_revision_state(runtime, provider_root, state=released_state)
+    publish_native_provider_release(
+        runtime,
+        provider_root,
+        release_id="provider_r1",
+    )
+    stable = runtime.repo_workspace.provider_availability.check_provider_available(
+        provider_root
+    )
+    assert stable.ok and stable.value is not None and stable.value.passed
+    _set_revision_state(runtime, provider_root, state=mutable_state)
+    monkeypatch.setattr(
+        runtime.repo_workspace.provider_availability,
+        "check_provider_available",
+        lambda _repo_root: stable,
+    )
+    consumer_root = tmp_path / "Consumer"
+    consumer_root.mkdir()
+    return runtime, consumer_root
 
 
 def test_anchor_resolves_from_active_contract_head_not_working_decl_revision(tmp_path: Path) -> None:
@@ -348,6 +406,92 @@ def test_external_public_batch_resolves_provider_boundary_once(
         release=2,
         boundary=1,
     )
+
+
+def test_public_ref_does_not_upgrade_release_availability_from_mutable_state(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime, consumer_root = _prepare_release_state_drift(
+        tmp_path,
+        monkeypatch,
+        released_state=DeclState.DECLARED,
+        mutable_state=DeclState.PROVED,
+    )
+
+    resolved = runtime.decl_graph.ref_compatibility.resolve_public_decl_ref(
+        consumer_root,
+        ref=DeclRef(
+            repo="Provider",
+            node="Main.Results",
+            name="PublicResult",
+            revision=1,
+        ),
+        required_availability=ProofAvailability.PROVED,
+    )
+
+    assert resolved.ok and resolved.value is not None
+    assert resolved.value.compatible is False
+    assert resolved.value.current_state == DeclState.DECLARED.value
+    assert resolved.value.reason == "state_too_low"
+
+
+def test_public_ref_does_not_downgrade_valid_release_from_mutable_state(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime, consumer_root = _prepare_release_state_drift(
+        tmp_path,
+        monkeypatch,
+        released_state=DeclState.PROVED,
+        mutable_state=DeclState.DECLARED,
+    )
+
+    resolved = runtime.decl_graph.ref_compatibility.resolve_public_decl_ref(
+        consumer_root,
+        ref=DeclRef(
+            repo="Provider",
+            node="Main.Results",
+            name="PublicResult",
+            revision=1,
+        ),
+        required_availability=ProofAvailability.PROVED,
+    )
+
+    assert resolved.ok and resolved.value is not None
+    assert resolved.value.compatible is True
+    assert resolved.value.current_state == DeclState.PROVED.value
+
+
+def test_public_ref_requires_exact_exported_release_availability_entry(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime, _provider_root = _prepare_native_provider(tmp_path)
+    consumer_root = tmp_path / "Consumer"
+    consumer_root.mkdir()
+    monkeypatch.setattr(
+        runtime.repo_workspace.release,
+        "get_decl_availability_index",
+        lambda *_args, **_kwargs: runtime.foundation.ok(
+            DeclAvailabilityIndex(entries=[])
+        ),
+    )
+
+    resolved = runtime.decl_graph.ref_compatibility.resolve_public_decl_ref(
+        consumer_root,
+        ref=DeclRef(
+            repo="Provider",
+            node="Main.Results",
+            name="PublicResult",
+            revision=1,
+        ),
+        required_availability=ProofAvailability.DECLARED,
+    )
+
+    assert resolved.ok and resolved.value is not None
+    assert resolved.value.compatible is False
+    assert resolved.value.reason == "provider_release_decl_availability_missing"
 
 
 def test_batch_preserves_single_invalid_repo_typed_issue(tmp_path: Path) -> None:

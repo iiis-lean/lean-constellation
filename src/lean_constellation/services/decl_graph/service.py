@@ -2204,6 +2204,25 @@ class DeclGraphService:
             round_overlay=round_overlay,
         )
 
+    def check_decl_refs_proof_policy_batch(
+        self,
+        consumer_repo_root: Path,
+        *,
+        refs: Sequence[DeclRef],
+        fallback_node_path: str,
+        local_target: ProofAvailability,
+        provider_target_override: ProofAvailability | None = None,
+        operation_context: object | None = None,
+    ) -> ServiceResult[list[DeclReadinessReport]]:
+        return self.readiness.check_decl_refs_proof_policy_batch(
+            consumer_repo_root,
+            refs=refs,
+            fallback_node_path=fallback_node_path,
+            local_target=local_target,
+            provider_target_override=provider_target_override,
+            operation_context=operation_context,
+        )
+
     def build_release_decl_availability_index(
         self,
         repo_root: Path,

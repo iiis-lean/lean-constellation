@@ -10,7 +10,6 @@ from lean_constellation.domain.refs import DeclRef
 from lean_constellation.domain.repo import (
     ProofAvailability,
     proof_availability_for_completion_mode,
-    proof_availability_satisfies,
     RepoFormat,
 )
 from lean_constellation.domain.repo_release import (
@@ -63,6 +62,9 @@ class _ReadinessKey:
 @dataclass
 class _ReadinessEvaluationContext:
     decl_ref_context: object
+    provider_targets: dict[str, ServiceResult[ProofAvailability]] = field(
+        default_factory=dict
+    )
     reports: dict[_ReadinessKey, DeclReadinessReport] = field(default_factory=dict)
     active: set[_ReadinessKey] = field(default_factory=set)
     current: dict[
@@ -78,7 +80,7 @@ class _ResolvedReadinessDependency:
     node_path: str
     required_availability: ProofAvailability
     revision: int
-    release_id: str | None = None
+    stable_public: bool = False
 
 
 class DeclReadinessComponent:
@@ -144,6 +146,9 @@ class DeclReadinessComponent:
     ) -> ServiceResult[list[DeclReadinessReport]]:
         """Evaluate multiple roots with one exact-state dependency traversal."""
 
+        override = self._validate_provider_target_override(provider_target_override)
+        if not override.ok:
+            return self.runtime.foundation.fail(override.issues)
         context = _ReadinessEvaluationContext(
             decl_ref_context=self.runtime.decl_graph.ref_compatibility.create_operation_context()
         )
@@ -162,6 +167,150 @@ class DeclReadinessComponent:
                 return self.runtime.foundation.fail(report.issues)
             reports.append(report.value)
         return self.runtime.foundation.ok(reports)
+
+    def check_decl_refs_proof_policy_batch(
+        self,
+        consumer_repo_root: Path,
+        *,
+        refs: Sequence[DeclRef],
+        fallback_node_path: str,
+        local_target: ProofAvailability,
+        provider_target_override: ProofAvailability | None = None,
+        operation_context: object | None = None,
+    ) -> ServiceResult[list[DeclReadinessReport]]:
+        """Check ordered local and stable external declaration references."""
+
+        override = self._validate_provider_target_override(provider_target_override)
+        if not override.ok:
+            return self.runtime.foundation.fail(override.issues)
+        context = _ReadinessEvaluationContext(
+            decl_ref_context=(
+                operation_context
+                or self.runtime.decl_graph.ref_compatibility.create_operation_context()
+            )
+        )
+        consumer_repo_root = Path(consumer_repo_root)
+        reports: list[DeclReadinessReport | None] = [None] * len(refs)
+        local_groups: dict[ProofAvailability, list[tuple[int, DeclRef]]] = {}
+        external_groups: dict[
+            tuple[str, ProofAvailability],
+            list[tuple[int, DeclRef]],
+        ] = {}
+        for index, ref in enumerate(refs):
+            if ref.repo is None:
+                node_path = (
+                    fallback_node_path
+                    if ref.node == "Main" and fallback_node_path != "Main"
+                    else ref.node
+                )
+                local_groups.setdefault(local_target, []).append(
+                    (index, ref.model_copy(update={"node": node_path}))
+                )
+                continue
+            target = self._provider_target_for_ref(
+                consumer_repo_root,
+                ref=ref,
+                provider_target_override=provider_target_override,
+                context=context,
+            )
+            if not target.ok or target.value is None:
+                return self.runtime.foundation.fail(target.issues)
+            provider_root, required_availability = target.value
+            external_groups.setdefault(
+                (str(provider_root.resolve()), required_availability),
+                [],
+            ).append((index, ref))
+
+        for required_availability, members in local_groups.items():
+            compatible = self.runtime.decl_graph.ref_compatibility.resolve_decl_refs_batch(
+                consumer_repo_root,
+                refs=[ref for _index, ref in members],
+                required_availability=required_availability,
+                operation_context=context.decl_ref_context,
+            )
+            if not compatible.ok or compatible.value is None:
+                return self.runtime.foundation.fail(compatible.issues)
+            for (index, ref), resolution in zip(
+                members,
+                compatible.value,
+                strict=True,
+            ):
+                if not resolution.compatible:
+                    reports[index] = self._not_ready(
+                        node_path=ref.node,
+                        decl_name=ref.name,
+                        revision=resolution.resolved_revision or ref.revision,
+                        reason=DeclReadinessReason.DEPENDENCY_NOT_READY,
+                        required_availability=required_availability,
+                        blocking_decl=ref,
+                        message=(
+                            "Declaration dependency anchor is not compatible with "
+                            "the current contract head."
+                        ),
+                    )
+                    continue
+                checked = self._check_decl_proof_policy_satisfied(
+                    consumer_repo_root,
+                    node_path=ref.node,
+                    decl_name=ref.name,
+                    target_proof_availability=required_availability,
+                    provider_target_override=provider_target_override,
+                    context=context,
+                )
+                if not checked.ok or checked.value is None:
+                    return self.runtime.foundation.fail(checked.issues)
+                reports[index] = checked.value
+
+        for (_provider_root, required_availability), members in external_groups.items():
+            compatible = self.runtime.decl_graph.ref_compatibility.resolve_public_decl_refs_batch(
+                consumer_repo_root,
+                refs=[ref for _index, ref in members],
+                required_availability=required_availability,
+                operation_context=context.decl_ref_context,
+            )
+            if not compatible.ok or compatible.value is None:
+                return self.runtime.foundation.fail(compatible.issues)
+            for (index, ref), resolution in zip(
+                members,
+                compatible.value,
+                strict=True,
+            ):
+                if not resolution.compatible:
+                    reports[index] = self._not_ready(
+                        node_path=ref.node,
+                        decl_name=ref.name,
+                        revision=resolution.resolved_revision or ref.revision,
+                        reason=DeclReadinessReason.DEPENDENCY_NOT_READY,
+                        required_availability=required_availability,
+                        blocking_decl=ref,
+                        current_state=(
+                            DeclState(resolution.current_state)
+                            if resolution.current_state
+                            in {state.value for state in DeclState}
+                            else None
+                        ),
+                        message=(
+                            f"{ref.repo}:{ref.node}:{ref.name} does not satisfy "
+                            f"{required_availability.value} availability."
+                        ),
+                    )
+                    continue
+                reports[index] = DeclReadinessReport(
+                    node_path=ref.node,
+                    decl_name=ref.name,
+                    revision=resolution.resolved_revision or ref.revision,
+                    required_availability=required_availability,
+                    ready=True,
+                    summary=(
+                        f"{ref.repo}:{ref.node}:{ref.name}@"
+                        f"{resolution.resolved_revision or ref.revision} is available "
+                        f"as {required_availability.value}."
+                    ),
+                )
+        assert all(report is not None for report in reports)
+        return self.runtime.foundation.ok(
+            [report for report in reports if report is not None]
+        )
 
     def build_release_decl_availability_index(
         self,
@@ -895,7 +1044,7 @@ class DeclReadinessComponent:
                 fallback_node_path=node_path,
                 local_target=dep_target,
                 provider_target_override=provider_target_override,
-                operation_context=context.decl_ref_context,
+                context=context,
             )
             if not resolved_dep.ok or resolved_dep.value is None:
                 label = self._decl_ref_label(dep_ref, fallback_node_path=node_path)
@@ -919,23 +1068,8 @@ class DeclReadinessComponent:
                     )
                 )
             resolved = resolved_dep.value
-            if resolved.release_id is not None:
-                indexed = self.runtime.repo_workspace.release.lookup_decl_availability(
-                    resolved.repo_root,
-                    release_id=resolved.release_id,
-                    node_path=resolved.node_path,
-                    decl_name=dep_ref.name,
-                    revision=resolved.revision,
-                )
-                if (
-                    indexed.ok
-                    and indexed.value is not None
-                    and proof_availability_satisfies(
-                        indexed.value.availability,
-                        resolved.required_availability,
-                    )
-                ):
-                    continue
+            if resolved.stable_public:
+                continue
             dep = self._check_decl_proof_policy_satisfied(
                 resolved.repo_root,
                 node_path=resolved.node_path,
@@ -989,28 +1123,25 @@ class DeclReadinessComponent:
         ref: DeclRef,
         fallback_node_path: str,
         local_target: ProofAvailability,
-        operation_context: object,
+        context: _ReadinessEvaluationContext,
         provider_target_override: ProofAvailability | None = None,
     ) -> ServiceResult[_ResolvedReadinessDependency]:
         if ref.repo:
-            try:
-                provider_key = self.runtime.foundation.layout.ensure_safe_key(ref.repo)
-            except ValueError as exc:
-                return self.runtime.foundation.fail(
-                    self.runtime.foundation.issue("dependency_provider_invalid", str(exc), object_ref=ref.repo)
-                )
-            provider_root = Path(repo_root).parent / provider_key
-            config = self.runtime.repo_workspace.metadata.get_repo_config(provider_root)
-            if not config.ok or config.value is None:
-                return self.runtime.foundation.fail(config.issues)
-            effective_target = provider_target_override or proof_availability_for_completion_mode(
-                config.value.config.completion_mode
+            provider_target = self._provider_target_for_ref(
+                Path(repo_root),
+                ref=ref,
+                provider_target_override=provider_target_override,
+                context=context,
             )
+            if not provider_target.ok or provider_target.value is None:
+                return self.runtime.foundation.fail(provider_target.issues)
+            provider_root, effective_target = provider_target.value
+            provider_key = ref.repo
             compatible_batch = self.runtime.decl_graph.ref_compatibility.resolve_public_decl_refs_batch(
                 repo_root,
                 refs=[ref],
                 required_availability=effective_target,
-                operation_context=operation_context,
+                operation_context=context.decl_ref_context,
             )
             if not compatible_batch.ok or compatible_batch.value is None:
                 return self.runtime.foundation.fail(compatible_batch.issues)
@@ -1038,22 +1169,13 @@ class DeclReadinessComponent:
                         current=compatible.reason,
                     )
                 )
-            repo_format = self.runtime.repo_workspace.metadata.get_repo_format(provider_root)
-            if not repo_format.ok or repo_format.value is None:
-                return self.runtime.foundation.fail(repo_format.issues)
-            release_id = None
-            if repo_format.value.repo_format == RepoFormat.NATIVE:
-                publication = self.runtime.repo_workspace.metadata.get_repo_publication(provider_root)
-                if not publication.ok or publication.value is None:
-                    return self.runtime.foundation.fail(publication.issues)
-                release_id = publication.value.publication.latest_release_id
             return self.runtime.foundation.ok(
                 _ResolvedReadinessDependency(
                     repo_root=provider_root,
                     node_path=ref.node,
                     required_availability=effective_target,
                     revision=compatible.resolved_revision or ref.revision,
-                    release_id=release_id,
+                    stable_public=True,
                 )
             )
         dep_node = ref.node
@@ -1089,7 +1211,7 @@ class DeclReadinessComponent:
             repo_root,
             refs=[local_ref],
             required_availability=local_target,
-            operation_context=operation_context,
+            operation_context=context.decl_ref_context,
         )
         if not compatible_batch.ok or compatible_batch.value is None:
             return self.runtime.foundation.fail(compatible_batch.issues)
@@ -1109,6 +1231,63 @@ class DeclReadinessComponent:
                 node_path=dep_node,
                 required_availability=local_target,
                 revision=compatible.resolved_revision or ref.revision,
+            )
+        )
+
+    def _provider_target_for_ref(
+        self,
+        consumer_repo_root: Path,
+        *,
+        ref: DeclRef,
+        provider_target_override: ProofAvailability | None,
+        context: _ReadinessEvaluationContext,
+    ) -> ServiceResult[tuple[Path, ProofAvailability]]:
+        if ref.repo is None:
+            return self.runtime.foundation.ok(
+                (Path(consumer_repo_root), ProofAvailability.PROVED)
+            )
+        try:
+            provider_key = self.runtime.foundation.layout.ensure_safe_key(ref.repo)
+        except ValueError as exc:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "dependency_provider_invalid",
+                    str(exc),
+                    object_ref=ref.repo,
+                )
+            )
+        provider_root = Path(consumer_repo_root).parent / provider_key
+        cache_key = str(provider_root.resolve())
+        target = context.provider_targets.get(cache_key)
+        if target is None:
+            config = self.runtime.repo_workspace.metadata.get_repo_config(provider_root)
+            if not config.ok or config.value is None:
+                target = self.runtime.foundation.fail(config.issues)
+            else:
+                target = self.runtime.foundation.ok(
+                    proof_availability_for_completion_mode(
+                        config.value.config.completion_mode
+                    )
+                )
+            context.provider_targets[cache_key] = target
+        if not target.ok or target.value is None:
+            return self.runtime.foundation.fail(target.issues)
+        return self.runtime.foundation.ok(
+            (provider_root, provider_target_override or target.value)
+        )
+
+    def _validate_provider_target_override(
+        self,
+        provider_target_override: ProofAvailability | None,
+    ) -> ServiceResult[None]:
+        if provider_target_override in {None, ProofAvailability.PROVED}:
+            return self.runtime.foundation.ok(None)
+        return self.runtime.foundation.fail(
+            self.runtime.foundation.issue(
+                "provider_target_override_invalid",
+                "Provider target override may only require proved availability.",
+                current=provider_target_override.value,
+                expected=ProofAvailability.PROVED.value,
             )
         )
 

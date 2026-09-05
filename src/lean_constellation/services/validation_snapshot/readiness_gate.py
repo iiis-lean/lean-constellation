@@ -19,7 +19,6 @@ from lean_constellation.domain.repo import (
 )
 from lean_constellation.domain.refs import DeclRef
 from lean_constellation.services.decl_graph.availability_policy import is_theorem_like
-from lean_constellation.services.decl_graph.models import DeclReadinessReport
 from lean_constellation.services.foundation.module_layout import local_module_name, native_project_name
 from lean_constellation.services.node import ContractVersionStatus, NodeKind, NodeService
 from lean_constellation.services.foundation import GateReport, ServiceResult
@@ -366,7 +365,7 @@ class ReadinessGateComponent:
             for ref, field in decl_ref_positions
             if ref.repo is not None or ref.node != node_path
         ]
-        checked_refs = self._check_decl_refs_proof_policy_batch(
+        checked_refs = self.runtime.decl_graph.check_decl_refs_proof_policy_batch(
             repo_root,
             refs=[ref for ref, _field in cross_positions],
             fallback_node_path=node_path,
@@ -388,7 +387,7 @@ class ReadinessGateComponent:
                         object_ref=f"{ref.repo + ':' if ref.repo else ''}{ref.node}:{ref.name}",
                         field=field,
                         details={
-                            "target_proof_availability": provider_target.value,
+                            "target_proof_availability": checked.required_availability.value,
                             "summary": checked.summary,
                         },
                     )
@@ -551,143 +550,6 @@ class ReadinessGateComponent:
             ),
             warnings=contract.issues,
         )
-
-    def _check_decl_refs_proof_policy_batch(
-        self,
-        repo_root: Path,
-        *,
-        refs: list[DeclRef],
-        fallback_node_path: str,
-        local_target: ProofAvailability,
-    ) -> ServiceResult[list[DeclReadinessReport]]:
-        repo_root = Path(repo_root)
-        external_targets: dict[Path, ServiceResult[ProofAvailability]] = {}
-        plans = [
-            self._plan_decl_ref_readiness(
-                repo_root,
-                ref=ref,
-                fallback_node_path=fallback_node_path,
-                local_target=local_target,
-                external_targets=external_targets,
-            )
-            for ref in refs
-        ]
-        if any(not plan.ok or plan.value is None for plan in plans):
-            return self._replay_decl_refs_proof_policy_batch(
-                repo_root,
-                refs=refs,
-                fallback_node_path=fallback_node_path,
-                local_target=local_target,
-                external_targets=external_targets,
-            )
-        grouped: dict[
-            tuple[Path, ProofAvailability],
-            list[tuple[int, str, str]],
-        ] = {}
-        for index, plan in enumerate(plans):
-            assert plan.value is not None
-            provider_root, node_path, decl_name, target = plan.value
-            grouped.setdefault((provider_root, target), []).append(
-                (index, node_path, decl_name)
-            )
-        reports: list[DeclReadinessReport | None] = [None] * len(refs)
-        for (provider_root, target), members in grouped.items():
-            checked = self.runtime.decl_graph.check_decl_proof_policy_batch(
-                provider_root,
-                roots=[
-                    (node_path, decl_name, target)
-                    for _index, node_path, decl_name in members
-                ],
-            )
-            if not checked.ok or checked.value is None:
-                return self._replay_decl_refs_proof_policy_batch(
-                    repo_root,
-                    refs=refs,
-                    fallback_node_path=fallback_node_path,
-                    local_target=local_target,
-                    external_targets=external_targets,
-                )
-            for (index, _node_path, _decl_name), report in zip(
-                members,
-                checked.value,
-                strict=True,
-            ):
-                reports[index] = report
-        return self.runtime.foundation.ok(
-            [report for report in reports if report is not None]
-        )
-
-    def _plan_decl_ref_readiness(
-        self,
-        repo_root: Path,
-        *,
-        ref: DeclRef,
-        fallback_node_path: str,
-        local_target: ProofAvailability,
-        external_targets: dict[Path, ServiceResult[ProofAvailability]],
-    ) -> ServiceResult[tuple[Path, str, str, ProofAvailability]]:
-        if not ref.repo:
-            return self.runtime.foundation.ok(
-                (repo_root, ref.node or fallback_node_path, ref.name, local_target)
-            )
-        try:
-            provider_key = self.runtime.foundation.layout.ensure_safe_key(ref.repo)
-        except ValueError as exc:
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue(
-                    "dependency_provider_invalid",
-                    str(exc),
-                    object_ref=ref.repo,
-                )
-            )
-        provider_root = repo_root.parent / provider_key
-        target = external_targets.get(provider_root)
-        if target is None:
-            config = self.repo_workspace.metadata.get_repo_config(provider_root)
-            if not config.ok or config.value is None:
-                target = self.runtime.foundation.fail(config.issues)
-            else:
-                target = self.runtime.foundation.ok(
-                    proof_availability_for_completion_mode(
-                        config.value.config.completion_mode
-                    )
-                )
-            external_targets[provider_root] = target
-        if not target.ok or target.value is None:
-            return self.runtime.foundation.fail(target.issues)
-        return self.runtime.foundation.ok(
-            (provider_root, ref.node, ref.name, target.value)
-        )
-
-    def _replay_decl_refs_proof_policy_batch(
-        self,
-        repo_root: Path,
-        *,
-        refs: list[DeclRef],
-        fallback_node_path: str,
-        local_target: ProofAvailability,
-        external_targets: dict[Path, ServiceResult[ProofAvailability]],
-    ) -> ServiceResult[list[DeclReadinessReport]]:
-        reports: list[DeclReadinessReport] = []
-        for ref in refs:
-            plan = self._plan_decl_ref_readiness(
-                repo_root,
-                ref=ref,
-                fallback_node_path=fallback_node_path,
-                local_target=local_target,
-                external_targets=external_targets,
-            )
-            if not plan.ok or plan.value is None:
-                return self.runtime.foundation.fail(plan.issues)
-            provider_root, node_path, decl_name, target = plan.value
-            checked = self.runtime.decl_graph.check_decl_proof_policy_batch(
-                provider_root,
-                roots=[(node_path, decl_name, target)],
-            )
-            if not checked.ok or checked.value is None:
-                return self.runtime.foundation.fail(checked.issues)
-            reports.append(checked.value[0])
-        return self.runtime.foundation.ok(reports)
 
     def _decl_ref_key(self, ref: DeclRef) -> tuple[str | None, str, str]:
         return (ref.repo, ref.node, ref.name)
@@ -1112,7 +974,7 @@ class ReadinessGateComponent:
         exports = self.node.export.list_scope_exports(repo_root, scope_path="Main")
         if not exports.ok or exports.value is None:
             return self.runtime.foundation.fail(exports.issues)
-        checked_exports = self._check_decl_refs_proof_policy_batch(
+        checked_exports = self.runtime.decl_graph.check_decl_refs_proof_policy_batch(
             repo_root,
             refs=[export.ref for export in exports.value],
             fallback_node_path="Main",
@@ -1130,7 +992,7 @@ class ReadinessGateComponent:
                     f"Repo public declaration does not satisfy current proof availability policy: {export.ref.name}",
                     object_ref=f"{export.ref.node}:{export.ref.name}",
                     details={
-                        "target_proof_availability": target.value,
+                        "target_proof_availability": checked.required_availability.value,
                         "summary": checked.summary,
                     },
                 )

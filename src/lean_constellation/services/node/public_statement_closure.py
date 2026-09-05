@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Literal
 from pydantic import Field
 
 from lean_constellation.domain.common import StrictModel, utc_now_iso
-from lean_constellation.domain.repo import proof_availability_for_completion_mode
+from lean_constellation.domain.repo import ProofAvailability
 from lean_constellation.domain.refs import DeclRef
 from lean_constellation.services.decl_graph.models import (
     Decl,
@@ -616,16 +616,18 @@ class PublicStatementClosureComponent:
                     ref,
                     operation_context=operation_context,
                 )
+                if not provider_public.ok or provider_public.value is None:
+                    return self.runtime.foundation.fail(provider_public.issues)
                 external[key] = PublicStatementExternalCheck(
                     ref=ref,
-                    provider_public=provider_public,
+                    provider_public=provider_public.value,
                     summary=(
                         "External provider declaration is public."
-                        if provider_public
+                        if provider_public.value
                         else "External provider declaration is not available through its repository Main boundary."
                     ),
                 )
-                if not provider_public:
+                if not provider_public.value:
                     issues.append(
                         self.runtime.foundation.issue(
                             "public_statement_external_provider_not_public",
@@ -807,15 +809,14 @@ class PublicStatementClosureComponent:
         )
         if not anchors.ok:
             preflight_issues.extend(anchors.issues)
-        config = self.runtime.repo_workspace.metadata.get_repo_config(repo_root)
-        if not config.ok or config.value is None:
-            preflight_issues.extend(config.issues)
         if preflight_issues:
             return self.runtime.foundation.fail(self._unique_issues(preflight_issues))
-        target = proof_availability_for_completion_mode(config.value.config.completion_mode)
         readiness = self.runtime.decl_graph.check_decl_proof_policy_batch(
             repo_root,
-            roots=[(ref.node, ref.name, target) for ref in promoted],
+            roots=[
+                (ref.node, ref.name, ProofAvailability.DECLARED)
+                for ref in promoted
+            ],
         )
         if not readiness.ok or readiness.value is None:
             return self.runtime.foundation.fail(readiness.issues)
@@ -1497,25 +1498,18 @@ class PublicStatementClosureComponent:
         ref: DeclRef,
         *,
         operation_context,
-    ) -> bool:
+    ) -> ServiceResult[bool]:
         if ref.repo is None:
-            return False
-        config = self.runtime.repo_workspace.metadata.get_repo_config(repo_root)
-        if not config.ok or config.value is None:
-            return False
+            return self.runtime.foundation.ok(False)
         resolved = self.runtime.decl_graph.ref_compatibility.resolve_public_decl_refs_batch(
             repo_root,
             refs=[ref],
-            required_availability=proof_availability_for_completion_mode(
-                config.value.config.completion_mode
-            ),
+            required_availability=ProofAvailability.DECLARED,
             operation_context=operation_context,
         )
-        return bool(
-            resolved.ok
-            and resolved.value is not None
-            and resolved.value[0].compatible
-        )
+        if not resolved.ok or resolved.value is None:
+            return self.runtime.foundation.fail(resolved.issues)
+        return self.runtime.foundation.ok(resolved.value[0].compatible)
 
     def _required_export_scopes(
         self,
@@ -1588,15 +1582,10 @@ class PublicStatementClosureComponent:
         *,
         operation_context,
     ):
-        config = self.runtime.repo_workspace.metadata.get_repo_config(repo_root)
-        if not config.ok or config.value is None:
-            return self.runtime.foundation.fail(config.issues)
         resolved = self.runtime.decl_graph.ref_compatibility.resolve_decl_refs_batch(
             repo_root,
             refs=[ref],
-            required_availability=proof_availability_for_completion_mode(
-                config.value.config.completion_mode
-            ),
+            required_availability=ProofAvailability.DECLARED,
             operation_context=operation_context,
         )
         if not resolved.ok or resolved.value is None:

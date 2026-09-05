@@ -82,7 +82,7 @@ class RepoReleaseComponent:
     def __init__(self, runtime: LeanRuntimeServices) -> None:
         self.runtime = runtime
         self._decl_availability_cache: OrderedDict[
-            tuple[str, str], DeclAvailabilityIndex | None
+            tuple[str, str], DeclAvailabilityIndex
         ] = OrderedDict()
         self._decl_availability_cache_size = 16
 
@@ -91,8 +91,8 @@ class RepoReleaseComponent:
         repo_root: Path,
         *,
         release_id: str,
-    ) -> ServiceResult[DeclAvailabilityIndex | None]:
-        """Read an optional Release sidecar; any miss falls back to live recursion."""
+    ) -> ServiceResult[DeclAvailabilityIndex]:
+        """Read the current-schema Release declaration availability sidecar."""
 
         repo_root = Path(repo_root).resolve()
         key = (str(repo_root), release_id)
@@ -109,12 +109,26 @@ class RepoReleaseComponent:
             release_id=release_id,
             relative_path=relative_path,
         )
-        value: DeclAvailabilityIndex | None = None
-        if captured.ok and captured.value is not None:
-            try:
-                value = DeclAvailabilityIndex.model_validate_json(captured.value)
-            except ValueError:
-                value = None
+        if not captured.ok:
+            return self.runtime.foundation.fail(captured.issues)
+        if captured.value is None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "release_decl_availability_missing",
+                    "Release declaration availability sidecar is missing.",
+                    object_ref=f"{repo_root}:{release_id}",
+                )
+            )
+        try:
+            value = DeclAvailabilityIndex.model_validate_json(captured.value)
+        except ValueError as exc:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "release_decl_availability_invalid",
+                    f"Release declaration availability sidecar is invalid: {exc}",
+                    object_ref=f"{repo_root}:{release_id}",
+                )
+            )
         self._decl_availability_cache[key] = value
         while len(self._decl_availability_cache) > self._decl_availability_cache_size:
             self._decl_availability_cache.popitem(last=False)
@@ -131,7 +145,7 @@ class RepoReleaseComponent:
     ) -> ServiceResult[DeclAvailabilityEntry | None]:
         index = self.get_decl_availability_index(repo_root, release_id=release_id)
         if not index.ok or index.value is None:
-            return self.runtime.foundation.ok(None)
+            return self.runtime.foundation.fail(index.issues)
         return self.runtime.foundation.ok(
             next(
                 (
