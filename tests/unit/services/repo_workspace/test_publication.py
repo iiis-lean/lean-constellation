@@ -58,6 +58,38 @@ def test_fixed_2026_09_09_publication_oracle_is_explicit() -> None:
     } == {(5, 3, 2, 1)}
 
 
+def test_schema_4_public_api_reader_defaults_new_structured_sections() -> None:
+    legacy = PublicApiDocument.model_validate(
+        {
+            "schema_version": 4,
+            "repo_key": "Legacy",
+            "completion_mode": "graph_declared",
+            "proof_availability": "declared",
+            "declarations": [
+                {
+                    "name": "LegacyResult",
+                    "revision": 1,
+                    "kind": "theorem",
+                    "node_path": "Main.Results",
+                    "module": "Legacy.Results",
+                    "state": "declared",
+                    "status": "committed",
+                    "formal_code": "theorem LegacyResult : True := by trivial",
+                }
+            ],
+            "summary": "Legacy schema 4 publication.",
+        }
+    )
+
+    assert legacy.schema_version == 4
+    assert legacy.declarations[0].statement.model_dump(mode="json") == {
+        "nl": None,
+        "formal": None,
+        "deps": [],
+    }
+    assert legacy.declarations[0].proof is None
+
+
 def test_managed_gitignore_preserves_user_content_and_is_idempotent(
     tmp_path: Path,
 ) -> None:
