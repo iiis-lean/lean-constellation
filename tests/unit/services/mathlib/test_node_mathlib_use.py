@@ -503,6 +503,7 @@ def test_missing_decl_index_is_rejected_on_add_and_by_validation_gate(tmp_path: 
 
 
 def test_validate_node_mathlib_uses_detects_duplicates_and_rejects_legacy_shapes(tmp_path: Path) -> None:
+    tmp_path = tmp_path / "Repo"
     service = make_runtime().mathlib
     _create_content_node(tmp_path, service)
     assert service.upsert_mathlib_module_entry(tmp_path, module="Mathlib.Data.Finset.Basic").ok

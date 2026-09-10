@@ -245,6 +245,7 @@ def test_task_target_rejects_scope_and_mode_deeper_than_repo(tmp_path: Path) -> 
 
 
 def test_node_contract_current_schema_rejects_missing_task_target(tmp_path: Path) -> None:
+    tmp_path = tmp_path / "Repo"
     _create_topic_content(tmp_path)
     path = _contract_path(tmp_path, "Main.Topic.Core")
     payload = json.loads(path.read_text(encoding="utf-8"))
@@ -306,6 +307,7 @@ def test_commit_content_contract_rolls_back_contract_and_node_pointer_on_replace
 
 
 def test_get_current_contract_reports_missing_node_and_missing_contract_versions(tmp_path: Path) -> None:
+    tmp_path = tmp_path / "Repo"
     component = make_runtime().node.contract
 
     missing_node = component.get_current_contract(tmp_path, node_path="Main.Missing")
@@ -318,6 +320,7 @@ def test_get_current_contract_reports_missing_node_and_missing_contract_versions
 
 
 def test_ensure_open_contract_reuses_existing_open_and_reports_missing_contract(tmp_path: Path) -> None:
+    tmp_path = tmp_path / "Repo"
     _create_topic_content(tmp_path)
     component = make_runtime().node.contract
 
@@ -658,6 +661,7 @@ def test_content_task_admission_rejects_stale_contract_version(tmp_path: Path) -
 
 
 def test_content_task_admission_reports_invalid_dep_shapes(tmp_path: Path) -> None:
+    tmp_path = tmp_path / "Repo"
     _create_topic_content(tmp_path)
     component = make_runtime().node.contract
     contract = _load_contract(tmp_path, "Main.Topic.Core")
