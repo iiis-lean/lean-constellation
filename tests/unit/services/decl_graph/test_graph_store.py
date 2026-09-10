@@ -76,6 +76,7 @@ def test_decl_graph_rejects_scope_node(tmp_path: Path) -> None:
 
 
 def test_decl_graph_reports_corrupt_index_schema(tmp_path: Path) -> None:
+    tmp_path = tmp_path / "Repo"
     _create_content_node(tmp_path)
     runtime = make_runtime()
     ensured = runtime.decl_graph.ensure_decl_graph(tmp_path, node_path="Main.Topic.Core")
@@ -90,6 +91,7 @@ def test_decl_graph_reports_corrupt_index_schema(tmp_path: Path) -> None:
 
 
 def test_rebuild_decl_graph_index_scans_stable_sorted_store(tmp_path: Path) -> None:
+    tmp_path = tmp_path / "Repo"
     _create_content_node(tmp_path)
     runtime = make_runtime()
     ensured = runtime.decl_graph.ensure_decl_graph(tmp_path, node_path="Main.Topic.Core")
@@ -134,6 +136,7 @@ def test_rebuild_decl_graph_index_scans_stable_sorted_store(tmp_path: Path) -> N
 
 
 def test_decl_graph_index_rejects_previous_schema_version_and_removed_fields(tmp_path: Path) -> None:
+    tmp_path = tmp_path / "Repo"
     _create_content_node(tmp_path)
     runtime = make_runtime()
     ensured = runtime.decl_graph.ensure_decl_graph(tmp_path, node_path="Main.Topic.Core")

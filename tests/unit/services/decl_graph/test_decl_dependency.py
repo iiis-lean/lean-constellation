@@ -93,7 +93,7 @@ def _seed_committed_decl(tmp_path: Path, *, round_id: str, name: str, deps: list
     if revision.value.proof is None:
         revision.value.proof = DeclProof()
     revision.value.proof.deps = [
-        RepoDeclDep(ref=DeclRef(node="Main", name=dep, revision=1))
+        RepoDeclDep(ref=DeclRef(node="Main.Topic.Core", name=dep, revision=1))
         for dep in deps or []
     ]
     _write_revision(tmp_path, decl_name=name, revision=revision.value)
@@ -139,12 +139,12 @@ def test_dependency_helpers_split_statement_and_proof_policy_requirements(tmp_pa
     assert decl.ok and decl.value is not None
     assert revision.ok and revision.value is not None
     revision.value.statement.deps = [
-        RepoDeclDep(ref=DeclRef(node="Main", name="StatementDep", revision=1))
+        RepoDeclDep(ref=DeclRef(node="Main.Topic.Core", name="StatementDep", revision=1))
     ]
     revision.value.proof = DeclProof(
         deps=[
-            RepoDeclDep(ref=DeclRef(node="Main", name="ProofDep", revision=1)),
-            RepoDeclDep(ref=DeclRef(node="Main", name="StatementDep", revision=1)),
+            RepoDeclDep(ref=DeclRef(node="Main.Topic.Core", name="ProofDep", revision=1)),
+            RepoDeclDep(ref=DeclRef(node="Main.Topic.Core", name="StatementDep", revision=1)),
         ]
     )
     revision.value.proof.deps.append(
@@ -174,8 +174,8 @@ def test_dependency_helpers_split_statement_and_proof_policy_requirements(tmp_pa
         target_proof_availability=ProofAvailability.PROVED,
     )
     assert [(ref.repo, ref.node, ref.name, required) for ref, required in ref_requirements] == [
-        (None, "Main", "ProofDep", ProofAvailability.PROVED),
-        (None, "Main", "StatementDep", ProofAvailability.PROVED),
+        (None, "Main.Topic.Core", "ProofDep", ProofAvailability.PROVED),
+        (None, "Main.Topic.Core", "StatementDep", ProofAvailability.PROVED),
         ("Provider", "Main.Core", "ExternalDep", ProofAvailability.PROVED),
     ]
 
