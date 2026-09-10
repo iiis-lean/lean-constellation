@@ -852,3 +852,38 @@ def test_closeout_round_resolution_prefers_exact_context_and_validates_lifecycle
     assert exact_with_ambiguous_fallback.ok
     assert not ambiguous_fallback.ok
     assert ambiguous_fallback.issues[0].kind == "current_awaiting_closeout_round_ambiguous"
+
+
+def test_round_creation_and_completion_closeout_share_strategy_lock(
+    tmp_path: Path,
+) -> None:
+    _create_content_node(tmp_path)
+    service = make_runtime().decl_graph
+    node_path = "Main.Topic.Core"
+    strategy = service.ensure_open_strategy(
+        tmp_path,
+        node_path=node_path,
+        objective="Lock boundary strategy.",
+    )
+    assert strategy.ok and strategy.value is not None
+
+    with service.strategy_round._strategy_mutation_locked(
+        tmp_path, node_path=node_path
+    ):
+        drafted = service.create_round_draft(
+            tmp_path,
+            node_path=node_path,
+            strategy_id=strategy.value.strategy_id,
+            objective="Must not race closeout.",
+        )
+        closed = service.close_strategy_for_content_completion(
+            tmp_path,
+            node_path=node_path,
+            contract_version=1,
+            decl_graph_head={},
+        )
+
+    assert not drafted.ok
+    assert drafted.issues[0].kind == "strategy_mutation_lock_busy"
+    assert not closed.ok
+    assert closed.issues[0].kind == "strategy_completion_closeout_lock_busy"

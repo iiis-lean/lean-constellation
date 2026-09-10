@@ -50,6 +50,7 @@ from lean_constellation.services.decl_graph.models import (
     DeclState,
     DeclGraphStrategy,
     StageReviewResultView,
+    StrategyCompletionCloseoutView,
 )
 from lean_constellation.services.decl_graph.review_gate import ReviewGateComponent
 from lean_constellation.services.decl_graph.readiness import DeclReadinessComponent
@@ -569,6 +570,21 @@ class DeclGraphService:
             strategy_id=strategy_id,
             objective=objective,
             execution_constraints=execution_constraints,
+        )
+
+    def close_strategy_for_content_completion(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        contract_version: int,
+        decl_graph_head: dict[str, int],
+    ) -> ServiceResult[StrategyCompletionCloseoutView]:
+        return self.strategy_round.close_strategy_for_content_completion(
+            repo_root,
+            node_path=node_path,
+            contract_version=contract_version,
+            decl_graph_head=decl_graph_head,
         )
 
     def create_round_draft_view(

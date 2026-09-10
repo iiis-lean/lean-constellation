@@ -66,6 +66,7 @@ class DeclGraphViewMapper:
             closed_reason=strategy.closed_reason,
             created_at=strategy.created_at,
             closed_at=strategy.closed_at,
+            completion_closeout=strategy.completion_closeout,
         )
 
     def strategy_agent_view(

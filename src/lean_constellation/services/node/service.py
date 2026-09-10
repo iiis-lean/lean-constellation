@@ -13,6 +13,9 @@ from lean_constellation.domain.refs import DeclRef, SourceRef
 from lean_constellation.domain.repo import RepoCompletionMode, completion_mode_satisfies
 from lean_constellation.services.foundation import FoundationContext, GateReport, MutationSummaryView, ServiceResult
 from lean_constellation.services.foundation.module_layout import local_projection_path
+from lean_constellation.services.decl_graph.models import (
+    StrategyCompletionCloseoutView,
+)
 from lean_constellation.services.node.contract import ContractComponent, ContractVersionStatus, NodeContractView
 from lean_constellation.services.node.contract_fields import ContractMaterialRef
 from lean_constellation.services.node.dependency import (
@@ -84,6 +87,7 @@ class ContentTaskFinalizeView(StrictModel):
     contract_committed: bool = False
     finalized: bool = False
     gate: GateReport | None = None
+    strategy_closeout: StrategyCompletionCloseoutView | None = None
     follow_up_hints: list[str] = Field(default_factory=list)
     summary: str
 
@@ -762,6 +766,21 @@ class NodeService:
         coordinator_summary: str,
     ) -> ServiceResult[ContentTaskFinalizeView]:
         """Record the Coordinator callback summary for a terminal Content node task result."""
+        return self._finalize_content_task_result_locked(
+            repo_root,
+            node_path=node_path,
+            task_result=task_result,
+            coordinator_summary=coordinator_summary,
+        )
+
+    def _finalize_content_task_result_locked(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        task_result: ContentTaskResultView | dict[str, object] | object,
+        coordinator_summary: str,
+    ) -> ServiceResult[ContentTaskFinalizeView]:
 
         if not coordinator_summary or not coordinator_summary.strip():
             return self.runtime.foundation.fail(
@@ -817,6 +836,12 @@ class NodeService:
                 "content_task_finalize_already_committed",
                 summary="Content task result was already finalized for this committed contract version.",
             )
+            strategy_closeout, closeout_issues = self._content_strategy_closeout(
+                repo_root,
+                node_path=node_path,
+                contract=current.value,
+                enabled=parsed_result.value.outcome == ContentTaskOutcome.READY,
+            )
             return self.runtime.foundation.ok(
                 self._content_task_finalize_view(
                     node_path=node_path,
@@ -827,8 +852,10 @@ class NodeService:
                     finalized=True,
                     contract_summary_written=True,
                     contract_committed=True,
+                    strategy_closeout=strategy_closeout,
                     summary="Content task result was already finalized; returned the existing committed contract state.",
-                )
+                ),
+                warnings=closeout_issues,
             )
 
         if parsed_result.value.outcome == ContentTaskOutcome.READY:
@@ -851,6 +878,12 @@ class NodeService:
             committed = self.commit_content_contract(repo_root, node_path=node_path, summary=coordinator_summary)
             if not committed.ok or committed.value is None:
                 return self.runtime.foundation.fail(committed.issues)
+            strategy_closeout, closeout_issues = self._content_strategy_closeout(
+                repo_root,
+                node_path=node_path,
+                contract=committed.value,
+                enabled=True,
+            )
             return self.runtime.foundation.ok(
                 self._content_task_finalize_view(
                     node_path=node_path,
@@ -861,8 +894,13 @@ class NodeService:
                     finalized=True,
                     contract_summary_written=True,
                     contract_committed=True,
-                    summary="Content task result finalized as ready; contract summary was committed.",
-                )
+                    strategy_closeout=strategy_closeout,
+                    summary=(
+                        "Content task result finalized as ready; contract summary was committed "
+                        "and Strategy closeout was evaluated."
+                    ),
+                ),
+                warnings=closeout_issues,
             )
 
         gate_name = f"content_task_finalize_{parsed_result.value.outcome.value}"
@@ -1284,6 +1322,7 @@ class NodeService:
         finalized: bool,
         contract_summary_written: bool,
         contract_committed: bool,
+        strategy_closeout: StrategyCompletionCloseoutView | None = None,
         summary: str,
     ) -> ContentTaskFinalizeView:
         follow_up_hints = []
@@ -1304,6 +1343,36 @@ class NodeService:
             contract_committed=contract_committed,
             finalized=finalized,
             gate=gate,
+            strategy_closeout=strategy_closeout,
             follow_up_hints=follow_up_hints,
             summary=summary,
+        )
+
+    def _content_strategy_closeout(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        contract: NodeContractView,
+        enabled: bool,
+    ) -> tuple[StrategyCompletionCloseoutView | None, list[object]]:
+        if not enabled or contract.version is None:
+            return None, []
+        closed = self.runtime.decl_graph.close_strategy_for_content_completion(
+            repo_root,
+            node_path=node_path,
+            contract_version=contract.version,
+            decl_graph_head=contract.contract.decl_graph_head,
+        )
+        if closed.ok and closed.value is not None:
+            return closed.value, list(closed.issues)
+        return (
+            StrategyCompletionCloseoutView(
+                status="pending",
+                issues=[item.kind for item in closed.issues],
+                summary=(
+                    "Content is committed, but Strategy closeout remains pending and retriable."
+                ),
+            ),
+            [],
         )

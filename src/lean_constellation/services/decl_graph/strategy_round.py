@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from pathlib import Path
 from collections.abc import Collection
-from typing import TYPE_CHECKING
+from contextlib import contextmanager
+import fcntl
+import hashlib
+import json
+from typing import TYPE_CHECKING, Iterator
 
 from lean_constellation.domain.common import utc_now_iso
 from lean_constellation.services.decl_graph.graph_store import GraphStoreComponent
@@ -15,11 +19,21 @@ from lean_constellation.services.decl_graph.models import (
     DeclRoundStatus,
     DeclGraphStrategy,
     DeclStrategyStatus,
+    StrategyCompletionCloseoutReceipt,
+    StrategyCompletionCloseoutView,
 )
-from lean_constellation.services.foundation import ServiceResult, WriteMode
+from lean_constellation.services.foundation import (
+    FoundationContext,
+    ServiceResult,
+    WriteMode,
+)
 
 if TYPE_CHECKING:
     from lean_constellation.services.runtime import LeanRuntimeServices
+
+
+class StrategyMutationLockBusyError(RuntimeError):
+    pass
 
 
 class StrategyRoundComponent:
@@ -140,6 +154,35 @@ class StrategyRoundComponent:
         execution_constraints: str | None = None,
         revision_refs: list[DeclRevisionRef] | None = None,
     ) -> ServiceResult[DeclGraphRound]:
+        try:
+            with self._strategy_mutation_locked(repo_root, node_path=node_path):
+                return self._create_round_draft_locked(
+                    repo_root,
+                    node_path=node_path,
+                    strategy_id=strategy_id,
+                    objective=objective,
+                    execution_constraints=execution_constraints,
+                    revision_refs=revision_refs,
+                )
+        except StrategyMutationLockBusyError as exc:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "strategy_mutation_lock_busy",
+                    str(exc),
+                    object_ref=node_path,
+                )
+            )
+
+    def _create_round_draft_locked(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        strategy_id: str,
+        objective: str,
+        execution_constraints: str | None = None,
+        revision_refs: list[DeclRevisionRef] | None = None,
+    ) -> ServiceResult[DeclGraphRound]:
         if not objective or not objective.strip():
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue("round_objective_required", "Round objective is required.", field="objective")
@@ -200,6 +243,237 @@ class StrategyRoundComponent:
         if not rebuilt.ok:
             return self.runtime.foundation.fail(rebuilt.issues)
         return self.runtime.foundation.ok(round_record)
+
+    def close_strategy_for_content_completion(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        contract_version: int,
+        decl_graph_head: dict[str, int],
+    ) -> ServiceResult[StrategyCompletionCloseoutView]:
+        head_digest = hashlib.sha256(
+            json.dumps(
+                dict(sorted(decl_graph_head.items())),
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        completion_identity = hashlib.sha256(
+            json.dumps(
+                {
+                    "node_path": node_path,
+                    "contract_version": contract_version,
+                    "head_digest": head_digest,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        try:
+            with self._strategy_mutation_locked(repo_root, node_path=node_path):
+                return self._close_strategy_for_content_completion_locked(
+                    repo_root,
+                    node_path=node_path,
+                    contract_version=contract_version,
+                    decl_graph_head=decl_graph_head,
+                    head_digest=head_digest,
+                    completion_identity=completion_identity,
+                )
+        except StrategyMutationLockBusyError as exc:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "strategy_completion_closeout_lock_busy",
+                    str(exc),
+                    object_ref=node_path,
+                    details={"completion_identity": completion_identity},
+                )
+            )
+
+    def _close_strategy_for_content_completion_locked(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        contract_version: int,
+        decl_graph_head: dict[str, int],
+        head_digest: str,
+        completion_identity: str,
+    ) -> ServiceResult[StrategyCompletionCloseoutView]:
+        strategies = self.list_strategies(repo_root, node_path=node_path)
+        if not strategies.ok or strategies.value is None:
+            return self.runtime.foundation.fail(strategies.issues)
+        matching = [
+            item
+            for item in strategies.value
+            if item.completion_closeout is not None
+            and item.completion_closeout.completion_identity == completion_identity
+        ]
+        if len(matching) > 1:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "strategy_completion_closeout_ambiguous",
+                    "Multiple Strategy receipts claim the same Content completion identity.",
+                    object_ref=node_path,
+                    details={"completion_identity": completion_identity},
+                )
+            )
+        if matching:
+            return self.runtime.foundation.ok(
+                StrategyCompletionCloseoutView(
+                    status="already_closed",
+                    completion_identity=completion_identity,
+                    receipt=matching[0].completion_closeout,
+                    summary="Strategy was already closed for this exact Content completion.",
+                )
+            )
+        open_strategies = [
+            item for item in strategies.value if item.status == DeclStrategyStatus.OPEN
+        ]
+        if not open_strategies:
+            return self.runtime.foundation.ok(
+                StrategyCompletionCloseoutView(
+                    status="not_applicable",
+                    completion_identity=completion_identity,
+                    summary="Content completion has no open Strategy to close.",
+                )
+            )
+        if len(open_strategies) != 1:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "strategy_completion_open_ambiguous",
+                    "Content completion requires exactly one current open Strategy.",
+                    object_ref=node_path,
+                    current=", ".join(
+                        sorted(item.strategy_id for item in open_strategies)
+                    ),
+                )
+            )
+        current = self.runtime.node.contract.get_current_contract(
+            repo_root, node_path=node_path
+        )
+        if not current.ok or current.value is None:
+            return self.runtime.foundation.fail(current.issues)
+        current_status = getattr(
+            current.value.version_status,
+            "value",
+            str(current.value.version_status),
+        )
+        if (
+            current_status != "committed"
+            or current.value.version != contract_version
+            or current.value.contract.decl_graph_head != decl_graph_head
+        ):
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "strategy_completion_identity_stale",
+                    "Content completion identity no longer matches the committed contract head.",
+                    object_ref=node_path,
+                    current=(
+                        f"version={current.value.version};head="
+                        + json.dumps(current.value.contract.decl_graph_head, sort_keys=True)
+                    ),
+                    expected=(
+                        f"version={contract_version};head="
+                        + json.dumps(decl_graph_head, sort_keys=True)
+                    ),
+                )
+            )
+        strategy = open_strategies[0]
+        rounds = self.list_rounds(repo_root, node_path=node_path)
+        if not rounds.ok or rounds.value is None:
+            return self.runtime.foundation.fail(rounds.issues)
+        strategy_rounds = [
+            item for item in rounds.value if item.strategy_id == strategy.strategy_id
+        ]
+        actual_ids = {item.round_id for item in strategy_rounds}
+        expected_ids = set(strategy.created_round_ids)
+        if actual_ids != expected_ids:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "strategy_completion_round_set_mismatch",
+                    "Strategy round inventory is incomplete or inconsistent.",
+                    object_ref=strategy.strategy_id,
+                    current=", ".join(sorted(actual_ids)),
+                    expected=", ".join(sorted(expected_ids)),
+                )
+            )
+        unfinished = [
+            item
+            for item in strategy_rounds
+            if item.status not in {DeclRoundStatus.COMMITTED, DeclRoundStatus.DISCARDED}
+        ]
+        if unfinished:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "strategy_completion_round_pending",
+                    "Strategy has a non-terminal declaration round.",
+                    object_ref=strategy.strategy_id,
+                    current=", ".join(
+                        sorted(f"{item.round_id}:{item.status.value}" for item in unfinished)
+                    ),
+                )
+            )
+        closed_at = utc_now_iso()
+        reason = "Closed automatically because the exact Content contract completed READY."
+        receipt = StrategyCompletionCloseoutReceipt(
+            node_path=node_path,
+            contract_version=contract_version,
+            head_digest=head_digest,
+            strategy_id=strategy.strategy_id,
+            round_statuses={
+                item.round_id: item.status for item in strategy_rounds
+            },
+            completion_identity=completion_identity,
+            closed_at=closed_at,
+            reason=reason,
+        )
+        strategy.status = DeclStrategyStatus.CLOSED
+        strategy.summary = "Content completion automatically closed this Strategy."
+        strategy.closed_reason = reason
+        strategy.closed_at = closed_at
+        strategy.completion_closeout = receipt
+        written = self._write_strategy(
+            repo_root, node_path=node_path, strategy=strategy
+        )
+        if not written.ok:
+            return self.runtime.foundation.fail(written.issues)
+        return self.runtime.foundation.ok(
+            StrategyCompletionCloseoutView(
+                status="closed",
+                completion_identity=completion_identity,
+                receipt=receipt,
+                summary="Closed the exact open Strategy after Content READY completion.",
+            )
+        )
+
+    @contextmanager
+    def _strategy_mutation_locked(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+    ) -> Iterator[Path]:
+        lifecycle_path = self.runtime.foundation.layout.repo_lifecycle_lock_path(
+            FoundationContext(repo_root=Path(repo_root))
+        )
+        node_key = hashlib.sha256(node_path.encode("utf-8")).hexdigest()[:16]
+        path = lifecycle_path.parent / f"strategy-{node_key}.lock"
+        self.runtime.foundation.store.ensure_dir(path.parent)
+        handle = path.open("a+", encoding="utf-8")
+        try:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as exc:
+                raise StrategyMutationLockBusyError(
+                    f"Strategy mutation lock is busy: {path}"
+                ) from exc
+            yield path
+        finally:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            finally:
+                handle.close()
 
     def start_round(
         self,

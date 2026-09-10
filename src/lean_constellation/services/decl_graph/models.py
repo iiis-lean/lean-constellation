@@ -320,6 +320,30 @@ class DeclGraphStoreView(StrictModel):
     summary: str
 
 
+class StrategyCompletionCloseoutReceipt(StrictModel):
+    """Atomic audit evidence for Content READY Strategy closeout."""
+
+    schema_version: int = 1
+    node_path: str
+    contract_version: int = Field(ge=1)
+    head_digest: str
+    strategy_id: str
+    round_statuses: dict[str, DeclRoundStatus] = Field(default_factory=dict)
+    trigger: Literal["content_ready_finalize"] = "content_ready_finalize"
+    completion_identity: str
+    close_result: Literal["closed"] = "closed"
+    closed_at: str
+    reason: str
+
+
+class StrategyCompletionCloseoutView(StrictModel):
+    status: Literal["closed", "already_closed", "not_applicable", "pending"]
+    completion_identity: str | None = None
+    receipt: StrategyCompletionCloseoutReceipt | None = None
+    issues: list[str] = Field(default_factory=list)
+    summary: str
+
+
 class DeclGraphStrategy(StrictModel):
     """Persisted strategy truth for one Content node DeclGraph."""
 
@@ -334,6 +358,7 @@ class DeclGraphStrategy(StrictModel):
     closed_reason: str | None = None
     created_at: str = Field(default_factory=utc_now_iso)
     closed_at: str | None = None
+    completion_closeout: StrategyCompletionCloseoutReceipt | None = None
 
     @field_validator("strategy_id", "node_path", "objective")
     @classmethod
@@ -720,6 +745,7 @@ class DeclGraphStrategyView(StrictModel):
     closed_reason: str | None = None
     created_at: str | None = None
     closed_at: str | None = None
+    completion_closeout: StrategyCompletionCloseoutReceipt | None = None
 
     @field_validator("strategy_id", "node_path", "objective")
     @classmethod

@@ -50,6 +50,8 @@ from lean_constellation.services.decl_graph.models import (
     DeclStrategyStatus,
     DeclGraphStrategy,
     StageReviewResultView,
+    StrategyCompletionCloseoutReceipt,
+    StrategyCompletionCloseoutView,
 )
 from lean_constellation.services.decl_graph.views import DeclGraphViewMapper
 from lean_constellation.services.decl_graph.readiness import DeclReadinessComponent
@@ -149,5 +151,7 @@ __all__ = [
     "RoundStageReview",
     "StageMutationComponent",
     "StageReviewResultView",
+    "StrategyCompletionCloseoutReceipt",
+    "StrategyCompletionCloseoutView",
     "StrategyRoundComponent",
 ]
