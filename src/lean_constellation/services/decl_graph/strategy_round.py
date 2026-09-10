@@ -99,26 +99,6 @@ class StrategyRoundComponent:
         if open_strategies:
             return self.runtime.foundation.ok(open_strategies[0])
 
-        contract = self.runtime.node.contract.get_current_contract(
-            repo_root, node_path=node_path
-        )
-        if not contract.ok or contract.value is None:
-            return self.runtime.foundation.fail(contract.issues)
-        contract_status = getattr(
-            contract.value.version_status,
-            "value",
-            str(contract.value.version_status),
-        )
-        if contract_status == "committed":
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue(
-                    "strategy_content_contract_committed",
-                    "A new Strategy requires an open Content contract version.",
-                    object_ref=node_path,
-                    current=str(contract.value.version),
-                )
-            )
-
         allocated = self.runtime.foundation.store.allocate_uuid(
             lambda candidate: self.graph_store.strategy_path(
                 repo_root,

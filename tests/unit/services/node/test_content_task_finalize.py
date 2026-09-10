@@ -192,10 +192,25 @@ def test_finalize_ready_closes_exact_strategy_and_retry_reuses_receipt(
     replacement = service.runtime.decl_graph.ensure_open_strategy(
         tmp_path,
         node_path="Main.Topic.Core",
-        objective="Must wait for a new open Content contract.",
+        objective="Start follow-up declaration work.",
     )
-    assert not replacement.ok
-    assert replacement.issues[0].kind == "strategy_content_contract_committed"
+    assert replacement.ok and replacement.value is not None
+    third = service.finalize_content_task_result(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        task_result=task_result,
+        coordinator_summary="Coordinator verified the ready content task.",
+    )
+    assert third.ok and third.value is not None
+    assert third.value.strategy_closeout is not None
+    assert third.value.strategy_closeout.status == "already_closed"
+    replacement_after_retry = service.runtime.decl_graph.get_strategy(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        strategy_id=replacement.value.strategy_id,
+    )
+    assert replacement_after_retry.ok and replacement_after_retry.value is not None
+    assert replacement_after_retry.value.status == "open"
 
 
 def test_ready_content_commit_survives_strategy_closeout_failure(
