@@ -83,6 +83,17 @@ def initialize_native_test_repo(repo_root: Path, *, project_name: str = "TestPro
     )
 
 
+def persist_source_corpus_manifest(runtime: LeanRuntimeServices, repo_root: Path):
+    """Persist the scanned canonical SourceCorpus truth for a test fixture."""
+
+    scanned = runtime.material.source_corpus.scan_source_corpus(repo_root)
+    assert scanned.ok and scanned.value is not None, scanned.issues
+    manifest_path = runtime.material.source_corpus._manifest_path(repo_root)  # noqa: SLF001
+    written = runtime.foundation.store.write_json_atomic(manifest_path, scanned.value)
+    assert written.ok, written.issues
+    return scanned.value
+
+
 def lean_check_payload(
     *,
     passed: bool = True,

@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from tests.unit_services_helpers import make_runtime
+from tests.unit_services_helpers import make_runtime, persist_source_corpus_manifest
 
 from lean_constellation.domain.refs import DeclRef
 from lean_constellation.domain.repo import RepoCompletionMode
@@ -136,6 +136,7 @@ def test_current_material_ref_wrapper_adds_and_removes_refs(tmp_path: Path) -> N
     service = make_runtime().node
     _create_node_tree(tmp_path, service)
     _write_source(tmp_path)
+    persist_source_corpus_manifest(service.runtime, tmp_path)
 
     added = service.add_current_material_ref(
         tmp_path,
@@ -173,6 +174,7 @@ def test_current_material_ref_wrapper_reports_invalid_material_ref(tmp_path: Pat
     service = make_runtime().node
     _create_node_tree(tmp_path, service)
     _write_source(tmp_path)
+    persist_source_corpus_manifest(service.runtime, tmp_path)
 
     invalid = service.add_current_material_ref(
         tmp_path,

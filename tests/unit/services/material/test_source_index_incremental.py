@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from lean_constellation.domain.repo_run import SourceScope
-from tests.unit_services_helpers import make_runtime
+from tests.unit_services_helpers import make_runtime, persist_source_corpus_manifest
 
 
 def _write_source(repo_root: Path) -> None:
@@ -421,6 +421,7 @@ def test_committed_source_hash_change_blocks_incremental_open(tmp_path: Path) ->
 
     source_file = tmp_path / ".lean_constellation" / "source" / "chapters" / "one.md"
     source_file.write_text("Changed definition.\nChanged theorem.\n", encoding="utf-8")
+    persist_source_corpus_manifest(runtime, tmp_path)
     fresh_scope = runtime.material.resolve_source_scope(
         tmp_path, source_scope=SourceScope(mode="selected", selectors=["chapters/two.md"])
     ).value
@@ -431,6 +432,7 @@ def test_committed_source_hash_change_blocks_incremental_open(tmp_path: Path) ->
 
     source_file.write_text("Definition A.\nTheorem B.\n", encoding="utf-8")
     source_file.unlink()
+    persist_source_corpus_manifest(runtime, tmp_path)
     other_scope = runtime.material.resolve_source_scope(
         tmp_path,
         source_scope=SourceScope(mode="selected", selectors=["chapters/two.md"]),
