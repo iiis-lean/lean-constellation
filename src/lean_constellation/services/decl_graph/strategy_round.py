@@ -455,6 +455,16 @@ class StrategyRoundComponent:
                     ),
                 )
             )
+        if current.value.contract.finalized_task_outcome != "ready":
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "strategy_completion_outcome_not_ready",
+                    "Strategy completion closeout requires a persisted READY Content outcome.",
+                    object_ref=node_path,
+                    current=current.value.contract.finalized_task_outcome or "absent",
+                    expected="ready",
+                )
+            )
         strategy = open_strategies[0]
         rounds = self.list_rounds(repo_root, node_path=node_path)
         if not rounds.ok or rounds.value is None:

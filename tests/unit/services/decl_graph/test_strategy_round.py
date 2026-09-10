@@ -902,3 +902,45 @@ def test_round_creation_and_completion_closeout_share_strategy_lock(
     assert closed.issues[0].kind == "strategy_completion_closeout_lock_busy"
     assert not manual_close.ok
     assert manual_close.issues[0].kind == "strategy_mutation_lock_busy"
+
+
+@pytest.mark.parametrize("finalized_task_outcome", [None, "blocked", "failed"])
+def test_completion_closeout_requires_persisted_ready_outcome(
+    tmp_path: Path,
+    finalized_task_outcome: str | None,
+) -> None:
+    _create_content_node(tmp_path)
+    runtime = make_runtime()
+    node_path = "Main.Topic.Core"
+    strategy = runtime.decl_graph.ensure_open_strategy(
+        tmp_path,
+        node_path=node_path,
+        objective="Outcome boundary strategy.",
+    )
+    assert strategy.ok and strategy.value is not None
+    committed = runtime.node.contract._commit_content_contract_with_head(
+        tmp_path,
+        node_path=node_path,
+        summary="Commit without a READY task outcome.",
+        decl_graph_head={},
+        finalized_task_outcome=finalized_task_outcome,
+    )
+    assert committed.ok and committed.value is not None
+
+    closed = runtime.decl_graph.close_strategy_for_content_completion(
+        tmp_path,
+        node_path=node_path,
+        contract_version=committed.value.version,
+        decl_graph_head={},
+    )
+
+    assert not closed.ok
+    assert closed.issues[0].kind == "strategy_completion_outcome_not_ready"
+    current = runtime.decl_graph.get_strategy(
+        tmp_path,
+        node_path=node_path,
+        strategy_id=strategy.value.strategy_id,
+    )
+    assert current.ok and current.value is not None
+    assert current.value.status == DeclStrategyStatus.OPEN
+    assert current.value.completion_closeout is None
