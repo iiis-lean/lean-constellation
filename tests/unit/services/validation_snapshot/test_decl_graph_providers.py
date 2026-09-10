@@ -1285,8 +1285,10 @@ def test_external_readiness_falls_back_when_release_availability_entry_is_missin
     )
 
     assert report.ok and report.value is not None
-    assert report.value.ready is True
-    assert provider_reads == 1
+    assert report.value.ready is False
+    assert report.value.blocker is not None
+    assert report.value.blocker.reason.value == "dependency_not_ready"
+    assert provider_reads == 0
 
 
 def test_content_completion_rejects_unexported_external_expected_decl(tmp_path: Path) -> None:
