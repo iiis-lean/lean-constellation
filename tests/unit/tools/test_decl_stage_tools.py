@@ -868,6 +868,12 @@ def test_statement_nl_typed_tools_write_text_origins_and_deps(tmp_path: Path) ->
     source_root = tmp_path / ".lean_constellation" / "source"
     source_root.mkdir(parents=True)
     (source_root / "notes.md").write_text("one\ntwo\nthree\nfour\n", encoding="utf-8")
+    source_manifest = runtime.material.source_corpus.scan_source_corpus(tmp_path)
+    assert source_manifest.ok and source_manifest.value is not None
+    assert runtime.foundation.store.write_json_atomic(
+        runtime.material.source_corpus._manifest_path(tmp_path),  # noqa: SLF001
+        source_manifest.value,
+    ).ok
     assert runtime.node.node_tree.ensure_root_scope_node(tmp_path).ok
     assert runtime.node.create_scope_node(tmp_path, path="Main.Topic", goal="Topic", boundary="Topic boundary").ok
     assert runtime.node.create_content_node(

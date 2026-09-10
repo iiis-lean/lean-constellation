@@ -119,6 +119,11 @@ def test_interface_catalogs_follow_live_registries() -> None:
         "scope_id",
         "step_id",
         "content_task_flow_id",
+        "repo_key",
+        "coordinator_flow_id",
+        "expected_source_submission_id",
+        "expected_dispatch_step_id",
+        "progress_epoch_decl_rounds",
         "safety",
     }
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from threading import Thread
 from types import SimpleNamespace
 
 import pytest
@@ -154,15 +155,58 @@ def test_repo_maintenance_and_short_transactions_are_bidirectionally_exclusive(t
                 pass
 
     with activity.maintenance(repo_root, owner="snapshot"):
-        with pytest.raises(RepoActivityConflictError, match="blocks new transactions"):
-            with activity.catalog_write(repo_root, "mathlib"):
-                pass
-        with pytest.raises(RepoActivityConflictError, match="blocks new transactions"):
-            with activity.node_write(repo_root, "Main.Core"):
-                pass
-        with pytest.raises(RepoActivityConflictError, match="blocks new transactions"):
-            with activity.build_cache_write(repo_root):
-                pass
+        with activity.catalog_write(repo_root, "mathlib"):
+            pass
+        with activity.node_write(repo_root, "Main.Core"):
+            pass
+        with activity.build_cache_write(repo_root):
+            pass
+
+        conflicts: list[Exception] = []
+
+        def contend() -> None:
+            try:
+                with activity.catalog_write(repo_root, "mathlib"):
+                    pass
+            except Exception as exc:  # noqa: BLE001 - capture cross-thread result.
+                conflicts.append(exc)
+
+        thread = Thread(target=contend)
+        thread.start()
+        thread.join(timeout=2)
+        assert not thread.is_alive()
+        assert len(conflicts) == 1
+        assert isinstance(conflicts[0], RepoActivityConflictError)
+        assert "blocks new transactions" in str(conflicts[0])
+
+
+def test_repo_maintenance_nested_depth_keeps_other_threads_excluded(tmp_path: Path) -> None:
+    activity = RepoActivityComponent()
+    repo_root = tmp_path / "Repo"
+    repo_root.mkdir()
+
+    def maintenance_conflict() -> Exception | None:
+        conflicts: list[Exception] = []
+
+        def contend() -> None:
+            try:
+                with activity.maintenance(repo_root, owner="contender"):
+                    pass
+            except Exception as exc:  # noqa: BLE001 - capture cross-thread result.
+                conflicts.append(exc)
+
+        thread = Thread(target=contend)
+        thread.start()
+        thread.join(timeout=2)
+        assert not thread.is_alive()
+        return conflicts[0] if conflicts else None
+
+    with activity.maintenance(repo_root, owner="outer"):
+        with activity.maintenance(repo_root, owner="inner"):
+            assert isinstance(maintenance_conflict(), RepoActivityConflictError)
+        assert isinstance(maintenance_conflict(), RepoActivityConflictError)
+
+    assert maintenance_conflict() is None
 
 
 def test_repo_activity_rehydrates_persisted_content_batch_after_runtime_restart(
@@ -208,6 +252,33 @@ def test_repo_activity_rehydrates_persisted_content_batch_after_runtime_restart(
             batch_id="different-batch",
             node_paths=["Main.A"],
         )
+
+
+def test_repo_activity_fails_closed_for_custom_runtime_root_when_flow_service_is_lost(
+    tmp_path: Path,
+) -> None:
+    repo_root = tmp_path / "Repo"
+    repo_root.mkdir()
+    runtime_root = tmp_path / "custom-runtime"
+    runtime = create_app_runtime_services(runtime_root=runtime_root)
+    runtime.ark.flow_service.start_flow(
+        FlowRequest(
+            flow_type="native_repo_coordinator",
+            scope_id="repo:Repo",
+            params={
+                "repo_key": "Repo",
+                "repo_root": str(repo_root),
+                "start_mode": "admin_start",
+            },
+        ),
+        enqueue=False,
+    )
+    assert any(path.is_file() for path in runtime_root.rglob("*"))
+    assert not (repo_root / ".agent_runtime").exists()
+    runtime.ark.flow_service = None
+
+    with pytest.raises(RepoActivityRecoveryRequiredError, match="recovery"):
+        runtime.repo_activity.active_batches(repo_root)
 
 
 class _BrokenFrontierRuntime:

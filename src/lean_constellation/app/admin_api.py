@@ -24,6 +24,7 @@ from agent_runtime_kit.flow.standard_steps import AgentStepState
 from pydantic import Field, field_validator, model_validator
 
 from lean_constellation.app.repo_runtime_registry import RepoRuntimeRegistry
+from lean_constellation.app.runtime import check_repo_recovery_interlock
 from lean_constellation.app.semantic_scheduler import (
     RuntimeSemanticAdvanceInput,
     SemanticAdvancePolicyError,
@@ -92,10 +93,7 @@ def _reject_during_paired_restore(method: Callable[..., Any]) -> Callable[..., A
 
     @wraps(method)
     def guarded(self, *args, **kwargs):  # noqa: ANN001, ANN202
-        blocked = self._check_admin_mutation_interlocks(*args, **kwargs)
-        if blocked is not None:
-            return blocked
-        return method(self, *args, **kwargs)
+        return self._run_paired_restore_guard(method, args, kwargs)
 
     return guarded
 
@@ -105,29 +103,7 @@ def _repo_exclusive_admin_mutation(method: Callable[..., Any]) -> Callable[..., 
 
     @wraps(method)
     def guarded(self, *args, **kwargs):  # noqa: ANN001, ANN202
-        roots = self._admin_mutation_repo_roots(*args, **kwargs)
-        blocked = self._check_admin_mutation_interlocks(*args, **kwargs)
-        if blocked is not None:
-            return blocked
-        try:
-            with ExitStack() as stack:
-                for root in roots:
-                    stack.enter_context(
-                        self.runtime.repo_activity.maintenance(
-                            root,
-                            owner=f"admin:{method.__name__}",
-                        )
-                    )
-                return method(self, *args, **kwargs)
-        except RepoActivityConflictError as exc:
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue(
-                    "repo_activity_recovery_required"
-                    if isinstance(exc, RepoActivityRecoveryRequiredError)
-                    else "repo_maintenance_conflict",
-                    str(exc),
-                )
-            )
+        return self._run_repo_admin_mutation(method, args, kwargs)
 
     return guarded
 
@@ -1182,14 +1158,116 @@ class LeanAdminApi:
         self.toolkit_state = toolkit_state
         self.repo_runtime_registry = repo_runtime_registry
 
-    def _check_admin_mutation_interlocks(self, *args, **kwargs):  # noqa: ANN002, ANN003, ANN202
-        for repo_root in self._admin_mutation_repo_roots(*args, **kwargs):
-            interlock = self.runtime.app.snapshot_runtime.check_repo_recovery_interlock(
-                repo_root
+    def _run_paired_restore_guard(
+        self,
+        method: Callable[..., Any],
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+    ) -> Any:
+        roots = self._admin_mutation_repo_roots(*args, **kwargs)
+        with ExitStack() as stack:
+            for root in roots:
+                record = self._admin_runtime_record_for_repo_root(root)
+                if record is not None:
+                    stack.enter_context(record.lock)
+            for root in roots:
+                selected = self._admin_runtime_for_repo_root(root)
+                if not selected.ok or selected.value is None:
+                    return self.runtime.foundation.fail(selected.issues)
+                interlock = check_repo_recovery_interlock(selected.value, root)
+                if not interlock.ok:
+                    return self.runtime.foundation.fail(interlock.issues)
+            return method(self, *args, **kwargs)
+
+    def _run_repo_admin_mutation(
+        self,
+        method: Callable[..., Any],
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+    ) -> Any:
+        roots = self._admin_mutation_repo_roots(*args, **kwargs)
+        try:
+            with ExitStack() as stack:
+                for root in roots:
+                    record = self._admin_runtime_record_for_repo_root(root)
+                    if record is not None:
+                        stack.enter_context(record.lock)
+                selected_runtimes: dict[Path, LeanRuntimeServices] = {}
+                for root in roots:
+                    selected = self._admin_runtime_for_repo_root(root)
+                    if not selected.ok or selected.value is None:
+                        return self.runtime.foundation.fail(selected.issues)
+                    selected_runtimes[root] = selected.value
+                    stack.enter_context(
+                        selected.value.repo_activity.maintenance(
+                            root,
+                            owner=f"admin:{method.__name__}",
+                        )
+                    )
+                for root, selected_runtime in selected_runtimes.items():
+                    interlock = check_repo_recovery_interlock(selected_runtime, root)
+                    if not interlock.ok:
+                        return self.runtime.foundation.fail(interlock.issues)
+                return method(self, *args, **kwargs)
+        except RepoActivityConflictError as exc:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "repo_activity_recovery_required"
+                    if isinstance(exc, RepoActivityRecoveryRequiredError)
+                    else "repo_maintenance_conflict",
+                    str(exc),
+                )
             )
-            if not interlock.ok:
-                return self.runtime.foundation.fail(interlock.issues)
-        return None
+
+    def _admin_runtime_record_for_repo_root(self, repo_root: Path):  # noqa: ANN202
+        registry = self.repo_runtime_registry
+        if registry is None:
+            return None
+        root = Path(repo_root).resolve(strict=False)
+        try:
+            relative = root.relative_to(registry.workspace_root.resolve(strict=False))
+        except ValueError:
+            return None
+        if len(relative.parts) != 1:
+            return None
+        discovered = registry.discover_repo(relative.parts[0])
+        return discovered.value if discovered.ok else None
+
+    def _admin_runtime_for_repo_root(
+        self,
+        repo_root: Path,
+    ) -> ServiceResult[LeanRuntimeServices]:
+        registry = self.repo_runtime_registry
+        root = Path(repo_root).resolve(strict=False)
+        if registry is None:
+            return self.runtime.foundation.ok(self.runtime)
+        try:
+            relative = root.relative_to(registry.workspace_root.resolve(strict=False))
+        except ValueError:
+            return self.runtime.foundation.ok(self.runtime)
+        if len(relative.parts) != 1:
+            return self.runtime.foundation.ok(self.runtime)
+        repo_key = relative.parts[0]
+        loaded = registry.try_get_loaded(repo_key)
+        if loaded is not None:
+            return self.runtime.foundation.ok(loaded)
+        discovered = registry.discover_repo(repo_key)
+        if (
+            discovered.ok
+            and discovered.value is not None
+            and registry.runtime_history_exists(discovered.value)
+        ):
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "repo_activity_recovery_required",
+                    "Repository runtime history must be loaded before Admin mutation.",
+                    object_ref=repo_key,
+                    suggested_action=(
+                        "Load or prepare the repository runtime before retrying the mutation."
+                    ),
+                )
+            )
+        return self.runtime.foundation.ok(self.runtime)
 
     def _admin_mutation_repo_roots(self, *args, **kwargs) -> tuple[Path, ...]:  # noqa: ANN002, ANN003
         roots: dict[str, Path] = {}

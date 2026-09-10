@@ -74,6 +74,7 @@ def create_workspace_admin_http_routes(
             registry.workspace_runtime(),
             workspace_root=registry.workspace_root,
             toolkit_state=toolkit_state,
+            repo_runtime_registry=registry,
         )
         return _service_result_response(
             admin.get_external_health(
@@ -92,7 +93,11 @@ def create_workspace_admin_http_routes(
 
     async def workspace_waiting_requirements(request: Request) -> JSONResponse:
         query = request.query_params
-        admin = LeanAdminApi(registry.workspace_runtime(), workspace_root=registry.workspace_root)
+        admin = LeanAdminApi(
+            registry.workspace_runtime(),
+            workspace_root=registry.workspace_root,
+            repo_runtime_registry=registry,
+        )
         return _service_result_response(
             admin.list_waiting_requirements(
                 workspace_root=_query_path(query.get("workspace_root")) or registry.workspace_root,
@@ -106,7 +111,11 @@ def create_workspace_admin_http_routes(
         provider_repo = query.get("provider_repo")
         if not provider_repo:
             return _request_validation_response("Query parameter 'provider_repo' is required.")
-        admin = LeanAdminApi(registry.workspace_runtime(), workspace_root=registry.workspace_root)
+        admin = LeanAdminApi(
+            registry.workspace_runtime(),
+            workspace_root=registry.workspace_root,
+            repo_runtime_registry=registry,
+        )
         return _service_result_response(
             admin.list_requirement_resume_candidates(
                 provider_repo=provider_repo,
@@ -209,19 +218,35 @@ def create_workspace_admin_http_routes(
         return _service_result_response(admin.get_main_repo_status(repo_root))
 
     async def workspace_create_main_repo_shell(request: Request) -> JSONResponse:
-        admin = LeanAdminApi(registry.workspace_runtime(), workspace_root=registry.workspace_root)
+        admin = LeanAdminApi(
+            registry.workspace_runtime(),
+            workspace_root=registry.workspace_root,
+            repo_runtime_registry=registry,
+        )
         return await _model_route(request, CreateMainRepoShellInput, admin.create_main_repo_shell)
 
     async def workspace_write_main_repo_input(request: Request) -> JSONResponse:
-        admin = LeanAdminApi(registry.workspace_runtime(), workspace_root=registry.workspace_root)
+        admin = LeanAdminApi(
+            registry.workspace_runtime(),
+            workspace_root=registry.workspace_root,
+            repo_runtime_registry=registry,
+        )
         return await _model_route(request, WriteMainRepoPreparationInput, admin.write_main_repo_preparation_input)
 
     async def workspace_validate_main_source(request: Request) -> JSONResponse:
-        admin = LeanAdminApi(registry.workspace_runtime(), workspace_root=registry.workspace_root)
+        admin = LeanAdminApi(
+            registry.workspace_runtime(),
+            workspace_root=registry.workspace_root,
+            repo_runtime_registry=registry,
+        )
         return await _model_route(request, ValidateMainSourceCorpusInput, admin.validate_main_source_corpus)
 
     async def workspace_init_main_native_skeleton(request: Request) -> JSONResponse:
-        admin = LeanAdminApi(registry.workspace_runtime(), workspace_root=registry.workspace_root)
+        admin = LeanAdminApi(
+            registry.workspace_runtime(),
+            workspace_root=registry.workspace_root,
+            repo_runtime_registry=registry,
+        )
         return await _model_route(request, InitializeMainNativeSkeletonInput, admin.initialize_main_native_skeleton)
 
     async def workspace_bootstrap_main_native(request: Request) -> JSONResponse:
@@ -230,7 +255,11 @@ def create_workspace_admin_http_routes(
             input_model = BootstrapMainNativeRepoInput.model_validate(data)
         except ValidationError as exc:
             return _request_validation_response(str(exc))
-        control_admin = LeanAdminApi(registry.workspace_runtime(), workspace_root=registry.workspace_root)
+        control_admin = LeanAdminApi(
+            registry.workspace_runtime(),
+            workspace_root=registry.workspace_root,
+            repo_runtime_registry=registry,
+        )
         shell = control_admin.create_main_repo_shell(
             CreateMainRepoShellInput(
                 workspace_root=input_model.workspace_root,
@@ -862,6 +891,7 @@ def create_workspace_admin_http_routes(
         admin = LeanAdminApi(
             registry.workspace_runtime(),
             workspace_root=registry.workspace_root,
+            repo_runtime_registry=registry,
         )
         return _service_result_response(
             admin.preview_workspace_publication(input_model)
@@ -881,6 +911,7 @@ def create_workspace_admin_http_routes(
         admin = LeanAdminApi(
             registry.workspace_runtime(),
             workspace_root=registry.workspace_root,
+            repo_runtime_registry=registry,
         )
         return _service_result_response(
             admin.apply_workspace_publication(input_model)

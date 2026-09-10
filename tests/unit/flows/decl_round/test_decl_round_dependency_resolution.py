@@ -119,13 +119,17 @@ def test_same_round_update_historical_anchor_uses_semantic_resolver(tmp_path: Pa
     )
 
     semantic_refs: list[DeclRef] = []
-    resolver = lean_runtime.decl_graph.ref_compatibility.resolve_decl_ref
+    resolver = lean_runtime.decl_graph.ref_compatibility.resolve_decl_refs_batch
 
-    def record_semantic_ref(*args, **kwargs):
-        semantic_refs.append(kwargs["ref"])
+    def record_semantic_refs(*args, **kwargs):
+        semantic_refs.extend(kwargs["refs"])
         return resolver(*args, **kwargs)
 
-    monkeypatch.setattr(lean_runtime.decl_graph.ref_compatibility, "resolve_decl_ref", record_semantic_ref)
+    monkeypatch.setattr(
+        lean_runtime.decl_graph.ref_compatibility,
+        "resolve_decl_refs_batch",
+        record_semantic_refs,
+    )
     satisfied, reason = _check_round_decl(lean_runtime, repo_root, round_id=round_id, decl_name="A")
 
     assert satisfied is True
@@ -267,7 +271,7 @@ def test_external_provider_read_failure_is_preserved(tmp_path: Path, monkeypatch
 
     monkeypatch.setattr(
         lean_runtime.decl_graph.ref_compatibility,
-        "resolve_public_decl_ref",
+        "resolve_public_decl_refs_batch",
         fail_provider_read,
     )
     satisfied, reason = _check_round_decl(lean_runtime, repo_root, round_id=round_id, decl_name="A")

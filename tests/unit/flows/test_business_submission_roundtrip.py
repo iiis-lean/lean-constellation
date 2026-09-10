@@ -51,6 +51,7 @@ def _sample_payload(cls):
         "attempted_targets": ["https://example.com"],
         "missing_materials": ["appendix"],
         "approved": True,
+        "checked_materials": ["README.md"],
         "feedback": None,
         "missing_interfaces": ["main_result"],
         "evidence_summary": "Checked upstream.",

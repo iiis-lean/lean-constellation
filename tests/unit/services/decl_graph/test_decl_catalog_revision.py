@@ -1406,7 +1406,9 @@ def test_round_draft_validation_accepts_declared_definition_proof_dependency(tmp
     assert gate.value.issues == []
 
 
-def test_round_draft_validation_still_requires_theorem_proof_dependency_proved(tmp_path: Path) -> None:
+def test_round_draft_validation_requires_prior_theorem_proof_dependency_planned(
+    tmp_path: Path,
+) -> None:
     _create_content_node(tmp_path)
     _, round_id = _create_round(tmp_path)
     _seed_committed_decl(
@@ -1441,7 +1443,7 @@ def test_round_draft_validation_still_requires_theorem_proof_dependency_proved(t
     issue = next(issue for issue in gate.value.issues if issue.kind == "round_dependency_provider_not_ready")
     assert issue.object_ref == "ConsumerTheorem"
     assert issue.current == DeclState.DECLARED.value
-    assert issue.expected == DeclState.PROVED.value
+    assert issue.expected == DeclState.PROOF_PLANNED.value
 
 
 def test_decl_planning_rejects_non_draft_round(tmp_path: Path) -> None:

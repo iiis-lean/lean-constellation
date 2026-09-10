@@ -366,6 +366,42 @@ class PairedRestoreInterlock(StrictModel):
     error_message: str | None = None
 
 
+def repo_restore_interlock_path(repo_root: Path) -> Path:
+    """Return the machine-local paired-restore interlock path for one repo."""
+
+    canonical = Path(repo_root).resolve(strict=False)
+    digest = hashlib.sha256(str(canonical).encode("utf-8")).hexdigest()
+    return canonical.parent / ".lean_constellation_workspace" / "recovery_interlocks" / f"{digest}.json"
+
+
+def check_repo_recovery_interlock(
+    runtime: LeanRuntimeServices,
+    repo_root: Path,
+) -> ServiceResult[None]:
+    """Read paired-restore truth without requiring an ARK snapshot provider."""
+
+    path = repo_restore_interlock_path(repo_root)
+    if not path.exists():
+        return runtime.foundation.ok(None)
+    loaded = runtime.foundation.store.read_json(path, PairedRestoreInterlock)
+    if not loaded.ok or loaded.value is None:
+        return runtime.foundation.fail(
+            runtime.foundation.issue(
+                "paired_restore_interlock_invalid",
+                "The repository paired-restore recovery interlock is unreadable.",
+                object_ref=str(path),
+            )
+        )
+    return runtime.foundation.fail(
+        runtime.foundation.issue(
+            "paired_restore_recovery_required",
+            "An interrupted paired restore must be completed before ordinary repository work resumes.",
+            object_ref=loaded.value.snapshot_id,
+            details=loaded.value.model_dump(mode="json"),
+        )
+    )
+
+
 class ApplicationSnapshotRuntime:
     """Compose ARK runtime snapshots with pure Lean Constellation checkpoint archives."""
 
@@ -680,26 +716,7 @@ class ApplicationSnapshotRuntime:
         return restored
 
     def check_repo_recovery_interlock(self, repo_root: Path) -> ServiceResult[None]:
-        path = self._restore_interlock_path(repo_root)
-        if not path.exists():
-            return self.runtime.foundation.ok(None)
-        loaded = self.runtime.foundation.store.read_json(path, PairedRestoreInterlock)
-        if not loaded.ok or loaded.value is None:
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue(
-                    "paired_restore_interlock_invalid",
-                    "The repository paired-restore recovery interlock is unreadable.",
-                    object_ref=str(path),
-                )
-            )
-        return self.runtime.foundation.fail(
-            self.runtime.foundation.issue(
-                "paired_restore_recovery_required",
-                "An interrupted paired restore must be completed before ordinary repository work resumes.",
-                object_ref=loaded.value.snapshot_id,
-                details=loaded.value.model_dump(mode="json"),
-            )
-        )
+        return check_repo_recovery_interlock(self.runtime, repo_root)
 
     def _snapshot_activity_eligibility(
         self,
@@ -875,9 +892,7 @@ class ApplicationSnapshotRuntime:
         return str(getattr(value, "value", value))
 
     def _restore_interlock_path(self, repo_root: Path) -> Path:
-        canonical = Path(repo_root).resolve(strict=False)
-        digest = hashlib.sha256(str(canonical).encode("utf-8")).hexdigest()
-        return canonical.parent / ".lean_constellation_workspace" / "recovery_interlocks" / f"{digest}.json"
+        return repo_restore_interlock_path(repo_root)
 
     def _load_or_create_restore_interlock(
         self,

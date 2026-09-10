@@ -7,7 +7,10 @@ from typing import TYPE_CHECKING
 
 from lean_constellation.domain.common import utc_now_iso
 from lean_constellation.domain.repo import ProofAvailability
-from lean_constellation.services.decl_graph.availability_policy import required_state_for_availability
+from lean_constellation.services.decl_graph.availability_policy import (
+    is_theorem_like,
+    required_state_for_availability,
+)
 from lean_constellation.services.decl_graph.graph_store import GraphStoreComponent
 from lean_constellation.services.decl_graph.models import (
     DeclChangeKind,
@@ -913,9 +916,14 @@ class DeclCatalogComponent:
                                 )
                             )
                             continue
-                        required_state = required_state_for_availability(
-                            provider.value.kind,
-                            required_availability,
+                        required_state = (
+                            DeclState.PROOF_PLANNED
+                            if dependency_stage == "proof"
+                            and is_theorem_like(provider.value.kind)
+                            else required_state_for_availability(
+                                provider.value.kind,
+                                required_availability,
+                            )
                         )
                         provider_revision = self.get_decl_revision(
                             repo_root,

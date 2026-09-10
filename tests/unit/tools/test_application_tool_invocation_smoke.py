@@ -29,6 +29,7 @@ from lean_constellation.services.node import ContentTaskResultView, DeclPublicVi
 from lean_constellation.services.tool_facade import RawToolCallContext, RuntimeToolContext
 from lean_constellation.tools.args import SourceCorpusCheckArgs
 from tests.unit_services_helpers import (
+    EmptyUnitFlowService,
     initialize_native_test_repo,
     lean_check_payload,
     publish_native_provider_release,
@@ -2062,6 +2063,7 @@ def test_current_node_stage_reads_select_one_exact_historical_revision(tmp_path:
 
 def test_public_decl_boundary_tools_invoke_node_access_resolver(tmp_path: Path) -> None:
     runtime = create_test_runtime_services(register_application_tools=True)
+    runtime.ark.flow_service = EmptyUnitFlowService()
     assert runtime.node.node_tree.ensure_root_scope_node(tmp_path).ok
     assert runtime.node.create_scope_node(
         tmp_path,
@@ -2311,6 +2313,7 @@ def test_repo_public_decl_tools_read_stable_provider_repo(tmp_path: Path) -> Non
 
 def test_current_node_dependency_and_material_tools_invoke_mutation_wrappers(tmp_path: Path) -> None:
     runtime = create_test_runtime_services(register_application_tools=True)
+    runtime.ark.flow_service = EmptyUnitFlowService()
     ref = _create_scope_with_public_decl(runtime, tmp_path)
     source_root = tmp_path / ".lean_constellation" / "source"
     source_root.mkdir(parents=True)
@@ -2361,6 +2364,7 @@ def test_current_node_dependency_and_material_tools_invoke_mutation_wrappers(tmp
 
 def test_coordinator_node_contract_write_tools_invoke_path_based_mutation_wrappers(tmp_path: Path) -> None:
     runtime = create_test_runtime_services(register_application_tools=True)
+    runtime.ark.flow_service = EmptyUnitFlowService()
     ref = _create_scope_with_public_decl(runtime, tmp_path)
     source_root = tmp_path / ".lean_constellation" / "source"
     source_root.mkdir(parents=True)
@@ -2855,6 +2859,7 @@ def test_decl_stage_nl_tool_invokes_stage_mutation_with_context(tmp_path: Path) 
     source_root = tmp_path / ".lean_constellation" / "source"
     source_root.mkdir(parents=True)
     (source_root / "notes.md").write_text("statement source\n", encoding="utf-8")
+    _prepare_stable_source_corpus(runtime, tmp_path, entry_path="notes.md")
     assert runtime.node.node_tree.ensure_root_scope_node(tmp_path).ok
     assert runtime.node.create_content_node(
         tmp_path,

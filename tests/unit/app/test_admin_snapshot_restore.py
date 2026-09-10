@@ -8,7 +8,9 @@ import pytest
 from agent_runtime_kit.flow.models import FlowRequest, FlowStatus
 
 from lean_constellation.app import (
+    LeanAppConfig,
     LeanAdminApi,
+    RepoRuntimeRegistry,
     RepoConfigUpdateInput,
     RepoPublicationPrepareInput,
     RequirementResumeInput,
@@ -19,12 +21,46 @@ from lean_constellation.app import (
     create_app_runtime_services,
     initialize_repo_business_truth,
 )
+from lean_constellation.app.runtime import PairedRestoreInterlock, repo_restore_interlock_path
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
 from lean_constellation.flows.common.agent_steps import DeclStageReviewerAgentStep
 from lean_constellation.flows.content_node_task.decl_round.steps import DeclStageReviewerStepState
 from lean_constellation.services.decl_graph import DeclReviewMarkRecord, DeclStage
 from lean_constellation.services.concurrency import RepoActivityRecoveryRequiredError
 from tests.unit_services_helpers import publish_native_provider_release
+
+
+def test_workspace_admin_rejects_restore_interlock_without_ark_history(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    repo_root = workspace / "Repo"
+    registry = RepoRuntimeRegistry(
+        LeanAppConfig(workspace_root=workspace, materialize_agent_homes=False)
+    )
+    runtime = registry.workspace_runtime()
+    assert initialize_repo_business_truth(runtime, repo_root).ok
+    repo_record = repo_root / ".lean_constellation" / "repo.json"
+    before = repo_record.read_bytes()
+    interlock = PairedRestoreInterlock(
+        repo_root=str(repo_root.resolve()),
+        snapshot_id="snapshot-interrupted",
+        recovery_required=True,
+    )
+    assert runtime.foundation.store.write_json_atomic(
+        repo_restore_interlock_path(repo_root),
+        interlock,
+    ).ok
+    admin = LeanAdminApi(
+        runtime,
+        workspace_root=workspace,
+        repo_runtime_registry=registry,
+    )
+
+    result = admin.update_repo_config(RepoConfigUpdateInput(repo_root=repo_root))
+
+    assert not result.ok
+    assert result.issues[0].kind == "paired_restore_recovery_required"
+    assert repo_record.read_bytes() == before
+    assert not (repo_root / ".agent_runtime").exists()
 
 
 def test_admin_snapshot_create_and_restore_leaves_runtime_paused(tmp_path) -> None:

@@ -108,6 +108,7 @@ def test_workspace_runtime_forwards_workspace_config_without_runtime_history(tmp
 
     assert runtime.repo_workspace.workspace_config == config.workspace_config
     assert not (repo_root / ".agent_runtime").exists()
+    assert runtime.repo_activity.active_batches(repo_root) == ()
 
 
 def test_runtime_history_requires_a_persisted_file(tmp_path) -> None:

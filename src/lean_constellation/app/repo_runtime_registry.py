@@ -26,6 +26,7 @@ from lean_constellation.app.config import LeanAppConfig
 from lean_constellation.app.runtime import create_app_runtime_services, external_client_config_from_app_config
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.services.concurrency import (
+    RepoActivityComponent,
     RepoActivityConflictError,
     RepoRuntimeWriterLease,
 )
@@ -224,6 +225,7 @@ class RepoRuntimeRegistry:
                     workspace_config=self.config.workspace_config,
                     register_application_tools=False,
                 )
+                self._workspace_runtime.app.repo_activity = RepoActivityComponent()
             return self._workspace_runtime
 
     def initialize_and_load(

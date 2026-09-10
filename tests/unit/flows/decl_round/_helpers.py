@@ -13,7 +13,7 @@ from lean_constellation.flows.content_node_task.decl_round.submissions import (
 )
 from lean_constellation.services.decl_graph import DeclRoundResultKind, DeclStage, DeclState
 from lean_constellation.services.external_clients import LeanMcpToolkitClient
-from lean_constellation.services.foundation import WriteMode
+from lean_constellation.services.foundation import ServiceResult, WriteMode
 from lean_constellation.services.runtime import LeanRuntimeServices
 from tests.unit_services_helpers import (
     CleanDeclarationSoundnessDispatcher,
@@ -27,6 +27,12 @@ from tests.unit_services_helpers import (
 
 
 NODE_PATH = "Main.Topic.Core"
+
+
+class _ClearRecoveryInterlock:
+    def check_repo_recovery_interlock(self, repo_root: Path) -> ServiceResult[None]:
+        del repo_root
+        return ServiceResult(ok=True, value=None)
 
 
 def make_decl_round_runtime(tmp_path: Path) -> tuple[FakeLeanFlowRuntime, LeanRuntimeServices, Path]:
@@ -45,6 +51,7 @@ def make_decl_round_runtime(tmp_path: Path) -> tuple[FakeLeanFlowRuntime, LeanRu
         ark_services=lean_runtime.ark,
         app_services=lean_runtime.app,
     )
+    lean_runtime.app.snapshot_runtime = _ClearRecoveryInterlock()
     return flow_runtime, lean_runtime, repo_root
 
 

@@ -45,7 +45,7 @@ def _complete_rejected_draft(lean_runtime, repo_root: Path) -> None:  # noqa: AN
         block_id=block_id,
         path="README.md",
         start_line=1,
-        end_line=5,
+        end_line=3,
         role="primary",
     ).ok
     assert material.mark_block_refs_done(repo_root, block_id=block_id).value.passed

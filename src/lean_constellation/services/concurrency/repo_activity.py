@@ -8,7 +8,7 @@ import fcntl
 import hashlib
 import json
 from pathlib import Path
-from threading import RLock
+from threading import RLock, get_ident
 from typing import TYPE_CHECKING, IO, Iterator
 
 if TYPE_CHECKING:
@@ -97,6 +97,8 @@ class RepoActivityComponent:
         self._node_owners: dict[tuple[Path, str], str] = {}
         self._persisted_batch_keys: set[tuple[Path, str]] = set()
         self._maintenance: dict[Path, str] = {}
+        self._maintenance_threads: dict[Path, int] = {}
+        self._maintenance_depth: dict[Path, int] = {}
         self._active_transactions: dict[Path, int] = {}
 
     @staticmethod
@@ -195,24 +197,39 @@ class RepoActivityComponent:
     ) -> Iterator[None]:
         root = self.canonical_root(repo_root)
         self._rehydrate_persisted_batches(root)
+        thread_id = get_ident()
         with self._control:
-            active_batch_ids = {
-                batch_id for candidate_root, batch_id in self._batches if candidate_root == root
-            }
-            if active_batch_ids and active_batch_ids != {compatible_batch_id}:
-                raise RepoActivityConflictError("Active content batch blocks repository maintenance.")
-            if self._active_transactions.get(root, 0) > 0:
-                raise RepoActivityConflictError("Active repository transactions block repository maintenance.")
             existing = self._maintenance.get(root)
-            if existing is not None and existing != owner:
-                raise RepoActivityConflictError(f"Repository maintenance is already owned by {existing}.")
-            self._maintenance[root] = owner
+            existing_thread = self._maintenance_threads.get(root)
+            if existing is not None:
+                if existing_thread != thread_id:
+                    raise RepoActivityConflictError(
+                        f"Repository maintenance is already owned by {existing}."
+                    )
+                self._maintenance_depth[root] = self._maintenance_depth.get(root, 1) + 1
+            else:
+                active_batch_ids = {
+                    batch_id for candidate_root, batch_id in self._batches if candidate_root == root
+                }
+                if active_batch_ids and active_batch_ids != {compatible_batch_id}:
+                    raise RepoActivityConflictError("Active content batch blocks repository maintenance.")
+                if self._active_transactions.get(root, 0) > 0:
+                    raise RepoActivityConflictError("Active repository transactions block repository maintenance.")
+                self._maintenance[root] = owner
+                self._maintenance_threads[root] = thread_id
+                self._maintenance_depth[root] = 1
         try:
             yield
         finally:
             with self._control:
-                if self._maintenance.get(root) == owner:
-                    self._maintenance.pop(root, None)
+                depth = self._maintenance_depth.get(root, 0)
+                if self._maintenance_threads.get(root) == thread_id:
+                    if depth > 1:
+                        self._maintenance_depth[root] = depth - 1
+                    else:
+                        self._maintenance.pop(root, None)
+                        self._maintenance_threads.pop(root, None)
+                        self._maintenance_depth.pop(root, None)
 
     @contextmanager
     def topology_write(self, repo_root: Path) -> Iterator[None]:
@@ -269,7 +286,10 @@ class RepoActivityComponent:
         try:
             with self._control:
                 maintenance = self._maintenance.get(root)
-                if maintenance is not None:
+                if (
+                    maintenance is not None
+                    and self._maintenance_threads.get(root) != get_ident()
+                ):
                     raise RepoActivityConflictError(
                         f"Repository maintenance is active and blocks new transactions: {maintenance}."
                     )
