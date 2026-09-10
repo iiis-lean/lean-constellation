@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import pytest
+
 from lean_constellation.app import LeanAdminApi, LeanAppConfig, RepoRuntimeRegistry
 from lean_constellation.app.admin_api import UpdateRepoRequirementInput
+from lean_constellation.app.runtime import PairedRestoreInterlock, repo_restore_interlock_path
 from lean_constellation.domain.preparation import (
     AdapterProviderRoute,
     AutoProviderRoute,
@@ -14,6 +17,94 @@ def _registry(tmp_path):
     return RepoRuntimeRegistry(
         LeanAppConfig(workspace_root=tmp_path, materialize_agent_homes=False)
     )
+
+
+@pytest.mark.parametrize(
+    ("blocker", "expected_issue"),
+    [
+        ("paired_restore", "paired_restore_recovery_required"),
+        ("active_batch", "repo_maintenance_conflict"),
+    ],
+)
+def test_requirement_update_guards_all_provider_preparation_writes(
+    tmp_path,
+    blocker: str,
+    expected_issue: str,
+) -> None:
+    registry = _registry(tmp_path)
+    runtime = registry.workspace_runtime()
+    consumer = tmp_path / "Consumer"
+    provider = tmp_path / "Provider"
+    assert runtime.repo_workspace.metadata.ensure_repo_model(consumer).ok
+    assert runtime.repo_workspace.metadata.ensure_repo_model(provider).ok
+    created = runtime.repo_workspace.requirement.create_requirement(
+        consumer,
+        name="need_provider",
+        target_repo="Provider",
+        reason="Need provider theorem.",
+        provider_route=AutoProviderRoute(),
+    )
+    assert created.ok and created.value is not None
+    assert runtime.repo_workspace.preparation.write_preparation_input(
+        provider,
+        input=RepoPreparationInput(
+            goal="Build provider.",
+            source_corpus_mode=SourceCorpusMode.PREPARE,
+            requirement_refs=[
+                {
+                    "consumer_repo": "Consumer",
+                    "requirement_name": "need_provider",
+                }
+            ],
+        ),
+    ).ok
+    if blocker == "paired_restore":
+        interlock = PairedRestoreInterlock(
+            repo_root=str(provider.resolve(strict=False)),
+            snapshot_id="provider-restore",
+        )
+        assert runtime.foundation.store.write_json_atomic(
+            repo_restore_interlock_path(provider),
+            interlock,
+        ).ok
+    else:
+        loaded = registry.get_or_load("Provider")
+        assert loaded.ok and loaded.value is not None
+        loaded.value.repo_activity.reserve_content_batch(
+            provider,
+            batch_id="provider-batch",
+            node_paths=["Main.Core"],
+        )
+
+    current = created.value.requirement
+    digest = runtime.repo_workspace.requirement.requirement_digest(current)
+    replacement = current.model_copy(update={"name": "need_exact_provider"})
+    admin = LeanAdminApi(
+        runtime,
+        workspace_root=tmp_path,
+        repo_runtime_registry=registry,
+    )
+
+    result = admin.update_repo_requirement(
+        UpdateRepoRequirementInput(
+            consumer_repo="Consumer",
+            current_requirement_name="need_provider",
+            expected_current_digest=digest,
+            replacement=replacement,
+            reason="Verify provider write guards.",
+            dry_run=False,
+        )
+    )
+
+    assert not result.ok
+    assert result.issues[0].kind == expected_issue
+    assert runtime.repo_workspace.requirement.get_requirement(
+        consumer,
+        name="need_provider",
+    ).ok
+    preparation = runtime.repo_workspace.preparation.get_preparation_input(provider)
+    assert preparation.ok and preparation.value is not None
+    assert preparation.value.input.requirement_refs[0].requirement_name == "need_provider"
 
 
 def test_admin_requirement_update_preview_and_apply_rename_refs(tmp_path) -> None:

@@ -1273,6 +1273,14 @@ class LeanAdminApi:
         roots: dict[str, Path] = {}
         values = [*args, *kwargs.values()]
         for value in values:
+            if isinstance(value, UpdateRepoRequirementInput) and self.workspace_root is not None:
+                for repo_dir in sorted(
+                    path
+                    for path in self.workspace_root.iterdir()
+                    if path.is_dir() and (path / ".lean_constellation").is_dir()
+                ):
+                    root = repo_dir.resolve(strict=False)
+                    roots[str(root)] = root
             if isinstance(value, Path):
                 root = value.resolve(strict=False)
                 roots[str(root)] = root
