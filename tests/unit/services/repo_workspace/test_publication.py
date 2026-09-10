@@ -518,6 +518,32 @@ def test_adapter_publication_exposes_flat_api_and_immutable_upstream(
     assert str(tmp_path) not in json.dumps(provenance)
 
 
+def test_complete_graph_includes_private_heads_and_keeps_stage_distinction(
+    tmp_path: Path,
+) -> None:
+    runtime, _ = _prepare_release_repo(tmp_path)
+    support = DeclRef(node="Main.Foundation.Defs", name="Support", revision=1)
+    _write_decl(
+        tmp_path,
+        node_path="Main.Results",
+        name="PrivateLemma",
+        statement_deps=(support,),
+        proof_deps=(support,),
+        public=False,
+    )
+
+    rendered = runtime.repo_workspace.publication.render_declaration_graph(tmp_path)
+
+    assert rendered.ok and rendered.value is not None, rendered.issues
+    private = next(
+        item for item in rendered.value.declarations if item.name == "PrivateLemma"
+    )
+    assert private.visibility == "private"
+    assert private.statement.deps[0].ref == support
+    assert private.proof is not None and private.proof.deps[0].ref == support
+    assert private.statement_dependencies == private.proof_dependencies
+
+
 def test_publication_status_badge_uses_proof_availability_and_flat_square(
     tmp_path: Path,
 ) -> None:

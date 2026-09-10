@@ -187,6 +187,7 @@ def _write_decl(
     state: DeclState = DeclState.PROVED,
     statement_deps=(),
     proof_deps=(),
+    public: bool = True,
 ) -> None:
     runtime = make_runtime()
     assert runtime.decl_graph.ensure_decl_graph(repo_root, node_path=node_path).ok
@@ -194,7 +195,7 @@ def _write_decl(
         name=name,
         node_path=node_path,
         kind=kind,
-        public=True,
+        public=public,
         current_revision=revision,
         revision_ids=list(range(1, revision + 1)),
         module=f"{node_path}.Theorems.{name}",

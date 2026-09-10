@@ -29,6 +29,12 @@ from lean_constellation.domain.repo import (
     proof_availability_for_completion_mode,
 )
 from lean_constellation.domain.refs import DeclRef
+from lean_constellation.services.decl_graph.models import (
+    DeclLifecycle,
+    DeclProof,
+    DeclRevisionStatus,
+    DeclStatement,
+)
 from lean_constellation.services.foundation import (
     FoundationContext,
     RepoPathClass,
@@ -127,6 +133,8 @@ class PublicApiDeclaration(StrictModel):
     state: str
     status: str
     proof_available: bool = False
+    statement: DeclStatement = Field(default_factory=DeclStatement)
+    proof: DeclProof | None = None
     formal_code: str | None = None
     statement_dependencies: list[str] = Field(default_factory=list)
     proof_dependencies: list[str] = Field(default_factory=list)
@@ -155,7 +163,7 @@ class AdapterUpstreamPublication(StrictModel):
 
 
 class PublicApiDocument(StrictModel):
-    schema_version: int = 4
+    schema_version: int = 5
     repo_key: str
     repo_format: Literal["native", "adapter"] = "native"
     release_id: str | None = None
@@ -174,7 +182,7 @@ class PublicBoundaryDeclaration(StrictModel):
 
 
 class PublicBoundariesDocument(StrictModel):
-    schema_version: int = 2
+    schema_version: int = 3
     repo_key: str
     repo_format: Literal["native", "adapter"] = "native"
     release_id: str | None = None
@@ -183,6 +191,24 @@ class PublicBoundariesDocument(StrictModel):
     dependencies: list[RepoPublicationDependency] = Field(default_factory=list)
     declarations: list[PublicBoundaryDeclaration] = Field(default_factory=list)
     summary: str
+
+
+class DeclarationGraphDeclaration(PublicApiDeclaration):
+    visibility: Literal["public", "private"]
+
+
+class ExternalDependenciesDocument(StrictModel):
+    schema_version: int = 2
+    repo_key: str
+    interfaces: list[dict[str, object]] = Field(default_factory=list)
+
+
+class DeclarationGraphDocument(StrictModel):
+    schema_version: int = 2
+    repo_key: str
+    release_id: str | None = None
+    declarations: list[DeclarationGraphDeclaration] = Field(default_factory=list)
+    external_dependencies: ExternalDependenciesDocument
 
 
 class RepoProvenanceDocument(StrictModel):
@@ -210,6 +236,8 @@ class RepoPublicationPreparationView(StrictModel):
     declarations_dir: str
     public_boundaries_markdown_path: str
     public_boundaries_json_path: str
+    declaration_graph_json_path: str
+    external_dependencies_json_path: str
     provenance_path: str
     gitignore_path: str
     topics: list[str] = Field(default_factory=list)
@@ -515,12 +543,27 @@ class RepoPublicationComponent:
             return self.runtime.foundation.fail(documents.issues)
         return self.runtime.foundation.ok(documents.value[1])
 
+    def render_declaration_graph(
+        self,
+        repo_root: Path,
+        *,
+        release_id: str | None = None,
+    ) -> ServiceResult[DeclarationGraphDocument]:
+        documents = self._render_public_documents(
+            Path(repo_root), release_id=release_id
+        )
+        if not documents.ok or documents.value is None:
+            return self.runtime.foundation.fail(documents.issues)
+        return self.runtime.foundation.ok(documents.value[2])
+
     def _render_public_documents(
         self,
         repo_root: Path,
         *,
         release_id: str | None,
-    ) -> ServiceResult[tuple[PublicApiDocument, PublicBoundariesDocument]]:
+    ) -> ServiceResult[
+        tuple[PublicApiDocument, PublicBoundariesDocument, DeclarationGraphDocument]
+    ]:
         repo_root = Path(repo_root)
         publication = self.runtime.repo_workspace.metadata.get_repo_publication(repo_root)
         if not publication.ok or publication.value is None:
@@ -575,74 +618,12 @@ class RepoPublicationComponent:
             if key in seen:
                 continue
             seen.add(key)
-            decl = self.runtime.decl_graph.get_decl_view(
-                repo_root, node_path=ref.node, name=ref.name
+            rendered = self._publication_declaration(
+                repo_root, ref=ref, resolved_revision=resolved_revision
             )
-            revision = self.runtime.decl_graph.get_decl_revision(
-                repo_root,
-                node_path=ref.node,
-                name=ref.name,
-                revision=resolved_revision,
-            )
-            if (
-                not decl.ok
-                or decl.value is None
-                or not revision.ok
-                or revision.value is None
-            ):
-                return self.runtime.foundation.fail([*decl.issues, *revision.issues])
-            statement_dependencies = [
-                self._dependency_label(item)
-                for item in revision.value.statement.deps
-            ]
-            proof_dependencies = [
-                self._dependency_label(item)
-                for item in (
-                    revision.value.proof.deps
-                    if revision.value.proof is not None
-                    else []
-                )
-            ]
-            source_origins = [
-                self._origin_label(item)
-                for item in (
-                    revision.value.statement.nl.origin
-                    if revision.value.statement.nl is not None
-                    else []
-                )
-            ]
-            declarations.append(
-                PublicApiDeclaration(
-                    name=ref.name,
-                    revision=resolved_revision,
-                    kind=str(decl.value.kind),
-                    node_path=ref.node,
-                    module=decl.value.module or ref.node,
-                    lean_full_name=revision.value.lean_decl_name,
-                    state=str(revision.value.state),
-                    status=str(revision.value.status),
-                    proof_available=(
-                        revision.value.proof is not None
-                        and revision.value.proof.formal is not None
-                    ),
-                    formal_code=(
-                        revision.value.proof.formal.code
-                        if (
-                            revision.value.proof is not None
-                            and revision.value.proof.formal is not None
-                        )
-                        else (
-                            revision.value.statement.formal.code
-                            if revision.value.statement.formal is not None
-                            else None
-                        )
-                    ),
-                    statement_dependencies=statement_dependencies,
-                    proof_dependencies=proof_dependencies,
-                    source_origins=source_origins,
-                    summary=decl.value.summary,
-                )
-            )
+            if not rendered.ok or rendered.value is None:
+                return self.runtime.foundation.fail(rendered.issues)
+            declarations.append(rendered.value)
         declarations.sort(key=lambda item: (item.node_path, item.name, item.revision))
         by_key = {
             (item.node_path, item.name, item.revision): item
@@ -734,7 +715,145 @@ class RepoPublicationComponent:
                 f"{len(api_declarations)} are exported through Main."
             ),
         )
-        return self.runtime.foundation.ok((api, boundaries))
+        complete = self._complete_declaration_graph(
+            repo_root,
+            tree=tree.value,
+            repo_format=repo_format.value.repo_format,
+            release_id=resolved_release_id,
+            public_declarations=declarations,
+        )
+        if not complete.ok or complete.value is None:
+            return self.runtime.foundation.fail(complete.issues)
+        return self.runtime.foundation.ok((api, boundaries, complete.value))
+
+    def _publication_declaration(
+        self,
+        repo_root: Path,
+        *,
+        ref: DeclRef,
+        resolved_revision: int,
+    ) -> ServiceResult[PublicApiDeclaration]:
+        decl = self.runtime.decl_graph.get_decl_view(
+            repo_root, node_path=ref.node, name=ref.name
+        )
+        revision = self.runtime.decl_graph.get_decl_revision(
+            repo_root,
+            node_path=ref.node,
+            name=ref.name,
+            revision=resolved_revision,
+        )
+        if (
+            not decl.ok
+            or decl.value is None
+            or not revision.ok
+            or revision.value is None
+        ):
+            return self.runtime.foundation.fail([*decl.issues, *revision.issues])
+        statement = revision.value.statement
+        proof = revision.value.proof
+        return self.runtime.foundation.ok(
+            PublicApiDeclaration(
+                name=ref.name,
+                revision=resolved_revision,
+                kind=str(decl.value.kind),
+                node_path=ref.node,
+                module=decl.value.module or ref.node,
+                lean_full_name=revision.value.lean_decl_name,
+                state=str(revision.value.state),
+                status=str(revision.value.status),
+                proof_available=proof is not None and proof.formal is not None,
+                statement=statement,
+                proof=proof,
+                formal_code=(
+                    proof.formal.code
+                    if proof is not None and proof.formal is not None
+                    else statement.formal.code if statement.formal is not None else None
+                ),
+                statement_dependencies=[
+                    self._dependency_label(item) for item in statement.deps
+                ],
+                proof_dependencies=[
+                    self._dependency_label(item)
+                    for item in (proof.deps if proof is not None else [])
+                ],
+                source_origins=[
+                    self._origin_label(item)
+                    for item in (
+                        statement.nl.origin if statement.nl is not None else []
+                    )
+                ],
+                summary=decl.value.summary,
+            )
+        )
+
+    def _complete_declaration_graph(
+        self,
+        repo_root: Path,
+        *,
+        tree: object,
+        repo_format: RepoFormat,
+        release_id: str | None,
+        public_declarations: list[PublicApiDeclaration],
+    ) -> ServiceResult[DeclarationGraphDocument]:
+        declarations: list[DeclarationGraphDeclaration] = []
+        if repo_format == RepoFormat.ADAPTER:
+            declarations = [
+                DeclarationGraphDeclaration(
+                    **item.model_dump(mode="python"), visibility="public"
+                )
+                for item in public_declarations
+            ]
+        else:
+            for node in getattr(tree, "nodes"):
+                if getattr(getattr(node, "kind"), "value", None) != "content":
+                    continue
+                listed = self.runtime.decl_graph.list_decls(
+                    repo_root, node_path=getattr(node, "path")
+                )
+                if not listed.ok or listed.value is None:
+                    return self.runtime.foundation.fail(listed.issues)
+                for decl in listed.value:
+                    if decl.lifecycle != DeclLifecycle.ACTIVE:
+                        continue
+                    rendered = self._publication_declaration(
+                        repo_root,
+                        ref=DeclRef(
+                            node=decl.node_path,
+                            name=decl.name,
+                            revision=decl.current_revision,
+                        ),
+                        resolved_revision=decl.current_revision,
+                    )
+                    if not rendered.ok or rendered.value is None:
+                        return self.runtime.foundation.fail(rendered.issues)
+                    if rendered.value.status != DeclRevisionStatus.COMMITTED.value:
+                        return self.runtime.foundation.fail(
+                            self.runtime.foundation.issue(
+                                "publication_active_decl_not_committed",
+                                "Complete publication graph requires committed active declaration heads.",
+                                object_ref=(
+                                    f"{decl.node_path}.{decl.name}@{decl.current_revision}"
+                                ),
+                                current=rendered.value.status,
+                                expected=DeclRevisionStatus.COMMITTED.value,
+                            )
+                        )
+                    declarations.append(
+                        DeclarationGraphDeclaration(
+                            **rendered.value.model_dump(mode="python"),
+                            visibility="public" if decl.public else "private",
+                        )
+                    )
+        declarations.sort(key=lambda item: (item.node_path, item.name, item.revision))
+        external = ExternalDependenciesDocument(repo_key=repo_root.name)
+        return self.runtime.foundation.ok(
+            DeclarationGraphDocument(
+                repo_key=repo_root.name,
+                release_id=release_id,
+                declarations=declarations,
+                external_dependencies=external,
+            )
+        )
 
     def prepare_publication(
         self,
@@ -795,7 +914,7 @@ class RepoPublicationComponent:
         )
         if not public_documents.ok or public_documents.value is None:
             return self.runtime.foundation.fail(public_documents.issues)
-        api, boundaries = public_documents.value
+        api, boundaries, declaration_graph = public_documents.value
         provenance = self._build_provenance(
             repo_root,
             release_id=release_id,
@@ -842,6 +961,8 @@ class RepoPublicationComponent:
         api_md_path = docs_root / "PUBLIC_API.md"
         boundaries_json_path = docs_root / "public-boundaries.json"
         boundaries_md_path = docs_root / "PUBLIC_BOUNDARIES.md"
+        declaration_graph_json_path = docs_root / "declaration-graph.json"
+        external_dependencies_json_path = docs_root / "external-dependencies.json"
         declarations_root = docs_root / "declarations"
         declarations_root.mkdir(parents=True, exist_ok=True)
         assets_root = docs_root / "assets"
@@ -853,13 +974,15 @@ class RepoPublicationComponent:
             return self.runtime.foundation.fail(publication_tree.issues)
         stale_pages = self._stale_declaration_pages(
             declarations_root=declarations_root,
-            current=[item.declaration for item in boundaries.declarations],
+            current=list(declaration_graph.declarations),
         )
         for stale_page in stale_pages:
             stale_page.unlink()
         for path, value in (
             (api_json_path, api),
             (boundaries_json_path, boundaries),
+            (declaration_graph_json_path, declaration_graph),
+            (external_dependencies_json_path, declaration_graph.external_dependencies),
             (provenance_path, provenance.value),
         ):
             result = self.runtime.foundation.store.write_json_atomic(path, value)
@@ -904,9 +1027,7 @@ class RepoPublicationComponent:
             encoding="utf-8",
         )
         written.append(boundaries_md_path.relative_to(repo_root).as_posix())
-        for declaration in [
-            item.declaration for item in boundaries.declarations
-        ]:
+        for declaration in declaration_graph.declarations:
             declaration_path = (
                 declarations_root
                 / f"{self._public_api_slug(declaration)}.md"
@@ -953,6 +1074,12 @@ class RepoPublicationComponent:
                     repo_root
                 ).as_posix(),
                 public_boundaries_json_path=boundaries_json_path.relative_to(
+                    repo_root
+                ).as_posix(),
+                declaration_graph_json_path=declaration_graph_json_path.relative_to(
+                    repo_root
+                ).as_posix(),
+                external_dependencies_json_path=external_dependencies_json_path.relative_to(
                     repo_root
                 ).as_posix(),
                 provenance_path=provenance_path.relative_to(repo_root).as_posix(),
@@ -2197,6 +2324,9 @@ class RepoPublicationComponent:
 
 __all__ = [
     "AdapterUpstreamPublication",
+    "DeclarationGraphDeclaration",
+    "DeclarationGraphDocument",
+    "ExternalDependenciesDocument",
     "PublicApiDeclaration",
     "PublicApiDocument",
     "PublicBoundariesDocument",

@@ -59,6 +59,9 @@ from lean_constellation.services.repo_workspace.dependency_release import (
 )
 from lean_constellation.services.repo_workspace.publication import (
     AdapterUpstreamPublication,
+    DeclarationGraphDeclaration,
+    DeclarationGraphDocument,
+    ExternalDependenciesDocument,
     PublicApiDeclaration,
     PublicApiDocument,
     PublicBoundariesDocument,
@@ -84,6 +87,9 @@ from lean_constellation.services.repo_workspace.workspace_publication import (
 
 __all__ = [
     "AdapterUpstreamPublication",
+    "DeclarationGraphDeclaration",
+    "DeclarationGraphDocument",
+    "ExternalDependenciesDocument",
     "AdapterCompatibilityComponent",
     "AdapterMathlibPin",
     "AdapterSetupView",
