@@ -34,6 +34,7 @@ from lean_constellation.services.decl_graph.models import (
     DeclProof,
     DeclRevisionStatus,
     DeclStatement,
+    RepoDeclDep,
 )
 from lean_constellation.services.foundation import (
     FoundationContext,
@@ -197,10 +198,30 @@ class DeclarationGraphDeclaration(PublicApiDeclaration):
     visibility: Literal["public", "private"]
 
 
+class ExternalDependencyUse(StrictModel):
+    consumer: DeclRef
+    stage: Literal["Statement", "Proof"]
+
+
+class ExternalDependencyInterface(StrictModel):
+    ref: DeclRef
+    provider_release_id: str | None = None
+    provider_commit: str | None = None
+    source: str | None = None
+    provider_completion_mode: str | None = None
+    required_availability: str | None = None
+    required_availability_source: str | None = None
+    resolved_revision: int
+    decl_state: str | None = None
+    availability: str | None = None
+    reason: str | None = None
+    uses: list[ExternalDependencyUse] = Field(default_factory=list)
+
+
 class ExternalDependenciesDocument(StrictModel):
     schema_version: int = 2
     repo_key: str
-    interfaces: list[dict[str, object]] = Field(default_factory=list)
+    interfaces: list[ExternalDependencyInterface] = Field(default_factory=list)
 
 
 class DeclarationGraphDocument(StrictModel):
@@ -236,7 +257,9 @@ class RepoPublicationPreparationView(StrictModel):
     declarations_dir: str
     public_boundaries_markdown_path: str
     public_boundaries_json_path: str
+    declaration_graph_markdown_path: str
     declaration_graph_json_path: str
+    external_dependencies_markdown_path: str
     external_dependencies_json_path: str
     provenance_path: str
     gitignore_path: str
@@ -845,13 +868,128 @@ class RepoPublicationComponent:
                         )
                     )
         declarations.sort(key=lambda item: (item.node_path, item.name, item.revision))
-        external = ExternalDependenciesDocument(repo_key=repo_root.name)
+        external = self._external_dependencies_document(
+            repo_root, declarations=declarations
+        )
+        if not external.ok or external.value is None:
+            return self.runtime.foundation.fail(external.issues)
         return self.runtime.foundation.ok(
             DeclarationGraphDocument(
                 repo_key=repo_root.name,
                 release_id=release_id,
                 declarations=declarations,
-                external_dependencies=external,
+                external_dependencies=external.value,
+            )
+        )
+
+    def _external_dependencies_document(
+        self,
+        repo_root: Path,
+        *,
+        declarations: list[DeclarationGraphDeclaration],
+    ) -> ServiceResult[ExternalDependenciesDocument]:
+        listed = self.runtime.repo_workspace.requirement.list_requirements(repo_root)
+        if not listed.ok or listed.value is None:
+            return self.runtime.foundation.fail(listed.issues)
+        requirements = [item.requirement for item in listed.value]
+        grouped: dict[
+            tuple[str, str, str, int],
+            tuple[RepoDeclDep, list[ExternalDependencyUse]],
+        ] = {}
+        for declaration in declarations:
+            consumer = DeclRef(
+                node=declaration.node_path,
+                name=declaration.name,
+                revision=declaration.revision,
+            )
+            staged = [("Statement", declaration.statement.deps)]
+            if declaration.proof is not None:
+                staged.append(("Proof", declaration.proof.deps))
+            for stage, dependencies in staged:
+                for dependency in dependencies:
+                    if not isinstance(dependency, RepoDeclDep) or dependency.ref.repo is None:
+                        continue
+                    ref = dependency.ref
+                    key = (ref.repo, ref.node, ref.name, ref.revision)
+                    current = grouped.setdefault(key, (dependency, []))
+                    current[1].append(
+                        ExternalDependencyUse(consumer=consumer, stage=stage)
+                    )
+        interfaces: list[ExternalDependencyInterface] = []
+        for key in sorted(grouped):
+            dependency, uses = grouped[key]
+            ref = dependency.ref
+            requirement = next(
+                (
+                    item
+                    for item in requirements
+                    if any(interface.bound_decl == ref for interface in item.interfaces)
+                ),
+                None,
+            )
+            if requirement is None:
+                requirement = next(
+                    (
+                        item
+                        for item in requirements
+                        if (item.provider_repo or item.target_repo) == ref.repo
+                    ),
+                    None,
+                )
+            completion_mode = None
+            if requirement is not None and requirement.provider_release_id is not None:
+                provider_root = repo_root.parent / (
+                    requirement.provider_repo or requirement.target_repo
+                )
+                if provider_root.is_dir():
+                    release = self.runtime.repo_workspace.release.get_release(
+                        provider_root,
+                        release_id=requirement.provider_release_id,
+                    )
+                    if release.ok and release.value is not None:
+                        completion_mode = release.value.release.completion_mode.value
+            required = (
+                requirement.required_proof_availability.value
+                if requirement is not None
+                else None
+            )
+            interfaces.append(
+                ExternalDependencyInterface(
+                    ref=ref,
+                    provider_release_id=(
+                        requirement.provider_release_id
+                        if requirement is not None
+                        else None
+                    ),
+                    provider_commit=(
+                        requirement.provider_commit if requirement is not None else None
+                    ),
+                    source=(
+                        requirement.provider_git_url if requirement is not None else None
+                    ),
+                    provider_completion_mode=completion_mode,
+                    required_availability=required,
+                    required_availability_source=(
+                        "requirement" if requirement is not None else None
+                    ),
+                    resolved_revision=ref.revision,
+                    availability=required,
+                    reason=dependency.reason,
+                    uses=sorted(
+                        uses,
+                        key=lambda item: (
+                            item.consumer.node,
+                            item.consumer.name,
+                            item.consumer.revision,
+                            item.stage,
+                        ),
+                    ),
+                )
+            )
+        return self.runtime.foundation.ok(
+            ExternalDependenciesDocument(
+                repo_key=repo_root.name,
+                interfaces=interfaces,
             )
         )
 
@@ -962,7 +1100,9 @@ class RepoPublicationComponent:
         boundaries_json_path = docs_root / "public-boundaries.json"
         boundaries_md_path = docs_root / "PUBLIC_BOUNDARIES.md"
         declaration_graph_json_path = docs_root / "declaration-graph.json"
+        declaration_graph_md_path = docs_root / "DECLARATION_GRAPH.md"
         external_dependencies_json_path = docs_root / "external-dependencies.json"
+        external_dependencies_md_path = docs_root / "EXTERNAL_DEPENDENCIES.md"
         declarations_root = docs_root / "declarations"
         declarations_root.mkdir(parents=True, exist_ok=True)
         assets_root = docs_root / "assets"
@@ -1027,6 +1167,18 @@ class RepoPublicationComponent:
             encoding="utf-8",
         )
         written.append(boundaries_md_path.relative_to(repo_root).as_posix())
+        declaration_graph_md_path.write_text(
+            self._render_declaration_graph_markdown(declaration_graph),
+            encoding="utf-8",
+        )
+        written.append(declaration_graph_md_path.relative_to(repo_root).as_posix())
+        external_dependencies_md_path.write_text(
+            self._render_external_dependencies_markdown(
+                declaration_graph.external_dependencies
+            ),
+            encoding="utf-8",
+        )
+        written.append(external_dependencies_md_path.relative_to(repo_root).as_posix())
         for declaration in declaration_graph.declarations:
             declaration_path = (
                 declarations_root
@@ -1076,7 +1228,13 @@ class RepoPublicationComponent:
                 public_boundaries_json_path=boundaries_json_path.relative_to(
                     repo_root
                 ).as_posix(),
+                declaration_graph_markdown_path=declaration_graph_md_path.relative_to(
+                    repo_root
+                ).as_posix(),
                 declaration_graph_json_path=declaration_graph_json_path.relative_to(
+                    repo_root
+                ).as_posix(),
+                external_dependencies_markdown_path=external_dependencies_md_path.relative_to(
                     repo_root
                 ).as_posix(),
                 external_dependencies_json_path=external_dependencies_json_path.relative_to(
@@ -1447,6 +1605,87 @@ class RepoPublicationComponent:
         return "\n".join(lines).rstrip() + "\n"
 
     @classmethod
+    def _render_declaration_graph_markdown(
+        cls,
+        value: DeclarationGraphDocument,
+    ) -> str:
+        declarations = cls._ordered_public_api_declarations(
+            list(value.declarations)
+        )
+        by_key = {
+            (item.node_path, item.name): item for item in value.declarations
+        }
+        lines = [
+            "# Complete Declaration Graph",
+            "",
+            "This catalog contains the current committed head of every active public "
+            "and private declaration. It excludes deleted declarations and revision history.",
+            "",
+            f"- Declarations: `{len(declarations)}`",
+            f"- Public: `{sum(item.visibility == 'public' for item in declarations)}`",
+            f"- Private: `{sum(item.visibility == 'private' for item in declarations)}`",
+            "",
+            "## Declarations",
+            "",
+            "| Node | Declaration | Visibility | Kind | Status |",
+            "| --- | --- | --- | --- | --- |",
+        ]
+        for declaration in declarations:
+            complete = by_key[(declaration.node_path, declaration.name)]
+            lines.append(
+                "| "
+                + " | ".join(
+                    [
+                        f"`{declaration.node_path}`",
+                        (
+                            "[`"
+                            + declaration.name
+                            + "`](declarations/"
+                            + cls._public_api_slug(declaration)
+                            + ".md)"
+                        ),
+                        f"`{complete.visibility}`",
+                        f"`{declaration.kind}`",
+                        f"`{declaration.state}`",
+                    ]
+                )
+                + " |"
+            )
+        return "\n".join(lines).rstrip() + "\n"
+
+    @classmethod
+    def _render_external_dependencies_markdown(
+        cls,
+        value: ExternalDependenciesDocument,
+    ) -> str:
+        lines = [
+            "# External Declaration Dependencies",
+            "",
+            "External provider declarations referenced by the complete active graph. "
+            "Provider graphs are not copied recursively.",
+            "",
+            "| Provider | Declaration | Revision | Required | Uses |",
+            "| --- | --- | --- | --- | --- |",
+        ]
+        for interface in value.interfaces:
+            lines.append(
+                "| "
+                + " | ".join(
+                    [
+                        f"`{interface.ref.repo}`",
+                        f"`{interface.ref.node}.{interface.ref.name}`",
+                        f"`{interface.resolved_revision}`",
+                        f"`{interface.required_availability or 'not recorded'}`",
+                        f"`{len(interface.uses)}`",
+                    ]
+                )
+                + " |"
+            )
+        if not value.interfaces:
+            lines.append("| — | — | — | — | `0` |")
+        return "\n".join(lines).rstrip() + "\n"
+
+    @classmethod
     def _render_public_boundary_svg(
         cls,
         *,
@@ -1747,7 +1986,8 @@ class RepoPublicationComponent:
     ) -> str:
         lines = [
             "[← Public API](../PUBLIC_API.md) · "
-            "[Public boundaries](../PUBLIC_BOUNDARIES.md)",
+            "[Public boundaries](../PUBLIC_BOUNDARIES.md) · "
+            "[Complete graph](../DECLARATION_GRAPH.md)",
             "",
             f"# `{declaration.name}`",
             "",
@@ -1759,16 +1999,44 @@ class RepoPublicationComponent:
             f"- State: `{declaration.state}`",
             f"- Revision status: `{declaration.status}`",
             f"- Repository completion: `{value.completion_mode}`",
-            (
-                "- Formal code: final proof projection"
-                if declaration.proof_available
-                else "- Formal code: final statement projection"
-            ),
+            "- Compatibility `formal_code`: final proof projection"
+            if declaration.proof_available
+            else "- Compatibility `formal_code`: final statement projection",
         ]
-        if declaration.formal_code:
-            lines.extend(
-                ["", "## Lean code", "", "```lean", declaration.formal_code.rstrip(), "```"]
-            )
+        statement_nl = declaration.statement.nl
+        statement_formal = declaration.statement.formal
+        proof_nl = declaration.proof.nl if declaration.proof is not None else None
+        proof_formal = (
+            declaration.proof.formal if declaration.proof is not None else None
+        )
+        lines.extend(
+            [
+                "",
+                "## Statement NL",
+                "",
+                statement_nl.text
+                if statement_nl is not None and statement_nl.text
+                else "Not recorded.",
+                "",
+                "## Statement Formal",
+                "",
+            ]
+        )
+        if statement_formal is not None and statement_formal.code:
+            lines.extend(["```lean", statement_formal.code.rstrip(), "```"])
+        else:
+            lines.append("Not recorded.")
+        lines.extend(["", "## Proof NL", ""])
+        lines.append(
+            proof_nl.text
+            if proof_nl is not None and proof_nl.text
+            else "Not recorded."
+        )
+        lines.extend(["", "## Proof Formal", ""])
+        if proof_formal is not None and proof_formal.code:
+            lines.extend(["```lean", proof_formal.code.rstrip(), "```"])
+        else:
+            lines.append("Not recorded.")
         if declaration.statement_dependencies:
             lines.extend(
                 [
@@ -2327,6 +2595,8 @@ __all__ = [
     "DeclarationGraphDeclaration",
     "DeclarationGraphDocument",
     "ExternalDependenciesDocument",
+    "ExternalDependencyInterface",
+    "ExternalDependencyUse",
     "PublicApiDeclaration",
     "PublicApiDocument",
     "PublicBoundariesDocument",

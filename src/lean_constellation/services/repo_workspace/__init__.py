@@ -73,6 +73,11 @@ from lean_constellation.services.repo_workspace.publication import (
     RepoPublicationPreparationView,
     RepoProvenanceDocument,
 )
+from lean_constellation.services.repo_workspace.portable_export import (
+    PortableExportComponent,
+    PortableExportReceipt,
+    PortableExportView,
+)
 from lean_constellation.services.repo_workspace.remote_publication import (
     RepoRemotePublicationComponent,
     RepoRemotePublicationPreview,
@@ -131,6 +136,9 @@ __all__ = [
     "PublicBoundariesDocument",
     "PublicBoundaryDeclaration",
     "PublicationDirectoryExclusion",
+    "PortableExportComponent",
+    "PortableExportReceipt",
+    "PortableExportView",
     "RepoDependencyChangePreview",
     "RepoDependencyChangeReceipt",
     "RepoDependencyReleaseComponent",

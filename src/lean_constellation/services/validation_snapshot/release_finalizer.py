@@ -129,6 +129,7 @@ class RepoReleaseFinalizerComponent:
         "API.md",
         "PROVENANCE.md",
         "README.md",
+        "lc-export.json",
         "lake-manifest.json",
         "lakefile.lean",
         "lakefile.toml",

@@ -66,6 +66,7 @@ from lean_constellation.services.repo_workspace.repo_lifecycle_lock import (
     RepoLifecycleLockComponent,
     WorkspaceRepoCreationLockComponent,
 )
+from lean_constellation.services.repo_workspace.portable_export import PortableExportComponent
 from lean_constellation.services.repo_workspace.provider_availability import ProviderAvailabilityComponent
 from lean_constellation.services.repo_workspace.publication import RepoPublicationComponent
 from lean_constellation.services.repo_workspace.remote_publication import (
@@ -133,6 +134,7 @@ class RepoWorkspaceService:
             runtime,
             workspace_policy=self.workspace_config.publication,
         )
+        self.portable_export = PortableExportComponent(runtime)
         self.dependency_release = dependency_release or RepoDependencyReleaseComponent(
             runtime
         )

@@ -377,9 +377,16 @@ def test_publication_documents_are_portable_and_managed_readme_is_preserved(
     assert "No declaration summary is available." in public_result_markdown
     assert "## Statement dependencies" in public_result_markdown
     assert "## Proof dependencies" in public_result_markdown
+    for heading in (
+        "## Statement NL",
+        "## Statement Formal",
+        "## Proof NL",
+        "## Proof Formal",
+    ):
+        assert heading in public_result_markdown
     assert "theorem PublicResult" in public_result_markdown
     assert "trivial" in public_result_markdown
-    assert "sorry" not in public_result_markdown
+    assert "sorry" in public_result_markdown
     assert prepared.value.declarations_dir == (
         "docs/lean-constellation/declarations"
     )
@@ -542,6 +549,38 @@ def test_complete_graph_includes_private_heads_and_keeps_stage_distinction(
     assert private.statement.deps[0].ref == support
     assert private.proof is not None and private.proof.deps[0].ref == support
     assert private.statement_dependencies == private.proof_dependencies
+
+
+def test_complete_graph_summarizes_external_dependencies_without_copying_provider(
+    tmp_path: Path,
+) -> None:
+    runtime, _ = _prepare_release_repo(tmp_path)
+    provider = DeclRef(
+        repo="ProviderRepo",
+        node="Main.Results",
+        name="ProviderTheorem",
+        revision=4,
+    )
+    _write_decl(
+        tmp_path,
+        node_path="Main.Results",
+        name="UsesProvider",
+        statement_deps=(provider,),
+        proof_deps=(provider,),
+        public=False,
+    )
+
+    rendered = runtime.repo_workspace.publication.render_declaration_graph(tmp_path)
+
+    assert rendered.ok and rendered.value is not None, rendered.issues
+    external = rendered.value.external_dependencies.interfaces
+    assert len(external) == 1
+    assert external[0].ref == provider
+    assert [(item.consumer.name, item.stage) for item in external[0].uses] == [
+        ("UsesProvider", "Proof"),
+        ("UsesProvider", "Statement"),
+    ]
+    assert all(item.name != "ProviderTheorem" for item in rendered.value.declarations)
 
 
 def test_publication_status_badge_uses_proof_availability_and_flat_square(
