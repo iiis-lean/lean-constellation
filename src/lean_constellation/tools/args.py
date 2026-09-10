@@ -429,7 +429,11 @@ class CreateScopeNodeArgs(StrictModel):
     goal: str = Field(description="Stable mathematical ownership or capability of this scope across contract versions.")
     boundary: str = Field(description="Exact mathematical/source region owned by this scope and excluded from siblings.")
     objective: str | None = Field(default=None, description="Current contract-version action within the stable scope boundary.")
-    constraints: str | None = Field(default=None, description="Optional representation, dependency, or non-goal constraints.")
+    constraints: str | None = Field(default=None, description="Optional stable representation, dependency, or non-goal constraints.")
+    execution_constraints: str | None = Field(
+        default=None,
+        description="Optional execution guidance for the current contract version.",
+    )
     success_criteria: str | None = Field(default=None, description="Optional observable closeout conditions for this scope version.")
 
 
@@ -439,7 +443,11 @@ class CreateContentNodeArgs(StrictModel):
     boundary: str = Field(description="Exact mathematical/source region owned by this content node and excluded from siblings.")
     objective: str = Field(description="Current contract-version action within the stable boundary.")
     success_criteria: str = Field(description="Observable conditions required to close the current content contract version.")
-    constraints: str | None = Field(default=None, description="Optional representation, dependency, or non-goal constraints.")
+    constraints: str | None = Field(default=None, description="Optional stable representation, dependency, or non-goal constraints.")
+    execution_constraints: str | None = Field(
+        default=None,
+        description="Optional execution guidance for the current contract version.",
+    )
 
 
 class ContractCoreUpdateArgs(NodePathArgs):
@@ -450,7 +458,11 @@ class ContractCoreUpdateArgs(NodePathArgs):
     boundary: str | None = Field(default=None, description="Updated exact owned region or sibling exclusions, if changing them.")
     objective: str | None = Field(default=None, description="Updated current contract-version action, if changing it.")
     success_criteria: str | None = Field(default=None, description="Updated observable closeout conditions, if changing them.")
-    constraints: str | None = Field(default=None, description="Updated representation, dependency, or non-goal constraints.")
+    constraints: str | None = Field(default=None, description="Updated stable representation, dependency, or non-goal constraints.")
+    execution_constraints: str | None = Field(
+        default=None,
+        description="Updated execution guidance for the current contract version.",
+    )
 
 
 class ContractTaskCompletionModeArgs(NodePathArgs):
@@ -767,6 +779,10 @@ class NodeMathlibDeclHintArgs(NodePathArgs):
 class StrategyEnsureArgs(StrictModel):
     objective: str = Field(description="Objective of the open declaration strategy.")
     rationale: str | None = Field(default=None, description="Optional rationale for the strategy.")
+    execution_constraints: str | None = Field(
+        default=None,
+        description="Optional execution guidance for carrying out this strategy; not mathematical scope or desired result.",
+    )
 
 
 class StrategyCloseArgs(StrictModel):
@@ -777,6 +793,10 @@ class StrategyCloseArgs(StrictModel):
 
 class RoundDraftArgs(StrictModel):
     objective: str = Field(description="Round objective.")
+    execution_constraints: str | None = Field(
+        default=None,
+        description="Optional execution guidance specific to this round.",
+    )
 
 
 class RoundIdArgs(StrictModel):
@@ -818,6 +838,10 @@ class DeclCreateArgs(StrictModel):
     kind: str = Field(description="Declaration kind.")
     objective: str = Field(description="Mathematical objective for this declaration change in the current round.")
     summary: str = Field(description="Concise stable catalog summary of the new declaration.")
+    execution_constraints: str | None = Field(
+        default=None,
+        description="Optional execution guidance specific to this declaration change.",
+    )
     public: bool = Field(default=False, description="Whether the declaration should be public.")
     target_state: str = Field(default="declared", description="Target state after this round: declared or proved.")
     require_target_state_satisfied: bool = Field(
@@ -829,6 +853,10 @@ class DeclCreateArgs(StrictModel):
 class DeclUpdateArgs(StrictModel):
     decl_name: str = Field(description="Existing declaration name.")
     objective: str = Field(description="Objective for this update.")
+    execution_constraints: str | None = Field(
+        default=None,
+        description="Optional execution guidance specific to this declaration change.",
+    )
     target_state: str = Field(description="Target state after this update: declared or proved.")
     start_stage: Literal[
         "statement_nl", "statement_formal", "proof_nl", "proof_formal"

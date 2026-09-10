@@ -179,6 +179,7 @@ class DeclGraphService:
         node_path: str,
         strategy_id: str,
         objective: str,
+        execution_constraints: str | None = None,
         declarations: list[DeclDraftSpec],
     ) -> ServiceResult[RoundDraftCreatedResult]:
         return self.round_execution.create_round_with_decl_drafts(
@@ -186,6 +187,7 @@ class DeclGraphService:
             node_path=node_path,
             strategy_id=strategy_id,
             objective=objective,
+            execution_constraints=execution_constraints,
             declarations=declarations,
         )
 
@@ -342,12 +344,14 @@ class DeclGraphService:
         node_path: str,
         objective: str,
         rationale: str | None = None,
+        execution_constraints: str | None = None,
     ) -> ServiceResult[DeclGraphStrategy]:
         return self.strategy_round.ensure_open_strategy(
             repo_root,
             node_path=node_path,
             objective=objective,
             rationale=rationale,
+            execution_constraints=execution_constraints,
         )
 
     def ensure_open_strategy_view(
@@ -357,8 +361,15 @@ class DeclGraphService:
         node_path: str,
         objective: str,
         rationale: str | None = None,
+        execution_constraints: str | None = None,
     ) -> ServiceResult[DeclGraphStrategyView]:
-        strategy = self.ensure_open_strategy(repo_root, node_path=node_path, objective=objective, rationale=rationale)
+        strategy = self.ensure_open_strategy(
+            repo_root,
+            node_path=node_path,
+            objective=objective,
+            rationale=rationale,
+            execution_constraints=execution_constraints,
+        )
         if not strategy.ok or strategy.value is None:
             return self.runtime.foundation.fail(strategy.issues)
         return self.runtime.foundation.ok(self.views.strategy_view(strategy.value))
@@ -370,8 +381,15 @@ class DeclGraphService:
         node_path: str,
         objective: str,
         rationale: str | None = None,
+        execution_constraints: str | None = None,
     ) -> ServiceResult[DeclGraphStrategyAgentView]:
-        strategy = self.ensure_open_strategy(repo_root, node_path=node_path, objective=objective, rationale=rationale)
+        strategy = self.ensure_open_strategy(
+            repo_root,
+            node_path=node_path,
+            objective=objective,
+            rationale=rationale,
+            execution_constraints=execution_constraints,
+        )
         if not strategy.ok or strategy.value is None:
             return self.runtime.foundation.fail(strategy.issues)
         return self.strategy_agent_view(repo_root, node_path=node_path, strategy=strategy.value)
@@ -543,12 +561,14 @@ class DeclGraphService:
         node_path: str,
         strategy_id: str,
         objective: str,
+        execution_constraints: str | None = None,
     ) -> ServiceResult[DeclGraphRound]:
         return self.strategy_round.create_round_draft(
             repo_root,
             node_path=node_path,
             strategy_id=strategy_id,
             objective=objective,
+            execution_constraints=execution_constraints,
         )
 
     def create_round_draft_view(
@@ -558,8 +578,15 @@ class DeclGraphService:
         node_path: str,
         strategy_id: str,
         objective: str,
+        execution_constraints: str | None = None,
     ) -> ServiceResult[DeclGraphRoundView]:
-        round_record = self.create_round_draft(repo_root, node_path=node_path, strategy_id=strategy_id, objective=objective)
+        round_record = self.create_round_draft(
+            repo_root,
+            node_path=node_path,
+            strategy_id=strategy_id,
+            objective=objective,
+            execution_constraints=execution_constraints,
+        )
         if not round_record.ok or round_record.value is None:
             return self.runtime.foundation.fail(round_record.issues)
         return self.runtime.foundation.ok(self.views.round_view(round_record.value))
@@ -571,8 +598,15 @@ class DeclGraphService:
         node_path: str,
         strategy_id: str,
         objective: str,
+        execution_constraints: str | None = None,
     ) -> ServiceResult[DeclGraphRoundAgentView]:
-        round_record = self.create_round_draft(repo_root, node_path=node_path, strategy_id=strategy_id, objective=objective)
+        round_record = self.create_round_draft(
+            repo_root,
+            node_path=node_path,
+            strategy_id=strategy_id,
+            objective=objective,
+            execution_constraints=execution_constraints,
+        )
         if not round_record.ok or round_record.value is None:
             return self.runtime.foundation.fail(round_record.issues)
         return self.round_agent_view(repo_root, node_path=node_path, round_record=round_record.value)
@@ -927,6 +961,7 @@ class DeclGraphService:
         kind: str,
         objective: str,
         summary: str,
+        execution_constraints: str | None = None,
         public: bool = False,
         target_state: DeclState | str = DeclState.DECLARED,
         require_target_state_satisfied: bool = True,
@@ -939,6 +974,7 @@ class DeclGraphService:
             kind=kind,
             objective=objective,
             summary=summary,
+            execution_constraints=execution_constraints,
             public=public,
             target_state=target_state,
             require_target_state_satisfied=require_target_state_satisfied,
@@ -954,6 +990,7 @@ class DeclGraphService:
         objective: str,
         target_state: DeclState | str,
         start_stage: str,
+        execution_constraints: str | None = None,
         require_target_state_satisfied: bool = True,
     ) -> ServiceResult[DeclChangeView]:
         return self.decl_catalog.open_decl_update(
@@ -964,6 +1001,7 @@ class DeclGraphService:
             objective=objective,
             target_state=target_state,
             start_stage=start_stage,
+            execution_constraints=execution_constraints,
             require_target_state_satisfied=require_target_state_satisfied,
         )
 

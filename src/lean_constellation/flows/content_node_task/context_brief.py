@@ -89,8 +89,10 @@ class StrategyRoundContextBrief(StrictModel):
     strategy_sequence: int = Field(ge=1)
     strategy_objective: str | None = None
     strategy_rationale: str | None = None
+    strategy_execution_constraints: str | None = None
     round_sequence: int = Field(ge=1)
     round_objective: str | None = None
+    round_execution_constraints: str | None = None
     round_status: str | None = None
 
     def render(self) -> str:
@@ -98,10 +100,12 @@ class StrategyRoundContextBrief(StrictModel):
             [
                 f"Strategy {self.strategy_sequence} objective: {self.strategy_objective or '(unavailable)'}",
                 f"Strategy rationale: {self.strategy_rationale or '(not provided)'}",
+                f"Strategy execution constraints: {self.strategy_execution_constraints or '(not provided)'}",
                 (
                     f"Round {self.round_sequence} (status={self.round_status or 'unknown'}) objective: "
                     f"{self.round_objective or '(unavailable)'}"
                 ),
+                f"Round execution constraints: {self.round_execution_constraints or '(not provided)'}",
             ]
         )
 
@@ -128,10 +132,18 @@ class ContentPlanContextBrief(StrictModel):
                         f"{self.active_strategy_round.strategy_objective or 'open'}"
                     ),
                     (
+                        "- Strategy execution constraints: "
+                        f"{self.active_strategy_round.strategy_execution_constraints or '(not provided)'}"
+                    ),
+                    (
                         "- Active declaration round: "
                         f"Round {self.active_strategy_round.round_sequence}; status: "
                         f"{self.active_strategy_round.round_status or 'open'}; objective: "
                         f"{self.active_strategy_round.round_objective or 'open'}"
+                    ),
+                    (
+                        "- Round execution constraints: "
+                        f"{self.active_strategy_round.round_execution_constraints or '(not provided)'}"
                     ),
                 ]
             )
@@ -529,14 +541,18 @@ def _strategy_round_brief(
         return None
     strategy_objective = strategy.value.objective
     strategy_rationale = strategy.value.rationale
+    strategy_execution_constraints = strategy.value.execution_constraints
     round_objective = round_record.value.objective
+    round_execution_constraints = round_record.value.execution_constraints
     round_status = round_record.value.status.value
     return StrategyRoundContextBrief(
         strategy_sequence=strategy_sequence.value,
         strategy_objective=strategy_objective,
         strategy_rationale=strategy_rationale,
+        strategy_execution_constraints=strategy_execution_constraints,
         round_sequence=round_sequence.value,
         round_objective=round_objective,
+        round_execution_constraints=round_execution_constraints,
         round_status=round_status,
     )
 

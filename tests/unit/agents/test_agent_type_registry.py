@@ -46,6 +46,7 @@ EXPECTED_AGENT_TYPES = {
 
 EXPECTED_COORDINATOR_SKILLS = [
     "coordinator-completion-policy",
+    "lc-field-semantics",
     "source-evidence-referencing",
     "coordinator-repo-exploration",
     "material-boundary-classification",

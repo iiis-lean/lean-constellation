@@ -690,10 +690,23 @@ def _format_stage_target_metadata(
     input_model: DeclGraphRoundInput,
     decl_names: list[str],
 ) -> str:
-    if not decl_names:
-        return "- (no target metadata)"
     lines: list[str] = []
     repo_root = Path(input_model.repo_path) if input_model.repo_path else None
+    if repo_root is not None:
+        round_result = ctx.app.decl_graph.get_round(
+            repo_root,
+            node_path=input_model.node_path,
+            round_id=input_model.round_id,
+        )
+        if (
+            round_result.ok
+            and round_result.value is not None
+            and round_result.value.execution_constraints is not None
+        ):
+            lines.append(f"Round execution constraints: {round_result.value.execution_constraints}")
+    if not decl_names:
+        lines.append("- (no target metadata)")
+        return "\n".join(lines)
     for decl_name in decl_names:
         if repo_root is None:
             lines.append(f"- {decl_name}: current revision truth is available through stage read tools.")
@@ -724,6 +737,10 @@ def _format_stage_target_metadata(
                 f"  Kind: {decl.kind}",
                 f"  Change: {change.kind.value if change is not None else 'none'}",
                 f"  Objective: {change.objective if change is not None else '(not provided)'}",
+                (
+                    "  Execution constraints: "
+                    f"{change.execution_constraints if change is not None and change.execution_constraints else '(not provided)'}"
+                ),
                 f"  Required through: {_target_state_display(change.target_state if change is not None else None)}",
             ]
         )
@@ -744,20 +761,30 @@ def _target_state_display(target_state) -> str:  # noqa: ANN001
 
 def _stage_required_skills(stage: DeclStageName, *, role: Literal["worker", "reviewer"]) -> tuple[str, ...]:
     if role == "reviewer":
-        return ("content-contract-reading", "decl-dependency-origin-curation")
+        return (
+            "content-contract-reading",
+            "lc-field-semantics",
+            "decl-dependency-origin-curation",
+        )
     if stage == "statement_formal":
         return (
             "content-contract-reading",
+            "lc-field-semantics",
             "decl-owned-lean-file-capture-check",
             "lean-statement-formalization",
         )
     if stage == "proof_formal":
         return (
             "content-contract-reading",
+            "lc-field-semantics",
             "decl-owned-lean-file-capture-check",
             "lean-proof-formalization",
         )
-    return ("content-contract-reading", "decl-dependency-origin-curation")
+    return (
+        "content-contract-reading",
+        "lc-field-semantics",
+        "decl-dependency-origin-curation",
+    )
 
 
 def _stage_pipeline_position(stage: str) -> str:

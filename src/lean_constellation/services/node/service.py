@@ -123,6 +123,7 @@ class CurrentNodeContractView(StrictModel):
     objective: str | None = None
     success_criteria: str | None = None
     constraints: str | None = None
+    execution_constraints: str | None = None
     result_summary: str | None = None
     interfaces: list[CurrentNodeInterfaceOverview] = Field(default_factory=list)
     dependencies: list[CurrentNodeDependencyOverview] = Field(default_factory=list)
@@ -292,6 +293,7 @@ class NodeService:
         boundary: str,
         objective: str | None = None,
         constraints: str | None = None,
+        execution_constraints: str | None = None,
         success_criteria: str | None = None,
     ) -> ServiceResult[NodeView]:
         return self.node_tree.create_scope_node(
@@ -301,6 +303,7 @@ class NodeService:
             boundary=boundary,
             objective=objective,
             constraints=constraints,
+            execution_constraints=execution_constraints,
             success_criteria=success_criteria,
         )
 
@@ -314,6 +317,7 @@ class NodeService:
         objective: str,
         success_criteria: str,
         constraints: str | None = None,
+        execution_constraints: str | None = None,
     ) -> ServiceResult[NodeView]:
         return self.node_tree.create_content_node(
             repo_root,
@@ -323,6 +327,7 @@ class NodeService:
             objective=objective,
             success_criteria=success_criteria,
             constraints=constraints,
+            execution_constraints=execution_constraints,
         )
 
     def ensure_native_root_main_contract(
@@ -553,6 +558,7 @@ class NodeService:
                 objective=truth.objective,
                 success_criteria=truth.success_criteria,
                 constraints=truth.constraints,
+                execution_constraints=truth.execution_constraints,
                 result_summary=truth.summary,
                 interfaces=[
                     CurrentNodeInterfaceOverview(

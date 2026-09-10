@@ -8,12 +8,11 @@ from time import perf_counter
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.domain.repo import ProofAvailability
 from lean_constellation.services.decl_graph.models import (
-    DeclChangeKind,
     DeclReadinessBlocker,
     DeclRevisionRef,
     DeclRoundResultKind,
@@ -103,9 +102,15 @@ class DeclDraftSpec(StrictModel):
     kind: str
     objective: str
     summary: str
+    execution_constraints: str | None = None
     public: bool = False
     target_state: DeclState = DeclState.DECLARED
     require_target_state_satisfied: bool = True
+
+    @field_validator("execution_constraints")
+    @classmethod
+    def _optional_execution_constraints(cls, value: str | None) -> str | None:
+        return value.strip() or None if value is not None else None
 
 
 class RoundDraftCreatedResult(StrictModel):
@@ -132,6 +137,7 @@ class DeclRoundExecutionComponent:
         node_path: str,
         strategy_id: str,
         objective: str,
+        execution_constraints: str | None = None,
         declarations: list[DeclDraftSpec],
     ) -> ServiceResult[RoundDraftCreatedResult]:
         if not declarations:
@@ -146,6 +152,7 @@ class DeclRoundExecutionComponent:
                 node_path=node_path,
                 strategy_id=strategy_id,
                 objective=objective,
+                execution_constraints=execution_constraints,
             )
             if not round_record.ok or round_record.value is None:
                 raise _CloseoutFailure(list(round_record.issues))

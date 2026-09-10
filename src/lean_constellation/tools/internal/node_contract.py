@@ -205,6 +205,7 @@ def _update_node_contract_text(runtime, ctx, args: ContractCoreUpdateArgs):
         objective=args.objective,
         success_criteria=args.success_criteria,
         constraints=args.constraints,
+        execution_constraints=args.execution_constraints,
     )
 
 
@@ -943,7 +944,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="update_node_contract_text",
-            description="Update goal, boundary, objective, success criteria, or constraints for a node contract.",
+            description="Update goal, boundary, objective, success criteria, stable constraints, or execution constraints for a node contract.",
             args_model=ContractCoreUpdateArgs,
             capability=ToolCapability.WRITE,
             result_view="mutation",

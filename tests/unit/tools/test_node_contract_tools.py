@@ -81,15 +81,19 @@ def test_node_contract_text_schemas_distinguish_stable_and_current_fields() -> N
     assert "excluded from siblings" in scope["boundary"]["description"]
     assert "Current contract-version action" in scope["objective"]["description"]
     assert "observable closeout conditions" in scope["success_criteria"]["description"]
+    assert "stable" in scope["constraints"]["description"]
+    assert "current contract version" in scope["execution_constraints"]["description"]
 
     assert "across contract versions" in content["goal"]["description"]
     assert "Current contract-version action" in content["objective"]["description"]
     assert "target depth" not in content["objective"]["description"]
     assert "current content contract version" in content["success_criteria"]["description"]
+    assert "current contract version" in content["execution_constraints"]["description"]
 
     assert "enduring purpose changes" in update["goal"]["description"]
     assert "Main.goal is protected" in update["goal"]["description"]
     assert "current contract-version action" in update["objective"]["description"]
+    assert "current contract version" in update["execution_constraints"]["description"]
 
 
 def test_node_contract_groups_expose_expected_tools() -> None:

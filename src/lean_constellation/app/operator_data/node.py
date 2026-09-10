@@ -99,6 +99,7 @@ class CreateScopeNodeInput(OperatorInputModel):
     boundary: str
     objective: str | None = None
     constraints: str | None = None
+    execution_constraints: str | None = None
     success_criteria: str | None = None
     expected_parent_contract_version: int | None = Field(default=None, ge=1)
 
@@ -110,6 +111,7 @@ class CreateContentNodeInput(OperatorInputModel):
     objective: str
     success_criteria: str
     constraints: str | None = None
+    execution_constraints: str | None = None
     expected_parent_contract_version: int = Field(ge=1)
 
 
@@ -124,12 +126,20 @@ class UpdateContractTextInput(ContractMutationInput):
     objective: str | None = None
     success_criteria: str | None = None
     constraints: str | None = None
+    execution_constraints: str | None = None
 
     @model_validator(mode="after")
     def _at_least_one_field(self) -> "UpdateContractTextInput":
         if all(
             value is None
-            for value in (self.goal, self.boundary, self.objective, self.success_criteria, self.constraints)
+            for value in (
+                self.goal,
+                self.boundary,
+                self.objective,
+                self.success_criteria,
+                self.constraints,
+                self.execution_constraints,
+            )
         ):
             raise ValueError("At least one contract text field is required.")
         return self
@@ -304,6 +314,7 @@ class NodeOperatorApi:
                 boundary=request.boundary,
                 objective=request.objective,
                 constraints=request.constraints,
+                execution_constraints=request.execution_constraints,
                 success_criteria=request.success_criteria,
             )
 
@@ -323,6 +334,7 @@ class NodeOperatorApi:
                 objective=request.objective,
                 success_criteria=request.success_criteria,
                 constraints=request.constraints,
+                execution_constraints=request.execution_constraints,
             )
 
         return self._execute(repo_key, CREATE_CONTENT, action)
@@ -340,6 +352,7 @@ class NodeOperatorApi:
                 objective=request.objective,
                 success_criteria=request.success_criteria,
                 constraints=request.constraints,
+                execution_constraints=request.execution_constraints,
             ),
         )
 

@@ -66,6 +66,7 @@ class DeclCatalogComponent:
         kind: str,
         objective: str,
         summary: str,
+        execution_constraints: str | None = None,
         public: bool = False,
         target_state: DeclState | str = DeclState.DECLARED,
         require_target_state_satisfied: bool = True,
@@ -115,6 +116,7 @@ class DeclCatalogComponent:
                 target_state=end_state,
                 require_target_state_satisfied=require_target_state_satisfied,
                 objective=objective,
+                execution_constraints=execution_constraints,
             ),
         )
         ensured = self.runtime.foundation.store.ensure_dir(
@@ -162,6 +164,7 @@ class DeclCatalogComponent:
         objective: str,
         target_state: DeclState | str,
         start_stage: DeclStage | str,
+        execution_constraints: str | None = None,
         require_target_state_satisfied: bool = True,
     ) -> ServiceResult[DeclChangeView]:
         end_state = self._coerce_end_state(target_state)
@@ -257,6 +260,7 @@ class DeclCatalogComponent:
             target_state=end_state,
             require_target_state_satisfied=require_target_state_satisfied,
             objective=objective,
+            execution_constraints=execution_constraints,
         )
         next_revision.updated_at = utc_now_iso()
         self._reset_revision_to_state(next_revision, start_state)
@@ -1134,6 +1138,7 @@ class DeclCatalogComponent:
             target_state=revision.change.target_state,
             require_target_state_satisfied=revision.change.require_target_state_satisfied,
             objective=revision.change.objective or "",
+            execution_constraints=revision.change.execution_constraints,
             summary=revision.change.summary,
             target_revision=revision.revision,
             created_at=revision.updated_at,

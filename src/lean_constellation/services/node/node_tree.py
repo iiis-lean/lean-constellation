@@ -69,6 +69,7 @@ class NodeContract(StrictModel):
     summary: str | None = None
     success_criteria: str | None = None
     constraints: str | None = None
+    execution_constraints: str | None = None
     owned_refs: list[ContractMaterialRef] = Field(default_factory=list)
     context_refs: list[ContractMaterialRef] = Field(default_factory=list)
     interfaces: list[DeclInterface] = Field(default_factory=list)
@@ -93,6 +94,14 @@ class NodeContract(StrictModel):
         if value is None:
             return []
         return value
+
+    @field_validator("execution_constraints")
+    @classmethod
+    def _optional_execution_constraints(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        text = value.strip()
+        return text or None
 
 
 NodeContractSnapshot = NodeContract
@@ -179,6 +188,7 @@ class NodeTreeComponent:
         boundary: str,
         objective: str | None = None,
         constraints: str | None = None,
+        execution_constraints: str | None = None,
         success_criteria: str | None = None,
     ) -> ServiceResult[NodeView]:
         return self._create_node(
@@ -189,6 +199,7 @@ class NodeTreeComponent:
             boundary=boundary,
             objective=objective,
             constraints=constraints,
+            execution_constraints=execution_constraints,
             success_criteria=success_criteria,
         )
 
@@ -202,6 +213,7 @@ class NodeTreeComponent:
         objective: str,
         success_criteria: str,
         constraints: str | None = None,
+        execution_constraints: str | None = None,
     ) -> ServiceResult[NodeView]:
         if not objective or not objective.strip():
             return self.runtime.foundation.fail(self.runtime.foundation.issue("node_objective_required", "Content node objective is required.", field="objective"))
@@ -217,6 +229,7 @@ class NodeTreeComponent:
             boundary=boundary,
             objective=objective,
             constraints=constraints,
+            execution_constraints=execution_constraints,
             success_criteria=success_criteria,
         )
 
@@ -364,6 +377,7 @@ class NodeTreeComponent:
         boundary: str,
         objective: str | None,
         constraints: str | None,
+        execution_constraints: str | None,
         success_criteria: str | None,
     ) -> ServiceResult[NodeView]:
         valid = self._validate_dot_path(path)
@@ -426,6 +440,9 @@ class NodeTreeComponent:
             objective=objective.strip() if objective else None,
             success_criteria=success_criteria.strip() if success_criteria else None,
             constraints=constraints.strip() if constraints else None,
+            execution_constraints=(
+                execution_constraints.strip() if execution_constraints else None
+            ),
         )
         projection_dir = local_projection_path(
             repo_root,

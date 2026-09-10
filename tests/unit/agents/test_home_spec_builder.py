@@ -61,6 +61,10 @@ def test_coordinator_home_carries_concise_contract_field_semantics() -> None:
     assert "Content terminal depth stays in task_completion_mode" in decomposition
     assert "update the open contract objective and success criteria" in coordinator.developer_instructions
     assert "before submitting node paths" in coordinator.developer_instructions
+    field_semantics = coordinator.skill_specs["lc-field-semantics"].body
+    assert "execution_constraints" in field_semantics
+    assert "does not automatically inherit" in field_semantics
+    assert "natural-language warning" in field_semantics
 
     content_plan = build_agent_home_bootstrap_spec(
         "ContentPlanAgent",
@@ -68,6 +72,34 @@ def test_coordinator_home_carries_concise_contract_field_semantics() -> None:
     )
     assert "Read the current assignment from the exact contract" in content_plan.developer_instructions
     assert "Do not infer the assignment from the stable goal" in content_plan.developer_instructions
+    assert "lc-field-semantics" in content_plan.skill_specs
+
+    for agent_type in (
+        "StatementNLWorkerAgent",
+        "StatementNLReviewerAgent",
+        "StatementFormalWorkerAgent",
+        "StatementFormalReviewerAgent",
+        "ProofNLWorkerAgent",
+        "ProofNLReviewerAgent",
+        "ProofFormalWorkerAgent",
+        "ProofFormalReviewerAgent",
+    ):
+        home = build_agent_home_bootstrap_spec(
+            agent_type,
+            mcp_http_base_url="http://127.0.0.1:8765",
+        )
+        assert "lc-field-semantics" in home.skill_specs
+
+    for agent_type in (
+        "NodeDirDependencyReconAgent",
+        "MathlibReconAgent",
+        "ResourceReconAgent",
+    ):
+        home = build_agent_home_bootstrap_spec(
+            agent_type,
+            mcp_http_base_url="http://127.0.0.1:8765",
+        )
+        assert "lc-field-semantics" not in home.skill_specs
 
 
 def test_planning_concurrency_guidance_is_equivalent_across_provider_homes() -> None:

@@ -91,7 +91,14 @@ class NodeContractTextMutationReceipt(StrictModel):
     operation: Literal["set"] = "set"
     changed: bool
     changed_fields: list[
-        Literal["goal", "boundary", "objective", "success_criteria", "constraints"]
+        Literal[
+            "goal",
+            "boundary",
+            "objective",
+            "success_criteria",
+            "constraints",
+            "execution_constraints",
+        ]
     ] = Field(default_factory=list)
     summary: str
 
@@ -323,6 +330,7 @@ class ContractComponent:
             persisted.version = current.value.version + 1
             persisted.status = NodeContractStatus.OPEN
             persisted.summary = None
+            persisted.execution_constraints = None
             persisted.committed_at = None
             persisted.created_at = utc_now_iso()
         elif current.value.status != NodeContractStatus.OPEN:
@@ -416,6 +424,7 @@ class ContractComponent:
         objective: str | None = None,
         success_criteria: str | None = None,
         constraints: str | None = None,
+        execution_constraints: str | None = None,
     ) -> ServiceResult[NodeContractView]:
         opened = self.ensure_open_contract(repo_root, node_path=node_path)
         if not opened.ok or opened.value is None:
@@ -437,6 +446,7 @@ class ContractComponent:
             "objective": objective,
             "success_criteria": success_criteria,
             "constraints": constraints,
+            "execution_constraints": execution_constraints,
         }.items():
             if value is None:
                 continue
@@ -445,8 +455,9 @@ class ContractComponent:
                 return self.runtime.foundation.fail(
                     self.runtime.foundation.issue(f"contract_{field_name}_required", f"Contract {field_name} cannot be empty.", field=field_name)
                 )
-            if getattr(contract, field_name) != stripped:
-                setattr(contract, field_name, stripped)
+            normalized = None if field_name == "execution_constraints" and not stripped else stripped
+            if getattr(contract, field_name) != normalized:
+                setattr(contract, field_name, normalized)
                 changed = True
         if changed:
             saved = self.runtime.foundation.store.write_json_atomic(
@@ -471,6 +482,7 @@ class ContractComponent:
         objective: str | None = None,
         success_criteria: str | None = None,
         constraints: str | None = None,
+        execution_constraints: str | None = None,
     ) -> ServiceResult[NodeContractTextMutationReceipt]:
         """Update contract text and report only the fields changed by this call."""
 
@@ -483,6 +495,7 @@ class ContractComponent:
             "objective": objective,
             "success_criteria": success_criteria,
             "constraints": constraints,
+            "execution_constraints": execution_constraints,
         }
         updated = self.update_contract_text_fields(
             repo_root,
@@ -837,6 +850,7 @@ class ContractComponent:
         new_contract.status = ContractVersionStatus.OPEN
         new_contract.task_completion_mode = task_completion_mode
         new_contract.summary = None
+        new_contract.execution_constraints = None
         new_contract.committed_at = None
         new_contract.created_at = utc_now_iso()
         return new_contract

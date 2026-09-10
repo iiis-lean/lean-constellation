@@ -202,6 +202,7 @@ def _decl_revision_item(runtime, repo_root, *, decl, revision) -> dict[str, obje
             "target_state": change.target_state.value if change.target_state is not None else None,
             "require_target_state_satisfied": change.require_target_state_satisfied,
             "objective": change.objective,
+            "execution_constraints": change.execution_constraints,
             "summary": change.summary,
         },
         "artifacts": {
@@ -602,6 +603,7 @@ def _ensure_open_strategy(runtime, ctx, args: StrategyEnsureArgs):
         node_path=_node(ctx),
         objective=args.objective,
         rationale=args.rationale,
+        execution_constraints=args.execution_constraints,
     )
 
 
@@ -650,6 +652,7 @@ def _create_round_draft(runtime, ctx, args: RoundDraftArgs):
         node_path=_node(ctx),
         strategy_id=strategy.value.strategy_id,
         objective=args.objective,
+        execution_constraints=args.execution_constraints,
     )
 
 

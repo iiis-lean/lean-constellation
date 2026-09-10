@@ -107,12 +107,41 @@ def test_round_with_decl_drafts_returns_structured_batch(tmp_path: Path) -> None
         node_path=NODE_PATH,
         strategy_id=strategy.value.strategy_id,
         objective="Atomic round.",
-        declarations=[DeclDraftSpec(name="main_def", kind="definition", objective="Create it.", summary="A definition.")],
+        execution_constraints="Keep the batch limited to this definition.",
+        declarations=[
+            DeclDraftSpec(
+                name="main_def",
+                kind="definition",
+                objective="Create it.",
+                execution_constraints="Preserve the specified representation.",
+                summary="A definition.",
+            )
+        ],
     )
 
     assert result.ok, result.issues
     assert result.value is not None
     assert [item.decl_name for item in result.value.revision_refs] == ["main_def"]
+    round_record = runtime.decl_graph.get_round(
+        repo_root,
+        node_path=NODE_PATH,
+        round_id=result.value.round_id,
+    )
+    assert round_record.ok and round_record.value is not None
+    assert round_record.value.execution_constraints == (
+        "Keep the batch limited to this definition."
+    )
+    revision = runtime.decl_graph.get_decl_revision(
+        repo_root,
+        node_path=NODE_PATH,
+        name="main_def",
+        revision=1,
+    )
+    assert revision.ok and revision.value is not None
+    assert revision.value.change is not None
+    assert revision.value.change.execution_constraints == (
+        "Preserve the specified representation."
+    )
 
 
 def test_blocked_business_terminal_commits_partial_revision_and_allows_follow_up_update(tmp_path: Path) -> None:

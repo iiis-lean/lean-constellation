@@ -8,6 +8,7 @@ from enum import StrEnum
 class SkillKey(StrEnum):
     REPO_FORMAT_DISCOVERY = "repo-format-discovery"
     NODE_CONTRACT_DESIGN = "node-contract-design"
+    LC_FIELD_SEMANTICS = "lc-field-semantics"
     CONTENT_CONTRACT_READING = "content-contract-reading"
     VISIBLE_NODE_DEPENDENCY_RECON = "visible-node-dependency-recon"
     SCOPE_EXPORT_INTERFACE_CURATION = "scope-export-interface-curation"

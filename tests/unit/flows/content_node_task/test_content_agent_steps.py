@@ -189,8 +189,10 @@ def test_decl_round_agent_projection_uses_sequences_without_exact_ids() -> None:
     brief = StrategyRoundContextBrief(
         strategy_sequence=2,
         strategy_objective="Build the provider layer.",
+        strategy_execution_constraints="Plan one dependency frontier at a time.",
         round_sequence=3,
         round_objective="Prove the current batch.",
+        round_execution_constraints="Do not add declarations to this batch.",
         round_status="blocked",
     )
 
@@ -210,6 +212,8 @@ def test_decl_round_agent_projection_uses_sequences_without_exact_ids() -> None:
     assert result.agent_fields()["round_sequence"] == 3
     assert "Strategy 2 objective" in rendered
     assert "Round 3 (status=blocked)" in rendered
+    assert "Plan one dependency frontier at a time." in rendered
+    assert "Do not add declarations to this batch." in rendered
     assert "Active declaration strategy: Strategy 2" in rendered
     assert "Active declaration round: Round 3" in rendered
     assert "strategy_private" not in rendered

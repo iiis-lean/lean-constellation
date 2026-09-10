@@ -84,14 +84,23 @@ def create_round_with_decl(
     target_state: DeclState = DeclState.PROVED,
     require_target_state_satisfied: bool = True,
     public: bool = False,
+    strategy_execution_constraints: str | None = None,
+    round_execution_constraints: str | None = None,
+    change_execution_constraints: str | None = None,
 ) -> tuple[str, str, int]:
-    strategy = runtime.decl_graph.ensure_open_strategy(repo_root, node_path=NODE_PATH, objective="Strategy objective.")
+    strategy = runtime.decl_graph.ensure_open_strategy(
+        repo_root,
+        node_path=NODE_PATH,
+        objective="Strategy objective.",
+        execution_constraints=strategy_execution_constraints,
+    )
     assert strategy.ok and strategy.value is not None, strategy.issues
     round_record = runtime.decl_graph.create_round_draft(
         repo_root,
         node_path=NODE_PATH,
         strategy_id=strategy.value.strategy_id,
         objective="Round objective.",
+        execution_constraints=round_execution_constraints,
     )
     assert round_record.ok and round_record.value is not None, round_record.issues
     created = runtime.decl_graph.create_decl(
@@ -101,6 +110,7 @@ def create_round_with_decl(
         name=decl_name,
         kind=kind,
         objective=f"Create {decl_name}.",
+        execution_constraints=change_execution_constraints,
         summary=f"{decl_name} summary.",
         public=public,
         target_state=target_state,

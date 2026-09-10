@@ -42,8 +42,9 @@ def test_formal_apply_input_requires_business_stale_guards_and_rejects_forged_ch
 
 def test_round_batch_preserves_typed_decl_drafts_at_service_boundary(tmp_path) -> None:  # noqa: ANN001
     workspace = tmp_path / "workspace"
-    make_repo(workspace)
-    api = OperatorDataApi(make_registry(workspace))
+    repo_root = make_repo(workspace)
+    registry = make_registry(workspace)
+    api = OperatorDataApi(registry)
     assert api.node.create_scope_node(
         "MainRepo",
         CreateScopeNodeInput(path="Main", goal="Root.", boundary="Root."),
@@ -61,7 +62,11 @@ def test_round_batch_preserves_typed_decl_drafts_at_service_boundary(tmp_path) -
     ).ok
     strategy = api.decl_projection.ensure_strategy(
         "MainRepo",
-        StrategyInput(node_path="Main.Core", objective="Declare the core value."),
+        StrategyInput(
+            node_path="Main.Core",
+            objective="Declare the core value.",
+            execution_constraints="Use one small declaration round.",
+        ),
     )
     assert strategy.ok and strategy.value is not None
 
@@ -71,11 +76,13 @@ def test_round_batch_preserves_typed_decl_drafts_at_service_boundary(tmp_path) -
             node_path="Main.Core",
             strategy_id=strategy.value.strategy_id,
             objective="Create the value draft.",
+            execution_constraints="Keep this batch declaration-only.",
             declarations=[
                 DeclDraftSpec(
                     name="coreValue",
                     kind="definition",
                     objective="Define the core value.",
+                    execution_constraints="Do not add helper declarations.",
                     summary="A core declaration.",
                     public=True,
                 )
@@ -85,6 +92,23 @@ def test_round_batch_preserves_typed_decl_drafts_at_service_boundary(tmp_path) -
 
     assert created.ok and created.value is not None, created.issues
     assert [item.decl_name for item in created.value.revision_refs] == ["coreValue"]
+    runtime = registry.get_or_load_paused("MainRepo", refresh_homes=False)
+    assert runtime.ok and runtime.value is not None
+    round_record = runtime.value.decl_graph.get_round(
+        repo_root,
+        node_path="Main.Core",
+        round_id=created.value.round_id,
+    )
+    revision = runtime.value.decl_graph.get_decl_revision(
+        repo_root,
+        node_path="Main.Core",
+        name="coreValue",
+        revision=1,
+    )
+    assert round_record.ok and round_record.value is not None
+    assert round_record.value.execution_constraints == "Keep this batch declaration-only."
+    assert revision.ok and revision.value is not None and revision.value.change is not None
+    assert revision.value.change.execution_constraints == "Do not add helper declarations."
 
 
 def test_operator_strategy_and_round_views_preserve_exact_identity(tmp_path) -> None:  # noqa: ANN001
@@ -108,10 +132,15 @@ def test_operator_strategy_and_round_views_preserve_exact_identity(tmp_path) -> 
     ).ok
     strategy = api.decl_projection.ensure_strategy(
         "MainRepo",
-        StrategyInput(node_path="Main.Core", objective="Declare the core value."),
+        StrategyInput(
+            node_path="Main.Core",
+            objective="Declare the core value.",
+            execution_constraints="Keep the route bottom-up.",
+        ),
     )
     assert strategy.ok and strategy.value is not None
     assert strategy.value.strategy_id
+    assert strategy.value.execution_constraints == "Keep the route bottom-up."
 
     round_record = api.decl_projection.create_round(
         "MainRepo",
@@ -119,11 +148,13 @@ def test_operator_strategy_and_round_views_preserve_exact_identity(tmp_path) -> 
             node_path="Main.Core",
             strategy_id=strategy.value.strategy_id,
             objective="Create the value draft.",
+            execution_constraints="Do not advance beyond this batch.",
         ),
     )
     assert round_record.ok and round_record.value is not None
     assert round_record.value.round_id
     assert round_record.value.strategy_id == strategy.value.strategy_id
+    assert round_record.value.execution_constraints == "Do not advance beyond this batch."
 
     strategies = api.decl_projection.list_strategies(
         "MainRepo",

@@ -47,6 +47,7 @@ def test_skill_registry_builds_all_fixed_skills() -> None:
     assert "repo-format-discovery" in specs
     assert "resource-request-handling" not in specs
     assert "lean-proof-formalization" in specs
+    assert "lc-field-semantics" in specs
     assert specs["pdf-faithful-transcription"].description
     assert "## Workflow" in specs["pdf-faithful-transcription"].body
 
@@ -141,7 +142,7 @@ def test_coordinator_skill_inventory_and_workflow_boundaries() -> None:
     coordinator = get_agent_type_spec("CoordinatorAgent")
     specs = build_skill_specs()
 
-    assert len(coordinator.skill_keys) == 21
+    assert len(coordinator.skill_keys) == 22
     assert "source-evidence-referencing" in coordinator.skill_keys
     for removed in (
         "coordinator-content-task-lifecycle",

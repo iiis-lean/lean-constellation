@@ -36,6 +36,7 @@ class StrategyRoundComponent:
         node_path: str,
         objective: str,
         rationale: str | None = None,
+        execution_constraints: str | None = None,
     ) -> ServiceResult[DeclGraphStrategy]:
         if not objective or not objective.strip():
             return self.runtime.foundation.fail(
@@ -73,6 +74,7 @@ class StrategyRoundComponent:
             node_path=node_path,
             objective=objective,
             rationale=rationale.strip() if rationale else None,
+            execution_constraints=execution_constraints,
         )
         path = self.graph_store.strategy_path(repo_root, node_path=node_path, strategy_id=strategy.strategy_id)
         written = self.runtime.foundation.store.write_json_atomic(path, strategy, mode=WriteMode.CREATE_ONLY)
@@ -135,6 +137,7 @@ class StrategyRoundComponent:
         node_path: str,
         strategy_id: str,
         objective: str,
+        execution_constraints: str | None = None,
         revision_refs: list[DeclRevisionRef] | None = None,
     ) -> ServiceResult[DeclGraphRound]:
         if not objective or not objective.strip():
@@ -181,6 +184,7 @@ class StrategyRoundComponent:
             strategy_id=strategy_id,
             round_index=next_round_index.value,
             objective=objective,
+            execution_constraints=execution_constraints,
             revision_refs=revision_refs or [],
         )
         round_path = self.graph_store.round_path(repo_root, node_path=node_path, round_id=round_record.round_id)

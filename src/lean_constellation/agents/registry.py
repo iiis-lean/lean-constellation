@@ -613,6 +613,7 @@ AGENT_TYPE_SPECS: tuple[AgentTypeSpec, ...] = (
         ],
         skills=[
             SkillKey.COORDINATOR_COMPLETION_POLICY,
+            SkillKey.LC_FIELD_SEMANTICS,
             SkillKey.SOURCE_EVIDENCE_REFERENCING,
             SkillKey.COORDINATOR_REPO_EXPLORATION,
             SkillKey.MATERIAL_BOUNDARY_CLASSIFICATION,
@@ -660,6 +661,7 @@ AGENT_TYPE_SPECS: tuple[AgentTypeSpec, ...] = (
         ],
         skills=[
             SkillKey.CONTENT_CONTRACT_READING,
+            SkillKey.LC_FIELD_SEMANTICS,
             SkillKey.SOURCE_EVIDENCE_REFERENCING,
             SkillKey.MATERIAL_BOUNDARY_CLASSIFICATION,
             SkillKey.VISIBLE_NODE_DEPENDENCY_RECON,
@@ -768,6 +770,7 @@ AGENT_TYPE_SPECS: tuple[AgentTypeSpec, ...] = (
         ],
         skills=[
             SkillKey.CONTENT_CONTRACT_READING,
+            SkillKey.LC_FIELD_SEMANTICS,
             SkillKey.SOURCE_EVIDENCE_REFERENCING,
             SkillKey.DECL_DEPENDENCY_ORIGIN_CURATION,
             SkillKey.MATHLIB_INDEX_FIRST_RECON,
@@ -797,6 +800,7 @@ AGENT_TYPE_SPECS: tuple[AgentTypeSpec, ...] = (
         ],
         skills=[
             SkillKey.CONTENT_CONTRACT_READING,
+            SkillKey.LC_FIELD_SEMANTICS,
             SkillKey.SOURCE_EVIDENCE_REFERENCING,
             SkillKey.DECL_DEPENDENCY_ORIGIN_CURATION,
         ],
@@ -824,6 +828,7 @@ AGENT_TYPE_SPECS: tuple[AgentTypeSpec, ...] = (
         ],
         skills=[
             SkillKey.CONTENT_CONTRACT_READING,
+            SkillKey.LC_FIELD_SEMANTICS,
             SkillKey.DECL_OWNED_LEAN_FILE_CAPTURE_CHECK,
             SkillKey.LEAN_STATEMENT_FORMALIZATION,
             SkillKey.DECL_DEPENDENCY_ORIGIN_CURATION,
@@ -855,6 +860,7 @@ AGENT_TYPE_SPECS: tuple[AgentTypeSpec, ...] = (
         ],
         skills=[
             SkillKey.CONTENT_CONTRACT_READING,
+            SkillKey.LC_FIELD_SEMANTICS,
             SkillKey.SOURCE_EVIDENCE_REFERENCING,
             SkillKey.DECL_DEPENDENCY_ORIGIN_CURATION,
         ],
@@ -882,6 +888,7 @@ AGENT_TYPE_SPECS: tuple[AgentTypeSpec, ...] = (
         ],
         skills=[
             SkillKey.CONTENT_CONTRACT_READING,
+            SkillKey.LC_FIELD_SEMANTICS,
             SkillKey.SOURCE_EVIDENCE_REFERENCING,
             SkillKey.VISIBLE_NODE_DEPENDENCY_RECON,
             SkillKey.DECL_DEPENDENCY_ORIGIN_CURATION,
@@ -914,6 +921,7 @@ AGENT_TYPE_SPECS: tuple[AgentTypeSpec, ...] = (
         ],
         skills=[
             SkillKey.CONTENT_CONTRACT_READING,
+            SkillKey.LC_FIELD_SEMANTICS,
             SkillKey.SOURCE_EVIDENCE_REFERENCING,
             SkillKey.DECL_DEPENDENCY_ORIGIN_CURATION,
         ],
@@ -941,6 +949,7 @@ AGENT_TYPE_SPECS: tuple[AgentTypeSpec, ...] = (
         ],
         skills=[
             SkillKey.CONTENT_CONTRACT_READING,
+            SkillKey.LC_FIELD_SEMANTICS,
             SkillKey.SOURCE_EVIDENCE_REFERENCING,
             SkillKey.DECL_OWNED_LEAN_FILE_CAPTURE_CHECK,
             SkillKey.LEAN_PROOF_FORMALIZATION,
@@ -974,6 +983,7 @@ AGENT_TYPE_SPECS: tuple[AgentTypeSpec, ...] = (
         ],
         skills=[
             SkillKey.CONTENT_CONTRACT_READING,
+            SkillKey.LC_FIELD_SEMANTICS,
             SkillKey.SOURCE_EVIDENCE_REFERENCING,
             SkillKey.DECL_DEPENDENCY_ORIGIN_CURATION,
         ],

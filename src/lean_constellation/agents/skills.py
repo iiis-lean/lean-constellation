@@ -417,7 +417,7 @@ Bibliographic metadata normalization may change spelling, field completeness, or
             "Use this skill when planning node tree structure, creating child nodes, preparing content node tasks, or updating contract goals, boundaries, objectives, materials, dependencies, constraints, or interfaces.",
             (
                 "Read the current scope or content contract with `get_node_contract` before changing it.",
-                "Give each text field one job: goal is stable mathematical ownership or capability; boundary is the exact owned region and sibling exclusions; objective is the current contract-version action; success criteria are observable closeout conditions; constraints record representation, dependency, and non-goals.",
+                "Give each text field one job: goal is stable mathematical ownership or capability; boundary is the exact owned region and sibling exclusions; objective is the current contract-version action; success criteria are observable closeout conditions; constraints record stable representation, dependency, and non-goals; execution_constraints record current-version process guidance.",
                 "Prefer ownership or capability wording for Scope and Content goals. Put this version's declare, prove, or repair action in the objective; keep exact Content terminal depth in task_completion_mode and repository canary or stopping responsibility in the run objective/config.",
                 "Make sibling boundaries explicit and avoid duplicate ownership.",
                 "Record expected important declarations, major SourceIndex/source stages, and a rough Lean declaration range in the boundary or objective rather than overloading the goal; this is guidance, not a hard count gate.",
@@ -442,6 +442,57 @@ Bibliographic metadata normalization may change spelling, field completeness, or
                 "Do not rewrite a child content node boundary from a lower-level worker role.",
             ),
         ),
+    ),
+    SkillKey.LC_FIELD_SEMANTICS.value: LeanSkillDefinition(
+        name="lc-field-semantics",
+        description="Use when reading or writing Lean Constellation fields whose mathematical meaning must stay separate from execution guidance.",
+        group="field_semantics",
+        required_tool_groups=_groups(),
+        source_design_doc="dev_docs/implementation/2026-09-10_machine_recovery_reconstruction_program/WS_FIELDS_DECISIONS.md",
+        body="""# Lean Constellation Field Semantics
+
+Rule version: 1
+
+## One Field, One Job
+
+Keep durable mathematical or product truth separate from instructions about how an Agent should carry out the current work. Apply these categories consistently at repository, node, strategy, round, and declaration-change levels:
+
+- identity and topology: stable names, ownership, parentage, and references;
+- mathematical semantics: the object, theorem, capability, source meaning, assumptions, and conclusions;
+- target or desired result: the observable state this unit of work must reach;
+- execution guidance: ordering, batching, concurrency, tool-use, retry, and process instructions;
+- evidence and provenance: sources, origins, dependencies, and verification evidence;
+- lifecycle and audit: status, timestamps, summaries of completed outcomes, and structured gate results.
+
+Do not put execution history, Agent itineraries, retry tactics, or batching instructions into mathematical summaries, goals, boundaries, rationales, or objectives. Do not put mathematical assumptions, theorem content, owned source scope, or acceptance criteria into execution_constraints.
+
+## Field Ownership
+
+- Repository summary is a stable project description for readers and publication, not a run diary or a place to add a second repository objective. Typed repository configuration and run input remain their existing source of truth.
+- Node goal and boundary are stable mathematical ownership. Node objective and success_criteria describe the current contract-version result. Node constraints are stable representation, dependency, or non-goal constraints. Node execution_constraints are process guidance for only the current open contract version.
+- Strategy objective and rationale describe the mathematical route and why it is appropriate. Strategy execution_constraints describe how ContentPlan should organize that route.
+- Round objective describes the coherent mathematical delta. Round execution_constraints describe how that round should be executed.
+- Change objective describes the declaration-specific mathematical delta. Change execution_constraints describe process guidance for that change. A declaration summary remains stable catalog meaning, while closeout summaries record achieved outcomes.
+- Statement and Proof NL/formal content, dependencies, origins, and checks remain canonical mathematical content and evidence. Review suggested fixes, required changes, and recommended next actions are review feedback rather than declaration semantics.
+
+## Propagation
+
+An execution constraint does not automatically inherit across layers. ContentPlan must explicitly restate the relevant subset when creating a narrower Round or Change. Stage Workers and Reviewers receive Round and Change execution constraints only; they do not infer Strategy guidance. A repeated ensure of an existing open Strategy does not revise its fields. A retried stage keeps the same Round and Change truth. A new Node contract version copies stable constraints but clears execution_constraints.
+
+Typed lifecycle, target-state, dependency, release, and review gates remain authoritative hard checks. A mismatch found only by comparing natural-language fields is a natural-language warning for re-reading and correction, not a new hard gate.
+
+## Reading Existing Data
+
+Legacy records may omit execution_constraints; read that as not provided and do not rewrite the record merely to add the absent field. If older text mixes mathematical meaning and process guidance, preserve its mathematical meaning in the existing semantic field and place only the explicit current-work instructions in execution_constraints when an authorized write is already being made. Historical result migration is a separate workflow.
+
+## Examples
+
+- Mathematical objective: "Prove the source theorem for the canonical indexed family." Execution constraints: "Process provider declarations before consumers and keep this batch to three peers."
+- Stable constraint: "Use the source's finite-index representation." Execution constraint: "Reuse the existing checked lemma before searching for another proof."
+- Stable summary: "Characterizes uniform convergence on compact subsets." Closeout summary: "Statement and proof were accepted in round 4."
+
+When a field is ambiguous, identify its owner, lifetime, and verification source before writing it. Prefer leaving execution_constraints absent over inventing process instructions.
+""",
     ),
     SkillKey.CONTENT_CONTRACT_READING.value: LeanSkillDefinition(
         name="content-contract-reading",
@@ -1485,7 +1536,7 @@ No declaration-count cutoff decides between a helper and a package. Record the c
 
 Re-read this Skill after every preparation callback, every round terminal callback, and before creating each new round. Reassessment is mandatory; replacing the strategy is not. Reassess when the source route changed, a blocker exposed a missing dependency stage, the declaration graph materially outgrew the strategy's scale assumptions, an interface or public boundary changed, repeated parent retries did not close known blockers, or current graph truth contains superseded branches the strategy no longer explains.
 
-The strategy objective and rationale should record the selected Source route, bottom-up/top-down choice and reason, known major dependency stages, canonical construction owners and exact consumers, intended public/interface output and consumer shape, scope and scale assumptions, and any explicit state-only intermediate closure plan. Top-down staging may freeze theorem Statements only after their definitions are available; it cannot move a definition out of its lower provider or allow a forward reference. If the required lower work forms a package outside the current Content boundary, close out current truth and report the boundary decision to the Coordinator instead of expanding the strategy without limit.
+The strategy objective and rationale should record the selected Source route, bottom-up/top-down choice and reason, known major dependency stages, canonical construction owners and exact consumers, and intended public/interface output and consumer shape. Put scope/scale limits, batching or ordering instructions, and an explicit state-only intermediate execution plan in execution_constraints. Top-down staging may freeze theorem Statements only after their definitions are available; it cannot move a definition out of its lower provider or allow a forward reference. If the required lower work forms a package outside the current Content boundary, close out current truth and report the boundary decision to the Coordinator instead of expanding the strategy without limit.
 
 ## Creating Or Continuing A Strategy
 
@@ -1560,7 +1611,7 @@ Before planning changes:
 1. Re-read the current node contract with `get_current_node_contract`.
 2. Read the current Round with `get_decl_round` without a selector. When a deliberate historical comparison is needed, list the Rounds and select one by its stable round sequence; use the other DeclGraph read tools for graph and Strategy state.
 3. Choose a moderate coherent batch from one current stage and topological frontier. Group peer targets only when they share Source/contract context, have no unfinished provider-to-consumer edge or conflicting writes, and one failure would not force broad rework of otherwise stable peers. Split the round when a representation or Statement decision determines later targets, a high-risk semantic repair needs isolation, targets cross stages or owners, or a Reviewer could not perform one full-current pass over the whole batch.
-4. Create or reuse the draft round with `create_decl_round_draft`.
+4. Create or reuse the draft round with `create_decl_round_draft`. Explicitly copy only the Strategy execution guidance that this Round needs into round execution_constraints; no field is implicitly inherited.
 
 ## Semantic Declaration Planning
 
@@ -1608,6 +1659,7 @@ Use `plan_create_decl` for new declarations. Each create change should have:
 - a concise catalog summary distinct from the current round objective;
 - visibility appropriate for the node contract;
 - a concise mathematical objective;
+- execution_constraints for declaration-specific ordering, tool, retry, or implementation guidance, when needed;
 - target_state;
 - require_target_state_satisfied.
 
@@ -1629,7 +1681,7 @@ statement_nl retains only the planned shell; statement_formal retains accepted S
 
 After opening an update, inspect the copied typed dependency lists and use the same dependency tools to add, remove, or correct the known frontier before validation. Preserve an actual edge whose provider is another planned change; never omit it to bypass round topology validation.
 
-Write the objective as an executable delta: identify the current artifact or semantic object, the observed defect, the observable delta required by the end of this round, and the accepted meaning, proof route, and dependency boundary that must remain unchanged. Do not restate the stage interval as an itinerary; the start-stage and target-state fields already own stage selection. When useful, quote an exact diagnostic or header shape, but do not prescribe an unverified code patch.
+Write the objective as a mathematical delta: identify the current artifact or semantic object, the observed defect in its semantics, the observable delta required by the end of this round, and the accepted meaning, proof route, and dependency boundary that must remain unchanged. Put ordering, tool-use, retry, batching, or implementation instructions in execution_constraints. Do not restate the stage interval as an itinerary; the start-stage and target-state fields already own stage selection. When useful, quote an exact diagnostic or header shape, but do not prescribe an unverified code patch.
 
 Do not use an update change to silently change a previously accepted mathematical meaning.
 

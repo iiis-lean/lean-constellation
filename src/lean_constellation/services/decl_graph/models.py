@@ -226,6 +226,7 @@ class DeclRevisionChange(StrictModel):
     target_state: DeclState | None = None
     require_target_state_satisfied: bool = True
     objective: str | None = None
+    execution_constraints: str | None = None
     summary: str | None = None
 
     @field_validator("base_revision")
@@ -235,7 +236,7 @@ class DeclRevisionChange(StrictModel):
             raise ValueError("base_revision must be >= 1")
         return value
 
-    @field_validator("objective", "summary")
+    @field_validator("objective", "execution_constraints", "summary")
     @classmethod
     def _optional_text(cls, value: str | None) -> str | None:
         if value is None:
@@ -327,6 +328,7 @@ class DeclGraphStrategy(StrictModel):
     status: DeclStrategyStatus = DeclStrategyStatus.OPEN
     objective: str
     rationale: str | None = None
+    execution_constraints: str | None = None
     created_round_ids: list[str] = Field(default_factory=list)
     summary: str | None = None
     closed_reason: str | None = None
@@ -337,6 +339,11 @@ class DeclGraphStrategy(StrictModel):
     @classmethod
     def _required_text(cls, value: str) -> str:
         return _required_text(value)
+
+    @field_validator("execution_constraints")
+    @classmethod
+    def _optional_execution_constraints(cls, value: str | None) -> str | None:
+        return value.strip() or None if value is not None else None
 
     @field_validator("created_round_ids")
     @classmethod
@@ -356,6 +363,7 @@ class DeclGraphRound(StrictModel):
     round_index: int
     status: DeclRoundStatus = DeclRoundStatus.DRAFT
     objective: str
+    execution_constraints: str | None = None
     revision_refs: list[DeclRevisionRef] = Field(default_factory=list)
     discarded_by: str | None = None
     discarded_at: str | None = None
@@ -375,6 +383,11 @@ class DeclGraphRound(StrictModel):
     @classmethod
     def _required_text(cls, value: str) -> str:
         return _required_text(value)
+
+    @field_validator("execution_constraints")
+    @classmethod
+    def _optional_execution_constraints(cls, value: str | None) -> str | None:
+        return value.strip() or None if value is not None else None
 
     @field_validator("round_index")
     @classmethod
@@ -701,6 +714,7 @@ class DeclGraphStrategyView(StrictModel):
     status: DeclStrategyStatus
     objective: str
     rationale: str | None = None
+    execution_constraints: str | None = None
     created_round_ids: list[str] = Field(default_factory=list)
     summary: str | None = None
     closed_reason: str | None = None
@@ -721,6 +735,7 @@ class DeclGraphStrategyAgentView(StrictModel):
     status: DeclStrategyStatus
     objective: str
     rationale: str | None = None
+    execution_constraints: str | None = None
     round_sequences: list[int] = Field(default_factory=list)
     summary: str | None = None
     closed_reason: str | None = None
@@ -742,6 +757,7 @@ class DeclGraphRoundView(StrictModel):
     round_index: int
     status: DeclRoundStatus
     objective: str
+    execution_constraints: str | None = None
     revision_refs: list[DeclRevisionRef] = Field(default_factory=list)
     discarded_by: str | None = None
     discarded_at: str | None = None
@@ -771,6 +787,7 @@ class DeclGraphRoundAgentView(StrictModel):
     node_path: str
     status: DeclRoundStatus
     objective: str
+    execution_constraints: str | None = None
     revision_refs: list[DeclRevisionRef] = Field(default_factory=list)
     discarded_by: str | None = None
     discarded_at: str | None = None
@@ -805,6 +822,7 @@ class DeclChangeView(StrictModel):
     target_state: DeclState | None = None
     require_target_state_satisfied: bool = True
     objective: str
+    execution_constraints: str | None = None
     summary: str | None = None
     status: DeclChangeStatus = DeclChangeStatus.PLANNED
     target_revision: int | None = None
@@ -829,6 +847,7 @@ class DeclChangeAgentView(StrictModel):
     target_state: DeclState | None = None
     require_target_state_satisfied: bool = True
     objective: str
+    execution_constraints: str | None = None
     summary: str | None = None
     status: DeclChangeStatus = DeclChangeStatus.PLANNED
     target_revision: int | None = None

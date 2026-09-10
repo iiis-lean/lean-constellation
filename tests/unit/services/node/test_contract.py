@@ -2,6 +2,9 @@ import json
 
 from pathlib import Path
 
+import pytest
+from pydantic import ValidationError
+
 from tests.unit_services_helpers import make_runtime
 
 import lean_constellation.services.foundation.store as store_module
@@ -18,6 +21,26 @@ from lean_constellation.services.node import (
     NodeMetadata,
 )
 from lean_constellation.services.node.contract_fields import NodeDep, NodeDepActor
+
+
+def test_node_execution_constraints_normalize_optional_text_and_reject_non_text() -> None:
+    base = {
+        "contract_kind": NodeKind.CONTENT,
+        "task_completion_mode": RepoCompletionMode.GRAPH_PROVED,
+        "goal": "Core goal.",
+        "boundary": "Core boundary.",
+    }
+
+    assert NodeContractSnapshot.model_validate(
+        {**base, "execution_constraints": "  keep this batch small  "}
+    ).execution_constraints == "keep this batch small"
+    assert NodeContractSnapshot.model_validate(
+        {**base, "execution_constraints": "   "}
+    ).execution_constraints is None
+    with pytest.raises(ValidationError):
+        NodeContractSnapshot.model_validate(
+            {**base, "execution_constraints": {"batch": "small"}}
+        )
 
 
 def _write_preparation_input(tmp_path: Path, *, interfaces: list[DeclInterface] | None = None) -> None:
@@ -357,13 +380,75 @@ def test_old_contract_json_without_decl_graph_head_loads_without_rewrite(tmp_pat
     contract_path = _contract_path(tmp_path, "Main.Topic.Core", 1)
     original = json.loads(contract_path.read_text(encoding="utf-8"))
     original.pop("decl_graph_head", None)
+    original.pop("execution_constraints", None)
     serialized = json.dumps(original, indent=2) + "\n"
     contract_path.write_text(serialized, encoding="utf-8")
 
     loaded = _load_contract(tmp_path, "Main.Topic.Core", 1)
 
     assert loaded.decl_graph_head == {}
+    assert loaded.execution_constraints is None
     assert contract_path.read_text(encoding="utf-8") == serialized
+
+
+def test_node_execution_constraints_are_visible_and_reset_for_new_contract_version(
+    tmp_path: Path,
+) -> None:
+    runtime = make_runtime()
+    assert runtime.node.node_tree.ensure_root_scope_node(tmp_path).ok
+    assert runtime.node.create_scope_node(
+        tmp_path,
+        path="Main.Topic",
+        goal="Topic goal",
+        boundary="Topic boundary",
+    ).ok
+    created = runtime.node.create_content_node(
+        tmp_path,
+        path="Main.Topic.Core",
+        goal="Core goal",
+        boundary="Core boundary",
+        objective="Build core.",
+        success_criteria="Ready.",
+        constraints="Preserve the source representation.",
+        execution_constraints="Only edit this content node during the current contract version.",
+    )
+    assert created.ok, created.issues
+
+    current = runtime.node.get_current_contract_view(
+        tmp_path,
+        node_path="Main.Topic.Core",
+    )
+    assert current.ok and current.value is not None
+    assert current.value.constraints == "Preserve the source representation."
+    assert current.value.execution_constraints == (
+        "Only edit this content node during the current contract version."
+    )
+
+    updated = runtime.node.contract.update_contract_text_fields_receipt(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        execution_constraints="Do not add dependencies during this contract version.",
+    )
+    assert updated.ok and updated.value is not None
+    assert updated.value.changed_fields == ["execution_constraints"]
+    assert runtime.node.commit_content_contract(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        summary="Initial core contract complete.",
+    ).ok
+
+    opened = runtime.node.contract.ensure_open_contract(
+        tmp_path,
+        node_path="Main.Topic.Core",
+    )
+    assert opened.ok and opened.value is not None
+    assert opened.value.version == 2
+    assert opened.value.contract.constraints == "Preserve the source representation."
+    assert opened.value.contract.execution_constraints is None
+    committed = _load_contract(tmp_path, "Main.Topic.Core", 1)
+    assert committed.execution_constraints == (
+        "Do not add dependencies during this contract version."
+    )
 
 
 def test_update_contract_text_fields_creates_open_version_and_protects_main_goal(tmp_path: Path) -> None:

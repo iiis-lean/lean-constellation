@@ -137,6 +137,7 @@ def test_create_decl_records_decl_revision_change_and_index(tmp_path: Path) -> N
         name="main_result",
         kind="theorem",
         objective="Create the main theorem declaration.",
+        execution_constraints="Preserve the source binders during this revision.",
         summary="The main theorem.",
         public=True,
         target_state=DeclState.PROVED,
@@ -147,6 +148,9 @@ def test_create_decl_records_decl_revision_change_and_index(tmp_path: Path) -> N
     assert change.value.target_state == DeclState.PROVED
     assert change.value.require_target_state_satisfied is True
     assert change.value.target_revision == 1
+    assert change.value.execution_constraints == (
+        "Preserve the source binders during this revision."
+    )
 
     decl = service.get_decl(tmp_path, node_path="Main.Topic.Core", name="main_result")
     assert decl.ok and decl.value is not None
@@ -159,6 +163,9 @@ def test_create_decl_records_decl_revision_change_and_index(tmp_path: Path) -> N
     assert revision.value.status == "open"
     assert revision.value.change is not None
     assert revision.value.change.require_target_state_satisfied is True
+    assert revision.value.change.execution_constraints == (
+        "Preserve the source binders during this revision."
+    )
 
     round_record = service.get_round(tmp_path, node_path="Main.Topic.Core", round_id=round_id)
     assert round_record.ok and round_record.value is not None
@@ -436,6 +443,7 @@ def test_open_decl_update_copies_committed_revision_and_resets_stage_fields(tmp_
         round_id=update_round_id,
         name="main_result",
         objective="Redo the proof.",
+        execution_constraints="Only replace proof-layer artifacts.",
         start_stage="proof_nl",
         target_state=DeclState.PROVED,
     )
@@ -445,6 +453,7 @@ def test_open_decl_update_copies_committed_revision_and_resets_stage_fields(tmp_
     assert update.value.base_revision == 1
     assert update.value.start_stage.value == "proof_nl"
     assert update.value.target_revision == 2
+    assert update.value.execution_constraints == "Only replace proof-layer artifacts."
 
     opened = service.get_decl_revision(tmp_path, node_path="Main.Topic.Core", name="main_result", revision=2)
     assert opened.ok and opened.value is not None
@@ -457,6 +466,9 @@ def test_open_decl_update_copies_committed_revision_and_resets_stage_fields(tmp_
     assert opened.value.proof is None or opened.value.proof.deps == []
     assert opened.value.change is not None
     assert opened.value.change.base_revision == 1
+    assert opened.value.change.execution_constraints == (
+        "Only replace proof-layer artifacts."
+    )
 
 
 def test_restore_decl_revision_creates_monotonic_committed_copy_with_lineage(

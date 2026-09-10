@@ -289,6 +289,8 @@ def test_decl_round_final_audit_allows_unsatisfied_target_when_opted_out(tmp_pat
         repo_root,
         target_state=DeclState.PROVED,
         require_target_state_satisfied=False,
+        round_execution_constraints="Keep this stage batch within the assigned declarations.",
+        change_execution_constraints="Preserve the source binders for main_result.",
     )
     flow_id = start_decl_round_flow(
         runtime,
@@ -319,6 +321,8 @@ def test_top_down_proved_round_becomes_satisfied_after_helper_is_proved(tmp_path
         repo_root,
         target_state=DeclState.PROVED,
         require_target_state_satisfied=False,
+        round_execution_constraints="Keep the accepted batch fixed through closeout.",
+        change_execution_constraints="Preserve the accepted statement during proof work.",
     )
     flow_id = start_decl_round_flow(
         runtime,
@@ -347,6 +351,26 @@ def test_top_down_proved_round_becomes_satisfied_after_helper_is_proved(tmp_path
         round_id=round_id,
         result_kind="success",
         decl_name="main_result",
+    )
+    closed_round = lean_runtime.decl_graph.get_round(
+        repo_root,
+        node_path=NODE_PATH,
+        round_id=round_id,
+    )
+    closed_revision = lean_runtime.decl_graph.get_decl_revision(
+        repo_root,
+        node_path=NODE_PATH,
+        name="main_result",
+        revision=1,
+    )
+    assert closed_round.ok and closed_round.value is not None
+    assert closed_round.value.execution_constraints == (
+        "Keep the accepted batch fixed through closeout."
+    )
+    assert closed_revision.ok and closed_revision.value is not None
+    assert closed_revision.value.change is not None
+    assert closed_revision.value.change.execution_constraints == (
+        "Preserve the accepted statement during proof work."
     )
     before_helper = lean_runtime.decl_graph.check_decl_proof_policy_satisfied(
         repo_root,
@@ -378,6 +402,9 @@ def test_decl_stage_agent_prompts_include_change_metadata(tmp_path: Path) -> Non
         repo_root,
         target_state=DeclState.PROVED,
         require_target_state_satisfied=False,
+        strategy_execution_constraints="ContentPlan should split later frontiers.",
+        round_execution_constraints="Keep this stage batch within the assigned declarations.",
+        change_execution_constraints="Preserve the source binders for main_result.",
     )
     flow_id = start_decl_round_flow(
         runtime,
@@ -412,10 +439,20 @@ def test_decl_stage_agent_prompts_include_change_metadata(tmp_path: Path) -> Non
     assert f"Round sequence: {round_index}." in (worker_record.prompt or "")
     assert round_id not in (worker_record.prompt or "")
     assert "Assigned declarations:" in (worker_record.prompt or "")
+    assert "$lc-field-semantics" in (worker_record.prompt or "")
     assert "Pipeline position: planned --Statement NL--> specified" in (worker_record.prompt or "")
     assert "global target_state does not expand this stage's authority" in (worker_record.prompt or "")
     assert "Change: create" in (worker_record.prompt or "")
     assert "Objective: Create main_result." in (worker_record.prompt or "")
+    assert (
+        "Round execution constraints: Keep this stage batch within the assigned declarations."
+        in (worker_record.prompt or "")
+    )
+    assert (
+        "Execution constraints: Preserve the source binders for main_result."
+        in (worker_record.prompt or "")
+    )
+    assert "ContentPlan should split later frontiers." not in (worker_record.prompt or "")
     assert "Required through: Proof Formal" in (worker_record.prompt or "")
     assert "known_statement_deps" not in (worker_record.prompt or "")
     assert "known_proof_deps" not in (worker_record.prompt or "")
@@ -436,7 +473,17 @@ def test_decl_stage_agent_prompts_include_change_metadata(tmp_path: Path) -> Non
     assert "Pipeline position: planned --Statement NL--> specified" in (reviewer_record.prompt or "")
     assert "Review only this layer" in (reviewer_record.prompt or "")
     assert "Assigned declarations:" in (reviewer_record.prompt or "")
+    assert "$lc-field-semantics" in (reviewer_record.prompt or "")
     assert "Required through: Proof Formal" in (reviewer_record.prompt or "")
+    assert (
+        "Round execution constraints: Keep this stage batch within the assigned declarations."
+        in (reviewer_record.prompt or "")
+    )
+    assert (
+        "Execution constraints: Preserve the source binders for main_result."
+        in (reviewer_record.prompt or "")
+    )
+    assert "ContentPlan should split later frontiers." not in (reviewer_record.prompt or "")
     assert "round_id" not in reviewer_step.result.agent_fields()
 
 

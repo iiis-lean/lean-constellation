@@ -1,17 +1,93 @@
 import json
 from pathlib import Path
 
+import pytest
+from pydantic import ValidationError
+
 from tests.unit_services_helpers import initialize_native_test_repo, make_runtime
 
 from lean_constellation.services.decl_graph import (
     DeclGraphRound,
     DeclGraphStrategy,
+    DeclRevisionChange,
+    DeclChangeKind,
     DeclRoundResultKind,
     DeclRoundStatus,
     DeclState,
     DeclStrategyStatus,
 )
 from lean_constellation.services.foundation import WriteMode
+
+
+def test_legacy_decl_graph_models_default_missing_execution_constraints_to_none() -> None:
+    strategy = DeclGraphStrategy.model_validate(
+        {
+            "strategy_id": "strategy_legacy",
+            "node_path": "Main.Topic.Core",
+            "objective": "Legacy strategy.",
+        }
+    )
+    round_record = DeclGraphRound.model_validate(
+        {
+            "round_id": "round_legacy",
+            "node_path": "Main.Topic.Core",
+            "strategy_id": "strategy_legacy",
+            "round_index": 1,
+            "objective": "Legacy round.",
+        }
+    )
+    change = DeclRevisionChange.model_validate(
+        {
+            "kind": DeclChangeKind.CREATE,
+            "objective": "Legacy change.",
+        }
+    )
+
+    assert strategy.execution_constraints is None
+    assert round_record.execution_constraints is None
+    assert change.execution_constraints is None
+
+
+def test_decl_execution_constraints_normalize_optional_text_and_reject_non_text() -> None:
+    cases = (
+        (
+            DeclGraphStrategy,
+            {
+                "strategy_id": "strategy_text",
+                "node_path": "Main.Topic.Core",
+                "objective": "Strategy objective.",
+            },
+        ),
+        (
+            DeclGraphRound,
+            {
+                "round_id": "round_text",
+                "node_path": "Main.Topic.Core",
+                "strategy_id": "strategy_text",
+                "round_index": 1,
+                "objective": "Round objective.",
+            },
+        ),
+        (
+            DeclRevisionChange,
+            {
+                "kind": DeclChangeKind.CREATE,
+                "objective": "Change objective.",
+            },
+        ),
+    )
+
+    for model, payload in cases:
+        assert model.model_validate(
+            {**payload, "execution_constraints": "  keep this batch small  "}
+        ).execution_constraints == "keep this batch small"
+        assert model.model_validate(
+            {**payload, "execution_constraints": "   "}
+        ).execution_constraints is None
+        with pytest.raises(ValidationError):
+            model.model_validate(
+                {**payload, "execution_constraints": {"batch": "small"}}
+            )
 
 
 def _create_content_node(tmp_path: Path, *, node_path: str = "Main.Topic.Core") -> None:
@@ -34,6 +110,90 @@ def _create_content_node(tmp_path: Path, *, node_path: str = "Main.Topic.Core") 
     ).ok
 
 
+def test_legacy_decl_graph_json_loads_without_execution_constraint_rewrite(
+    tmp_path: Path,
+) -> None:
+    _create_content_node(tmp_path)
+    service = make_runtime().decl_graph
+    strategy = service.ensure_open_strategy(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        objective="Legacy strategy.",
+    )
+    assert strategy.ok and strategy.value is not None
+    round_record = service.create_round_draft(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        strategy_id=strategy.value.strategy_id,
+        objective="Legacy round.",
+    )
+    assert round_record.ok and round_record.value is not None
+    created = service.create_decl(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=round_record.value.round_id,
+        name="legacy_result",
+        kind="theorem",
+        objective="Legacy change.",
+        summary="Legacy result.",
+    )
+    assert created.ok, created.issues
+
+    paths = (
+        service.graph_store.strategy_path(
+            tmp_path,
+            node_path="Main.Topic.Core",
+            strategy_id=strategy.value.strategy_id,
+        ),
+        service.graph_store.round_path(
+            tmp_path,
+            node_path="Main.Topic.Core",
+            round_id=round_record.value.round_id,
+        ),
+        service.graph_store.revision_path(
+            tmp_path,
+            node_path="Main.Topic.Core",
+            decl_name="legacy_result",
+            revision=1,
+        ),
+    )
+    serialized: dict[Path, str] = {}
+    for path in paths:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if path == paths[2]:
+            payload["change"].pop("execution_constraints", None)
+        else:
+            payload.pop("execution_constraints", None)
+        serialized[path] = json.dumps(payload, indent=2) + "\n"
+        path.write_text(serialized[path], encoding="utf-8")
+
+    loaded_strategy = service.get_strategy(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        strategy_id=strategy.value.strategy_id,
+    )
+    loaded_round = service.get_round(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=round_record.value.round_id,
+    )
+    loaded_revision = service.get_decl_revision(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        name="legacy_result",
+        revision=1,
+    )
+
+    assert loaded_strategy.ok and loaded_strategy.value is not None
+    assert loaded_strategy.value.execution_constraints is None
+    assert loaded_round.ok and loaded_round.value is not None
+    assert loaded_round.value.execution_constraints is None
+    assert loaded_revision.ok and loaded_revision.value is not None
+    assert loaded_revision.value.change is not None
+    assert loaded_revision.value.change.execution_constraints is None
+    assert all(path.read_text(encoding="utf-8") == serialized[path] for path in paths)
+
+
 def test_ensure_open_strategy_creates_and_reuses_open_strategy(tmp_path: Path) -> None:
     _create_content_node(tmp_path)
     service = make_runtime().decl_graph
@@ -43,17 +203,32 @@ def test_ensure_open_strategy_creates_and_reuses_open_strategy(tmp_path: Path) -
         node_path="Main.Topic.Core",
         objective="Try a bottom-up lemma strategy.",
         rationale="Start from the easiest supporting lemmas.",
+        execution_constraints="Plan at most one dependency frontier at a time.",
     )
     second = service.ensure_open_strategy(
         tmp_path,
         node_path="Main.Topic.Core",
         objective="This should not replace the open strategy.",
+        execution_constraints="This must not replace the open strategy constraints.",
     )
 
     assert first.ok and first.value is not None
     assert second.ok and second.value is not None
     assert second.value.strategy_id == first.value.strategy_id
     assert second.value.objective == "Try a bottom-up lemma strategy."
+    assert second.value.execution_constraints == (
+        "Plan at most one dependency frontier at a time."
+    )
+
+    view = service.get_strategy_view(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        strategy_id=first.value.strategy_id,
+    )
+    assert view.ok and view.value is not None
+    assert view.value.execution_constraints == (
+        "Plan at most one dependency frontier at a time."
+    )
 
     index = service.get_decl_graph_index(tmp_path, node_path="Main.Topic.Core")
     assert index.ok and index.value is not None
@@ -96,10 +271,23 @@ def test_round_draft_start_summary_and_success_terminal(tmp_path: Path) -> None:
         node_path="Main.Topic.Core",
         strategy_id=strategy.value.strategy_id,
         objective="Create and prove two declarations.",
+        execution_constraints="Keep this batch in the statement stage until reviewed.",
     )
     assert round_record.ok and round_record.value is not None
     assert round_record.value.round_index == 1
     assert round_record.value.status == DeclRoundStatus.DRAFT
+    assert round_record.value.execution_constraints == (
+        "Keep this batch in the statement stage until reviewed."
+    )
+    round_view = service.get_round_view(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=round_record.value.round_id,
+    )
+    assert round_view.ok and round_view.value is not None
+    assert round_view.value.execution_constraints == (
+        "Keep this batch in the statement stage until reviewed."
+    )
     change_a = service.create_decl(
         tmp_path,
         node_path="Main.Topic.Core",

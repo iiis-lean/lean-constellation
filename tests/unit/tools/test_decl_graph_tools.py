@@ -18,6 +18,7 @@ from lean_constellation.tools.args import (
     RoundSummaryArgs,
     RoundTerminalArgs,
     StrategyCloseArgs,
+    StrategyEnsureArgs,
     StrategyIdArgs,
 )
 from lean_constellation.tools.keys import ApplicationToolViewKey
@@ -96,6 +97,7 @@ def test_decl_planning_tool_schemas_expose_actual_transition_fields_only() -> No
     )
     assert created.decl_name == "main_result"
     assert parsed.start_stage == "proof_nl"
+    assert created.execution_constraints is None
     schema = DeclUpdateArgs.model_json_schema()["properties"]
     assert "decl_name" in schema
     assert "start_stage" in schema
@@ -122,6 +124,49 @@ def test_decl_planning_tool_schemas_expose_actual_transition_fields_only() -> No
                     **legacy_payload,
                 }
             )
+
+
+def test_decl_planning_tool_schemas_expose_scoped_execution_constraints() -> None:
+    strategy = StrategyEnsureArgs.model_validate(
+        {
+            "objective": "Use the bottom-up route.",
+            "execution_constraints": "Plan one frontier at a time.",
+        }
+    )
+    round_draft = RoundDraftArgs.model_validate(
+        {
+            "objective": "Declare the current batch.",
+            "execution_constraints": "Keep this batch statement-only.",
+        }
+    )
+    create = DeclCreateArgs.model_validate(
+        {
+            "decl_name": "main_result",
+            "kind": "theorem",
+            "objective": "Create the result.",
+            "execution_constraints": "Preserve source binders.",
+            "summary": "Main result.",
+        }
+    )
+    update = DeclUpdateArgs.model_validate(
+        {
+            "decl_name": "main_result",
+            "objective": "Repair the proof.",
+            "execution_constraints": "Only edit proof-layer artifacts.",
+            "target_state": "proved",
+            "start_stage": "proof_nl",
+        }
+    )
+
+    assert strategy.execution_constraints == "Plan one frontier at a time."
+    assert round_draft.execution_constraints == "Keep this batch statement-only."
+    assert create.execution_constraints == "Preserve source binders."
+    assert update.execution_constraints == "Only edit proof-layer artifacts."
+    for model in (StrategyEnsureArgs, RoundDraftArgs, DeclCreateArgs, DeclUpdateArgs):
+        description = model.model_json_schema()["properties"]["execution_constraints"][
+            "description"
+        ]
+        assert "execution" in description.lower()
 
 
 def test_decl_stage_content_read_schemas_expose_optional_exact_revision() -> None:

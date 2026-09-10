@@ -41,6 +41,7 @@ class NodeInput(OperatorInputModel):
 class StrategyInput(NodeInput):
     objective: str
     rationale: str | None = None
+    execution_constraints: str | None = None
 
 
 class StrategyCloseInput(NodeInput):
@@ -53,6 +54,7 @@ class StrategyCloseInput(NodeInput):
 class RoundInput(NodeInput):
     strategy_id: str
     objective: str
+    execution_constraints: str | None = None
 
 
 class RoundBatchInput(RoundInput):
@@ -68,6 +70,7 @@ class DeclCreateInput(RoundIdentityInput):
     kind: str
     objective: str
     summary: str
+    execution_constraints: str | None = None
     public: bool = False
     target_state: DeclState = DeclState.DECLARED
     require_target_state_satisfied: bool = True
@@ -88,6 +91,7 @@ class DeclRevisionInput(RoundIdentityInput):
 
 class DeclUpdateInput(DeclRevisionInput):
     objective: str
+    execution_constraints: str | None = None
     target_state: DeclState
     start_stage: DeclStage
     require_target_state_satisfied: bool = True
@@ -266,6 +270,7 @@ class DeclProjectionOperator:
                 node_path=request.node_path,
                 objective=request.objective,
                 rationale=request.rationale,
+                execution_constraints=request.execution_constraints,
             ),
         )
 
@@ -295,6 +300,7 @@ class DeclProjectionOperator:
                 node_path=request.node_path,
                 strategy_id=request.strategy_id,
                 objective=request.objective,
+                execution_constraints=request.execution_constraints,
                 declarations=request.declarations,
             ),
         )
@@ -499,6 +505,7 @@ class DeclProjectionOperator:
             round_id=request.round_id,
             name=request.decl_name,
             objective=request.objective,
+            execution_constraints=request.execution_constraints,
             target_state=request.target_state,
             start_stage=request.start_stage,
             require_target_state_satisfied=request.require_target_state_satisfied,

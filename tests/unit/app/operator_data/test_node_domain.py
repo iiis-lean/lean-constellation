@@ -46,6 +46,8 @@ def test_node_operator_create_read_stale_version_and_fixed_mathlib_actor(tmp_pat
             boundary="Core boundary.",
             objective="Build core.",
             success_criteria="Core is ready.",
+            constraints="Preserve the public representation.",
+            execution_constraints="Limit edits to Main.Core for this version.",
             expected_parent_contract_version=1,
         ),
     )
@@ -84,6 +86,20 @@ def test_node_operator_create_read_stale_version_and_fixed_mathlib_actor(tmp_pat
     loaded = api.get_node("MainRepo", NodePathInput(node_path="Main.Core"))
     assert loaded.ok and loaded.value is not None
     assert loaded.value.path == "Main.Core"
+
+    updated = api.update_contract_text(
+        "MainRepo",
+        UpdateContractTextInput(
+            node_path="Main.Core",
+            expected_contract_version=1,
+            execution_constraints="Do not add dependencies in this version.",
+        ),
+    )
+    assert updated.ok and updated.value is not None
+    assert updated.value.contract.constraints == "Preserve the public representation."
+    assert updated.value.contract.execution_constraints == (
+        "Do not add dependencies in this version."
+    )
 
 
 def test_node_http_strict_identity_and_direct_parity(tmp_path: Path) -> None:
