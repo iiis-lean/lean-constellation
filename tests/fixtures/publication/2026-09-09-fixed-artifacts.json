@@ -3,7 +3,7 @@
   "artifacts": [
     {
       "repo": "consecutive-divisor-counts",
-      "commit_prefix": "89dc",
+      "commit": "89dc13b45b8ef31e49d9ae23be270f2c4cc41748",
       "public_api_schema": 5,
       "public_boundaries_schema": 3,
       "declaration_graph_schema": 2,
@@ -19,11 +19,15 @@
       "public_api_schema": 5,
       "public_boundaries_schema": 3,
       "declaration_graph_schema": 2,
-      "export_receipt_schema": 1
+      "export_receipt_schema": 1,
+      "declaration_count": 28,
+      "public_declaration_count": 26,
+      "private_declaration_count": 2,
+      "export_file_count": 246
     },
     {
       "repo": "erdos-946",
-      "commit_prefix": "e146",
+      "commit": "e1468fd60efa970bd4b427c62a3496392a3e014f",
       "public_api_schema": 5,
       "public_boundaries_schema": 3,
       "declaration_graph_schema": 2,
@@ -31,7 +35,6 @@
     }
   ],
   "notes": [
-    "Commit prefixes are retained where the planning oracle recorded only a prefix.",
     "The fixture freezes shape and observed counts; it is not a network lookup manifest."
   ]
 }
