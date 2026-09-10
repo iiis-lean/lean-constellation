@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tests.unit_services_helpers import make_runtime
+from tests.unit_services_helpers import make_runtime, persist_source_corpus_manifest
 
 from lean_constellation.domain.repo_run import SourceScope
 from lean_constellation.services.material import ResourceMetadataInput
@@ -75,6 +75,7 @@ def test_material_context_view_source_only_with_source_index(tmp_path: Path) -> 
     runtime = make_runtime()
     material = runtime.material
     _write_source(tmp_path)
+    persist_source_corpus_manifest(runtime, tmp_path)
     _open_source_index(material, tmp_path)
     block = material.create_source_block(
         tmp_path,
@@ -109,6 +110,7 @@ def test_material_context_committed_source_index_mode_omits_draft_blocks(tmp_pat
     runtime = make_runtime()
     material = runtime.material
     _write_source(tmp_path)
+    persist_source_corpus_manifest(runtime, tmp_path)
     _open_source_index(material, tmp_path)
     assert material.set_source_index_overview(
         tmp_path, overview="Draft overview"
@@ -195,6 +197,7 @@ def test_material_context_view_node_scoped_refs_and_search(tmp_path: Path) -> No
     runtime = make_runtime()
     material = runtime.material
     _write_source(tmp_path)
+    persist_source_corpus_manifest(runtime, tmp_path)
     resource_key = _register_resource(runtime, tmp_path)
     _create_content_node(runtime, tmp_path)
     owned = runtime.node.material_ref.add_owned_source_ref(
@@ -232,6 +235,7 @@ def test_material_context_defaults_to_all_current_node_refs_without_repo_invento
     runtime = make_runtime()
     material = runtime.material
     _write_source(tmp_path)
+    persist_source_corpus_manifest(runtime, tmp_path)
     resource_key = _register_resource(runtime, tmp_path)
     _create_content_node(runtime, tmp_path)
     for line in (1, 2, 3):
@@ -276,6 +280,7 @@ def test_material_context_view_failure_gates(tmp_path: Path) -> None:
     runtime = make_runtime()
     material = runtime.material
     _write_source(tmp_path)
+    persist_source_corpus_manifest(runtime, tmp_path)
     _create_content_node(runtime, tmp_path)
     added = runtime.node.material_ref.add_owned_source_ref(
         tmp_path,

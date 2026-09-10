@@ -5,7 +5,7 @@ from pydantic import ValidationError
 
 from lean_constellation.services.decl_graph.models import DeclOriginRef
 from lean_constellation.services.decl_graph.origin_validation import validate_nl_origin
-from tests.unit_services_helpers import make_runtime
+from tests.unit_services_helpers import make_runtime, persist_source_corpus_manifest
 
 
 def _write_source(repo_root: Path) -> None:
@@ -26,6 +26,7 @@ def test_statement_and_proof_source_origins_use_source_corpus_without_source_ind
 ) -> None:
     _write_source(tmp_path)
     runtime = make_runtime()
+    persist_source_corpus_manifest(runtime, tmp_path)
     origin = DeclOriginRef(
         kind="source",
         source_path="article.md",

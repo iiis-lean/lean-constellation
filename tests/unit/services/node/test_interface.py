@@ -1,4 +1,4 @@
-from tests.unit_services_helpers import initialize_native_test_repo, lean_check_payload, make_runtime
+from tests.unit_services_helpers import initialize_native_test_repo, lean_check_payload, make_runtime, persist_source_corpus_manifest
 
 from pathlib import Path
 
@@ -409,6 +409,7 @@ def test_protected_interface_source_refs_validate_against_corpus_without_source_
     source_root = tmp_path / ".lean_constellation" / "source"
     source_root.mkdir(parents=True)
     (source_root / "article.md").write_text("one\ntwo\nthree\n", encoding="utf-8")
+    persist_source_corpus_manifest(make_runtime(), tmp_path)
     protected = DeclInterface(
         name="main_result",
         kind=DeclKind.THEOREM,
@@ -436,6 +437,7 @@ def test_protected_interface_source_ref_missing_from_corpus_is_rejected(
     source_root = tmp_path / ".lean_constellation" / "source"
     source_root.mkdir(parents=True)
     (source_root / "article.md").write_text("one\n", encoding="utf-8")
+    persist_source_corpus_manifest(make_runtime(), tmp_path)
     protected = DeclInterface(
         name="main_result",
         kind=DeclKind.THEOREM,

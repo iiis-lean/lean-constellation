@@ -1,4 +1,4 @@
-from tests.unit_services_helpers import make_runtime
+from tests.unit_services_helpers import make_runtime, persist_source_corpus_manifest
 
 from pathlib import Path
 
@@ -11,6 +11,7 @@ def _prepare_source(repo_root: Path) -> None:
     (source_root / "README.md").write_text("# Source\n", encoding="utf-8")
     (source_root / "chapter.md").write_text("alpha\nbeta theorem\ngamma theorem\n", encoding="utf-8")
     (source_root / "image.bin").write_bytes(b"\x00\x01")
+    persist_source_corpus_manifest(make_runtime(), repo_root)
 
 
 def _register_resource(service: MaterialService, repo_root: Path) -> str:

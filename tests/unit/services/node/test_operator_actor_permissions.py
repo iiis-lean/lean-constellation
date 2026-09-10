@@ -6,7 +6,7 @@ from lean_constellation.services.node.contract_fields import (
     NodeDepActor,
 )
 
-from tests.unit_services_helpers import make_runtime
+from tests.unit_services_helpers import make_runtime, persist_source_corpus_manifest
 
 
 def _tree(repo_root):  # noqa: ANN001, ANN202
@@ -83,6 +83,7 @@ def test_operator_owned_material_ref_is_protected_from_agents(tmp_path) -> None:
     source = tmp_path / ".lean_constellation" / "source" / "notes.md"
     source.parent.mkdir(parents=True, exist_ok=True)
     source.write_text("operator material\n", encoding="utf-8")
+    persist_source_corpus_manifest(runtime, tmp_path)
     refs = runtime.node.material_ref
     added = refs.add_owned_source_ref(
         tmp_path,

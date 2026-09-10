@@ -1,14 +1,14 @@
-from tests.unit_services_helpers import make_runtime
+from tests.unit_services_helpers import make_runtime, persist_source_corpus_manifest
 
 from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
-from lean_constellation.services.foundation import FoundationContext, FoundationService
+from lean_constellation.services.foundation import FoundationContext
 from lean_constellation.services.material import MaterialService, ResourceMetadataInput
 from lean_constellation.services.material.ref_codec import format_material_ref, parse_material_ref
-from lean_constellation.services.node import MaterialRefActor, MaterialRefComponent, NodeContractSnapshot, NodeTreeComponent
+from lean_constellation.services.node import MaterialRefActor, MaterialRefComponent, NodeContractSnapshot
 from lean_constellation.domain.refs import MaterialRef, ResourceRef, SourceRef
 from lean_constellation.tools.args import CurrentMaterialRefAddArgs, NodeMaterialRefAddArgs
 
@@ -159,6 +159,7 @@ def test_add_source_and_resource_refs_and_list_view(tmp_path: Path) -> None:
     _create_content_node(tmp_path)
     _write_source(tmp_path)
     component = _component()
+    persist_source_corpus_manifest(component.runtime, tmp_path)
     resource_key = _register_resource(tmp_path, component.runtime.material)
 
     owned = component.add_owned_source_ref(
@@ -207,6 +208,7 @@ def test_invalid_range_is_rejected_before_contract_write(tmp_path: Path) -> None
     _create_content_node(tmp_path)
     _write_source(tmp_path)
     component = _component()
+    persist_source_corpus_manifest(component.runtime, tmp_path)
 
     result = component.add_owned_source_ref(
         tmp_path,
@@ -230,6 +232,7 @@ def test_duplicate_add_is_idempotent_warning(tmp_path: Path) -> None:
     _create_content_node(tmp_path)
     _write_source(tmp_path)
     component = _component()
+    persist_source_corpus_manifest(component.runtime, tmp_path)
     first = component.add_owned_source_ref(
         tmp_path,
         node_path="Main.Topic.Core",
@@ -259,6 +262,7 @@ def test_context_duplicate_add_is_idempotent_warning(tmp_path: Path) -> None:
     _create_content_node(tmp_path)
     _write_source(tmp_path)
     component = _component()
+    persist_source_corpus_manifest(component.runtime, tmp_path)
     first = component.add_context_source_ref(
         tmp_path,
         node_path="Main.Topic.Core",
@@ -288,6 +292,7 @@ def test_exact_material_cannot_be_added_to_both_roles(tmp_path: Path) -> None:
     _create_content_node(tmp_path)
     _write_source(tmp_path)
     component = _component()
+    persist_source_corpus_manifest(component.runtime, tmp_path)
     assert component.add_owned_source_ref(
         tmp_path,
         node_path="Main.Topic.Core",
@@ -318,6 +323,7 @@ def test_list_view_exposes_copyable_ref_and_exact_remove_survives_reordering(tmp
     _create_content_node(tmp_path)
     _write_source(tmp_path)
     component = _component()
+    persist_source_corpus_manifest(component.runtime, tmp_path)
     for line in (1, 2):
         assert component.add_owned_source_ref(
             tmp_path,
@@ -356,6 +362,7 @@ def test_invalid_exact_remove_does_not_mutate_contract(tmp_path: Path) -> None:
     _create_content_node(tmp_path)
     _write_source(tmp_path)
     component = _component()
+    persist_source_corpus_manifest(component.runtime, tmp_path)
     assert component.add_owned_source_ref(
         tmp_path,
         node_path="Main.Topic.Core",
@@ -385,6 +392,7 @@ def test_source_refs_require_exact_range_while_resource_range_remains_optional(t
     _create_content_node(tmp_path)
     _write_source(tmp_path)
     component = _component()
+    persist_source_corpus_manifest(component.runtime, tmp_path)
     resource_key = _register_resource(tmp_path, component.runtime.material)
 
     source = component.add_owned_source_ref(
@@ -432,6 +440,7 @@ def test_worker_delete_permission_and_missing_ref(tmp_path: Path) -> None:
     _create_content_node(tmp_path)
     _write_source(tmp_path)
     component = _component()
+    persist_source_corpus_manifest(component.runtime, tmp_path)
     coordinator_ref = component.add_owned_source_ref(
         tmp_path,
         node_path="Main.Topic.Core",
@@ -485,6 +494,7 @@ def test_coordinator_can_remove_owned_ref_by_exact_selector_and_bad_selector_is_
     _create_content_node(tmp_path)
     _write_source(tmp_path)
     component = _component()
+    persist_source_corpus_manifest(component.runtime, tmp_path)
     added = component.add_owned_source_ref(
         tmp_path,
         node_path="Main.Topic.Core",
@@ -519,6 +529,7 @@ def test_context_remove_permission_and_missing_ref(tmp_path: Path) -> None:
     _create_content_node(tmp_path)
     _write_source(tmp_path)
     component = _component()
+    persist_source_corpus_manifest(component.runtime, tmp_path)
     added = component.add_context_source_ref(
         tmp_path,
         node_path="Main.Topic.Core",
@@ -552,6 +563,7 @@ def test_actor_and_range_shape_validation(tmp_path: Path) -> None:
     _create_content_node(tmp_path)
     _write_source(tmp_path)
     component = _component()
+    persist_source_corpus_manifest(component.runtime, tmp_path)
 
     bad_actor = component.add_context_source_ref(
         tmp_path,
@@ -595,6 +607,7 @@ def test_list_view_reports_invalid_preview_without_revalidating_gate(tmp_path: P
     _create_content_node(tmp_path)
     _write_source(tmp_path)
     component = _component()
+    persist_source_corpus_manifest(component.runtime, tmp_path)
     added = component.add_owned_source_ref(
         tmp_path,
         node_path="Main.Topic.Core",

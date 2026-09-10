@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tests.unit_services_helpers import make_runtime, valid_resource_readme
+from tests.unit_services_helpers import make_runtime, persist_source_corpus_manifest, valid_resource_readme
 
 from lean_constellation.services.material import ResourceDraftStatus, ResourceMetadataInput
 
@@ -48,6 +48,7 @@ def test_resource_curation_submit_outcome_happy_paths(tmp_path: Path) -> None:
     source_root = tmp_path / ".lean_constellation" / "source"
     source_root.mkdir(parents=True)
     (source_root / "source_duplicate.md").write_text("source duplicate\n", encoding="utf-8")
+    persist_source_corpus_manifest(service.runtime, tmp_path)
     source_duplicate = service.resource_curation.submit_resource_duplicate(
         tmp_path,
         target=target.value,
@@ -141,7 +142,7 @@ def test_resource_curation_submit_outcome_gates(tmp_path: Path) -> None:
     assert not missing_duplicate_key.ok
     assert missing_duplicate_key.issues[0].kind == "resource_duplicate_key_required"
     assert not missing_source_path.ok
-    assert missing_source_path.issues[0].kind == "source_corpus_missing"
+    assert missing_source_path.issues[0].kind == "source_corpus_manifest_missing"
 
     draft = service.allocate_resource_draft(tmp_path, target=first_target.value)
     assert draft.ok and draft.value is not None
