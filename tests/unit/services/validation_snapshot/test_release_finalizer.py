@@ -228,6 +228,52 @@ def test_candidate_preview_full_validation_reaches_fake_build_gateway_once(
     assert preview.value.build.summary == "Full-validation fake build passed."
 
 
+def test_release_preview_reports_open_strategy_without_repairing_it(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runtime, _ = _prepare_release_repo(tmp_path)
+    strategy = runtime.decl_graph.ensure_open_strategy(
+        tmp_path,
+        node_path="Main.Results",
+        objective="Must close at Content completion, not Release.",
+    )
+    assert strategy.ok and strategy.value is not None
+    strategy_path = runtime.decl_graph.graph_store.strategy_path(
+        tmp_path,
+        node_path="Main.Results",
+        strategy_id=strategy.value.strategy_id,
+    )
+    before = strategy_path.read_bytes()
+    monkeypatch.setattr(
+        runtime.validation_snapshot.readiness_gate,
+        "check_repo_ready",
+        lambda *_args, **_kwargs: runtime.foundation.ok(
+            runtime.foundation.gate_passed("repo_ready", summary="Ready fixture.")
+        ),
+    )
+    monkeypatch.setattr(
+        runtime.external.lean_toolchain,
+        "run_lake_build",
+        lambda *_args, **_kwargs: ToolchainCommandView(
+            ok=True,
+            command=["lake", "build"],
+            exit_code=0,
+            summary="Fake build passed.",
+        ),
+    )
+
+    preview = runtime.validation_snapshot.release_finalizer.preview_candidate_release(
+        tmp_path,
+        base_release_id=None,
+        summary="Release must remain a read-only gate.",
+    )
+
+    assert preview.ok and preview.value is not None
+    assert not preview.value.gate.passed
+    assert "release_decl_graph_open" in preview.value.blocking_issue_kinds
+    assert strategy_path.read_bytes() == before
+
+
 def test_prepare_candidate_release_rejects_legacy_operational_paths_from_audited_gate(
     tmp_path: Path,
 ) -> None:

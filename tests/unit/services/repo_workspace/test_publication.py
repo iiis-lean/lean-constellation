@@ -399,6 +399,9 @@ def test_publication_documents_are_portable_and_managed_readme_is_preserved(
     assert graph["schema_version"] == 2
     assert {item["visibility"] for item in graph["declarations"]} == {"public"}
     assert (tmp_path / "docs/lean-constellation/DECLARATION_GRAPH.md").is_file()
+    assert (
+        tmp_path / "docs/lean-constellation/assets/declaration-graph.svg"
+    ).is_file()
     assert (tmp_path / "docs/lean-constellation/external-dependencies.json").is_file()
     assert prepared.value.declaration_graph_json_path == (
         "docs/lean-constellation/declaration-graph.json"
@@ -615,6 +618,25 @@ def test_publication_status_badge_uses_proof_availability_and_flat_square(
             "label=Lean&message=4.32.0&color=6b4fbb&style=flat-square"
             in rendered
         )
+
+
+def test_publication_rejects_colliding_portable_declaration_slugs() -> None:
+    declarations = [
+        PublicApiDeclaration(
+            name=name,
+            revision=1,
+            kind="theorem",
+            node_path="Main.Topic",
+            module="Main.Topic",
+            state="proved",
+            status="committed",
+        )
+        for name in ("Result", "result")
+    ]
+
+    collision = RepoPublicationComponent._declaration_slug_collision(declarations)
+
+    assert collision == "main-topic-result:Main.Topic.Result,Main.Topic.result"
 
 
 def test_publication_tracks_scope_export_propagation_to_main(

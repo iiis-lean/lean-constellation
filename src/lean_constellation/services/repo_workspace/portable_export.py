@@ -102,8 +102,13 @@ class PortableExportComponent:
                 metadata, separator, raw_path = record.partition(b"\t")
                 if not separator:
                     return self._invalid_tree(staging, release_id, "malformed tree record")
-                mode, object_type, object_id = metadata.decode("ascii").split(" ", 2)
-                relative = PurePosixPath(raw_path.decode("utf-8"))
+                try:
+                    mode, object_type, object_id = metadata.decode("ascii").split(" ", 2)
+                    relative = PurePosixPath(raw_path.decode("utf-8"))
+                except (UnicodeError, ValueError):
+                    return self._invalid_tree(
+                        staging, release_id, "non-portable tree record"
+                    )
                 if (
                     relative.is_absolute()
                     or not relative.parts

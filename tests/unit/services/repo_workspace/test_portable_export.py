@@ -76,6 +76,16 @@ def test_portable_export_uses_frozen_release_and_materializes_source_corpus(
     assert receipt["files"]["binary.bin"] == hashlib.sha256(b"\x00\xff\x10").hexdigest()
     assert "lc-export.json" not in receipt["files"]
     assert not (destination / ".git").exists()
+    second_destination = tmp_path / "portable-second"
+    repeated = runtime.repo_workspace.portable_export.export_release(
+        repo_root,
+        release_id="release_test",
+        destination=second_destination,
+    )
+    assert repeated.ok
+    assert (second_destination / "lc-export.json").read_bytes() == (
+        destination / "lc-export.json"
+    ).read_bytes()
 
 
 def test_portable_export_can_explicitly_omit_source_corpus(tmp_path: Path) -> None:

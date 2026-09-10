@@ -259,6 +259,7 @@ class RepoPublicationPreparationView(StrictModel):
     public_boundaries_json_path: str
     declaration_graph_markdown_path: str
     declaration_graph_json_path: str
+    declaration_graph_svg_path: str
     external_dependencies_markdown_path: str
     external_dependencies_json_path: str
     provenance_path: str
@@ -937,6 +938,9 @@ class RepoPublicationComponent:
                     None,
                 )
             completion_mode = None
+            decl_state = None
+            availability = None
+            availability_source = None
             if requirement is not None and requirement.provider_release_id is not None:
                 provider_root = repo_root.parent / (
                     requirement.provider_repo or requirement.target_repo
@@ -948,6 +952,17 @@ class RepoPublicationComponent:
                     )
                     if release.ok and release.value is not None:
                         completion_mode = release.value.release.completion_mode.value
+                    available = self.runtime.repo_workspace.release.lookup_decl_availability(
+                        provider_root,
+                        release_id=requirement.provider_release_id,
+                        node_path=ref.node,
+                        decl_name=ref.name,
+                        revision=ref.revision,
+                    )
+                    if available.ok and available.value is not None:
+                        decl_state = available.value.decl_state
+                        availability = available.value.availability.value
+                        availability_source = "provider_release"
             required = (
                 requirement.required_proof_availability.value
                 if requirement is not None
@@ -969,11 +984,10 @@ class RepoPublicationComponent:
                     ),
                     provider_completion_mode=completion_mode,
                     required_availability=required,
-                    required_availability_source=(
-                        "requirement" if requirement is not None else None
-                    ),
+                    required_availability_source=availability_source,
                     resolved_revision=ref.revision,
-                    availability=required,
+                    decl_state=decl_state,
+                    availability=availability,
                     reason=dependency.reason,
                     uses=sorted(
                         uses,
@@ -1108,10 +1122,22 @@ class RepoPublicationComponent:
         assets_root = docs_root / "assets"
         api_svg_path = assets_root / "public-api.svg"
         boundaries_svg_path = assets_root / "public-boundaries.svg"
+        declaration_graph_svg_path = assets_root / "declaration-graph.svg"
         provenance_path = docs_root / "provenance.json"
         publication_tree = self.runtime.node.node_tree.get_node_tree(repo_root)
         if not publication_tree.ok or publication_tree.value is None:
             return self.runtime.foundation.fail(publication_tree.issues)
+        slug_collision = self._declaration_slug_collision(
+            list(declaration_graph.declarations)
+        )
+        if slug_collision is not None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "publication_declaration_slug_collision",
+                    "Declaration page names collide after portable slug normalization.",
+                    object_ref=slug_collision,
+                )
+            )
         stale_pages = self._stale_declaration_pages(
             declarations_root=declarations_root,
             current=list(declaration_graph.declarations),
@@ -1154,10 +1180,20 @@ class RepoPublicationComponent:
             ),
             encoding="utf-8",
         )
+        declaration_graph_svg_path.write_text(
+            self._render_public_boundary_svg(
+                tree=publication_tree.value,
+                declarations=list(declaration_graph.declarations),
+                propagation={},
+                title="Complete Declaration Graph",
+            ),
+            encoding="utf-8",
+        )
         written.extend(
             [
                 api_svg_path.relative_to(repo_root).as_posix(),
                 boundaries_svg_path.relative_to(repo_root).as_posix(),
+                declaration_graph_svg_path.relative_to(repo_root).as_posix(),
             ]
         )
         api_md_path.write_text(self._render_public_api_markdown(api), encoding="utf-8")
@@ -1232,6 +1268,9 @@ class RepoPublicationComponent:
                     repo_root
                 ).as_posix(),
                 declaration_graph_json_path=declaration_graph_json_path.relative_to(
+                    repo_root
+                ).as_posix(),
+                declaration_graph_svg_path=declaration_graph_svg_path.relative_to(
                     repo_root
                 ).as_posix(),
                 external_dependencies_markdown_path=external_dependencies_md_path.relative_to(
@@ -1624,6 +1663,14 @@ class RepoPublicationComponent:
             f"- Declarations: `{len(declarations)}`",
             f"- Public: `{sum(item.visibility == 'public' for item in declarations)}`",
             f"- Private: `{sum(item.visibility == 'private' for item in declarations)}`",
+            "",
+            "## Dependency graph",
+            "",
+            "The SVG may collapse duplicate Statement/Proof pairs for readability; "
+            "the JSON document preserves both stage-specific edges.",
+            "",
+            "[![Complete declaration dependency graph](assets/declaration-graph.svg)]"
+            "(assets/declaration-graph.svg)",
             "",
             "## Declarations",
             "",
@@ -2240,6 +2287,21 @@ class RepoPublicationComponent:
     def _public_api_slug_from_values(*, node_path: str, name: str) -> str:
         value = f"{node_path}--{name}".lower()
         return re.sub(r"[^a-z0-9]+", "-", value).strip("-")
+
+    @classmethod
+    def _declaration_slug_collision(
+        cls,
+        declarations: list[PublicApiDeclaration],
+    ) -> str | None:
+        seen: dict[str, tuple[str, str]] = {}
+        for declaration in declarations:
+            slug = cls._public_api_slug(declaration)
+            identity = (declaration.node_path, declaration.name)
+            previous = seen.get(slug)
+            if previous is not None and previous != identity:
+                return f"{slug}:{previous[0]}.{previous[1]},{identity[0]}.{identity[1]}"
+            seen[slug] = identity
+        return None
 
     @classmethod
     def _stale_declaration_pages(
