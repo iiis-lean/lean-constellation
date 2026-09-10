@@ -137,6 +137,9 @@ def test_finalize_ready_content_task_commits_contract(tmp_path: Path) -> None:
     assert current.value.status == "committed"
     assert current.value.contract.summary == "Coordinator verified the ready content task."
     assert current.value.contract.committed_at is not None
+    assert current.value.contract.finalized_strategy_ids == []
+    assert finalized.value.strategy_closeout is not None
+    assert finalized.value.strategy_closeout.status == "not_applicable"
 
 
 def test_finalize_ready_closes_exact_strategy_and_retry_reuses_receipt(
@@ -186,6 +189,11 @@ def test_finalize_ready_closes_exact_strategy_and_retry_reuses_receipt(
     assert receipt.contract_version == 1
     assert receipt.strategy_id == strategy.value.strategy_id
     assert receipt.round_statuses == {}
+    current = service.contract.get_current_contract(
+        tmp_path, node_path="Main.Topic.Core"
+    )
+    assert current.ok and current.value is not None
+    assert current.value.contract.finalized_strategy_ids == [strategy.value.strategy_id]
     assert receipt.completion_identity == (
         first.value.strategy_closeout.completion_identity
     )
@@ -223,6 +231,7 @@ def test_ready_content_commit_survives_strategy_closeout_failure(
         objective="Complete the Content node.",
     )
     assert strategy.ok and strategy.value is not None
+    closeout = service.runtime.decl_graph.close_strategy_for_content_completion
     monkeypatch.setattr(
         service.runtime.decl_graph,
         "close_strategy_for_content_completion",
@@ -255,6 +264,70 @@ def test_ready_content_commit_survives_strategy_closeout_failure(
     )
     assert loaded.ok and loaded.value is not None
     assert loaded.value.status == "open"
+    monkeypatch.setattr(
+        service.runtime.decl_graph,
+        "close_strategy_for_content_completion",
+        closeout,
+    )
+    manually_closed = service.runtime.decl_graph.close_strategy(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        strategy_id=strategy.value.strategy_id,
+        summary="Resolve the original Strategy explicitly.",
+    )
+    assert manually_closed.ok
+    replacement = service.runtime.decl_graph.ensure_open_strategy(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        objective="Start replacement work after the closeout failure.",
+    )
+    assert replacement.ok and replacement.value is not None
+
+    retried = service.finalize_content_task_result(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        task_result=ContentTaskResultView(outcome=ContentTaskOutcome.READY),
+        coordinator_summary="Coordinator committed Content truth.",
+    )
+
+    assert retried.ok and retried.value is not None
+    assert retried.value.strategy_closeout is not None
+    assert retried.value.strategy_closeout.status == "pending"
+    assert retried.value.strategy_closeout.issues == [
+        "strategy_completion_target_not_open"
+    ]
+    replacement_after_retry = service.runtime.decl_graph.get_strategy(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        strategy_id=replacement.value.strategy_id,
+    )
+    assert replacement_after_retry.ok and replacement_after_retry.value is not None
+    assert replacement_after_retry.value.status == "open"
+
+
+def test_new_contract_clears_task_completion_identity(tmp_path: Path) -> None:
+    service, _ready_gate = _make_service_with_content_node(tmp_path)
+    strategy = service.runtime.decl_graph.ensure_open_strategy(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        objective="Complete the first contract.",
+    )
+    assert strategy.ok and strategy.value is not None
+    finalized = service.finalize_content_task_result(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        task_result=ContentTaskResultView(outcome=ContentTaskOutcome.READY),
+        coordinator_summary="Commit the first Content contract.",
+    )
+    assert finalized.ok
+
+    opened = service.contract.ensure_open_contract(
+        tmp_path, node_path="Main.Topic.Core"
+    )
+
+    assert opened.ok and opened.value is not None
+    assert opened.value.contract.finalized_task_outcome is None
+    assert opened.value.contract.finalized_strategy_ids is None
 
 
 def test_ready_content_commit_does_not_guess_between_multiple_open_strategies(

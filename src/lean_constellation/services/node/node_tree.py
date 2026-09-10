@@ -64,6 +64,7 @@ class NodeContract(StrictModel):
     status: NodeContractStatus = NodeContractStatus.OPEN
     task_completion_mode: RepoCompletionMode
     finalized_task_outcome: Literal["ready", "blocked", "failed"] | None = None
+    finalized_strategy_ids: list[str] | None = None
     goal: str
     boundary: str
     objective: str | None = None

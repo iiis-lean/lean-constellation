@@ -359,52 +359,6 @@ class StrategyRoundComponent:
         strategies = self.list_strategies(repo_root, node_path=node_path)
         if not strategies.ok or strategies.value is None:
             return self.runtime.foundation.fail(strategies.issues)
-        matching = [
-            item
-            for item in strategies.value
-            if item.completion_closeout is not None
-            and item.completion_closeout.completion_identity == completion_identity
-        ]
-        if len(matching) > 1:
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue(
-                    "strategy_completion_closeout_ambiguous",
-                    "Multiple Strategy receipts claim the same Content completion identity.",
-                    object_ref=node_path,
-                    details={"completion_identity": completion_identity},
-                )
-            )
-        if matching:
-            return self.runtime.foundation.ok(
-                StrategyCompletionCloseoutView(
-                    status="already_closed",
-                    completion_identity=completion_identity,
-                    receipt=matching[0].completion_closeout,
-                    summary="Strategy was already closed for this exact Content completion.",
-                )
-            )
-        open_strategies = [
-            item for item in strategies.value if item.status == DeclStrategyStatus.OPEN
-        ]
-        if not open_strategies:
-            return self.runtime.foundation.ok(
-                StrategyCompletionCloseoutView(
-                    status="not_applicable",
-                    completion_identity=completion_identity,
-                    summary="Content completion has no open Strategy to close.",
-                )
-            )
-        if len(open_strategies) != 1:
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue(
-                    "strategy_completion_open_ambiguous",
-                    "Content completion requires exactly one current open Strategy.",
-                    object_ref=node_path,
-                    current=", ".join(
-                        sorted(item.strategy_id for item in open_strategies)
-                    ),
-                )
-            )
         current = self.runtime.node.contract.get_current_contract(
             repo_root, node_path=node_path
         )
@@ -445,7 +399,108 @@ class StrategyRoundComponent:
                     expected="ready",
                 )
             )
-        strategy = open_strategies[0]
+        target_ids = current.value.contract.finalized_strategy_ids
+        if target_ids is None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "strategy_completion_target_unbound",
+                    "READY Content completion has no persisted Strategy target snapshot.",
+                    object_ref=node_path,
+                    expected="a persisted list of open Strategy IDs",
+                )
+            )
+        if not target_ids:
+            return self.runtime.foundation.ok(
+                StrategyCompletionCloseoutView(
+                    status="not_applicable",
+                    completion_identity=completion_identity,
+                    summary="Content completion captured no open Strategy to close.",
+                )
+            )
+        if len(target_ids) != 1:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "strategy_completion_open_ambiguous",
+                    "Content completion captured more than one open Strategy.",
+                    object_ref=node_path,
+                    current=", ".join(sorted(target_ids)),
+                    expected="exactly one open Strategy ID",
+                )
+            )
+        target_id = target_ids[0]
+        matching = [
+            item
+            for item in strategies.value
+            if item.completion_closeout is not None
+            and item.completion_closeout.completion_identity == completion_identity
+        ]
+        if len(matching) > 1:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "strategy_completion_closeout_ambiguous",
+                    "Multiple Strategy receipts claim the same Content completion identity.",
+                    object_ref=node_path,
+                    details={"completion_identity": completion_identity},
+                )
+            )
+        if matching:
+            if matching[0].strategy_id != target_id:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "strategy_completion_receipt_target_mismatch",
+                        "Strategy receipt does not match the persisted completion target.",
+                        object_ref=node_path,
+                        current=matching[0].strategy_id,
+                        expected=target_id,
+                    )
+                )
+            return self.runtime.foundation.ok(
+                StrategyCompletionCloseoutView(
+                    status="already_closed",
+                    completion_identity=completion_identity,
+                    receipt=matching[0].completion_closeout,
+                    summary="Strategy was already closed for this exact Content completion.",
+                )
+            )
+        targets = [
+            item for item in strategies.value if item.strategy_id == target_id
+        ]
+        if len(targets) != 1:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "strategy_completion_target_missing",
+                    "Persisted Content completion Strategy target is missing or duplicated.",
+                    object_ref=node_path,
+                    current=str(len(targets)),
+                    expected=target_id,
+                )
+            )
+        strategy = targets[0]
+        if strategy.status != DeclStrategyStatus.OPEN:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "strategy_completion_target_not_open",
+                    "Persisted Content completion Strategy target is no longer open.",
+                    object_ref=target_id,
+                    current=strategy.status.value,
+                    expected=DeclStrategyStatus.OPEN.value,
+                )
+            )
+        open_ids = sorted(
+            item.strategy_id
+            for item in strategies.value
+            if item.status == DeclStrategyStatus.OPEN
+        )
+        if open_ids != [target_id]:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "strategy_completion_open_ambiguous",
+                    "Persisted completion target is not the unique current open Strategy.",
+                    object_ref=node_path,
+                    current=", ".join(open_ids),
+                    expected=target_id,
+                )
+            )
         rounds = self.list_rounds(repo_root, node_path=node_path)
         if not rounds.ok or rounds.value is None:
             return self.runtime.foundation.fail(rounds.issues)

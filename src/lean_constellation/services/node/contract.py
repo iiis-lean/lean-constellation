@@ -615,6 +615,7 @@ class ContractComponent:
         summary: str,
         decl_graph_head: dict[str, int],
         finalized_task_outcome: str | None = None,
+        finalized_strategy_ids: list[str] | None = None,
     ) -> ServiceResult[NodeContractView]:
         """System-only primitive; callers must capture and validate the exact head."""
         summary_issue = self._validate_summary(summary)
@@ -634,6 +635,11 @@ class ContractComponent:
             )
         contract.value.decl_graph_head = dict(sorted(decl_graph_head.items()))
         contract.value.finalized_task_outcome = finalized_task_outcome
+        contract.value.finalized_strategy_ids = (
+            sorted(finalized_strategy_ids)
+            if finalized_strategy_ids is not None
+            else None
+        )
         return self._commit_contract(repo_root, node.value, contract.value, summary=summary)
 
     def record_content_contract_summary(self, repo_root: Path, *, node_path: str, summary: str) -> ServiceResult[NodeContractView]:
@@ -853,6 +859,8 @@ class ContractComponent:
         new_contract.task_completion_mode = task_completion_mode
         new_contract.summary = None
         new_contract.execution_constraints = None
+        new_contract.finalized_task_outcome = None
+        new_contract.finalized_strategy_ids = None
         new_contract.committed_at = None
         new_contract.created_at = utc_now_iso()
         return new_contract

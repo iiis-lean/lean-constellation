@@ -481,6 +481,7 @@ class NodeService:
         node_path: str,
         summary: str,
         finalized_task_outcome: ContentTaskOutcome | None = None,
+        finalized_strategy_ids: list[str] | None = None,
     ) -> ServiceResult[NodeContractView]:
         if not summary or not summary.strip():
             return self.runtime.foundation.fail(
@@ -526,6 +527,7 @@ class NodeService:
                 if finalized_task_outcome is not None
                 else None
             ),
+            finalized_strategy_ids=finalized_strategy_ids,
         )
 
     def preview_delete_node(self, repo_root: Path, *, path: str) -> ServiceResult[DeleteImpactView]:
@@ -901,11 +903,24 @@ class NodeService:
                     summary="Content task claimed ready, but the ready gate did not pass.",
                 )
                 return ServiceResult[ContentTaskFinalizeView](ok=False, value=view, issues=gate.value.issues)
+            strategies = self.runtime.decl_graph.list_strategies(
+                repo_root, node_path=node_path
+            )
+            finalized_strategy_ids = (
+                sorted(
+                    item.strategy_id
+                    for item in strategies.value
+                    if item.status.value == "open"
+                )
+                if strategies.ok and strategies.value is not None
+                else None
+            )
             committed = self.commit_content_contract(
                 repo_root,
                 node_path=node_path,
                 summary=coordinator_summary,
                 finalized_task_outcome=parsed_result.value.outcome,
+                finalized_strategy_ids=finalized_strategy_ids,
             )
             if not committed.ok or committed.value is None:
                 return self.runtime.foundation.fail(committed.issues)
