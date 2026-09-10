@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "artifacts": [
+    {
+      "repo": "consecutive-divisor-counts",
+      "commit_prefix": "89dc",
+      "public_api_schema": 5,
+      "public_boundaries_schema": 3,
+      "declaration_graph_schema": 2,
+      "export_receipt_schema": 1,
+      "declaration_count": 56,
+      "public_declaration_count": 13,
+      "private_declaration_count": 43,
+      "export_file_count": 391
+    },
+    {
+      "repo": "weighted-sieve",
+      "commit": "da09174bf0ba09ceecc4fde05e755e02e2abb0ce",
+      "public_api_schema": 5,
+      "public_boundaries_schema": 3,
+      "declaration_graph_schema": 2,
+      "export_receipt_schema": 1
+    },
+    {
+      "repo": "erdos-946",
+      "commit_prefix": "e146",
+      "public_api_schema": 5,
+      "public_boundaries_schema": 3,
+      "declaration_graph_schema": 2,
+      "export_receipt_schema": 1
+    }
+  ],
+  "notes": [
+    "Commit prefixes are retained where the planning oracle recorded only a prefix.",
+    "The fixture freezes shape and observed counts; it is not a network lookup manifest."
+  ]
+}

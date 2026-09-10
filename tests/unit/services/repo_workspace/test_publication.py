@@ -29,7 +29,33 @@ from tests.unit.services.repo_workspace.test_repo_release import (
     _prepare_release_repo,
     _release,
     _set_contract_exports,
+    _write_decl,
 )
+
+
+def test_fixed_2026_09_09_publication_oracle_is_explicit() -> None:
+    fixture = json.loads(
+        (
+            Path(__file__).resolve().parents[4]
+            / "tests/fixtures/publication/2026-09-09-fixed-artifacts.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    assert fixture["schema_version"] == 1
+    assert [item["repo"] for item in fixture["artifacts"]] == [
+        "consecutive-divisor-counts",
+        "weighted-sieve",
+        "erdos-946",
+    ]
+    assert {
+        (
+            item["public_api_schema"],
+            item["public_boundaries_schema"],
+            item["declaration_graph_schema"],
+            item["export_receipt_schema"],
+        )
+        for item in fixture["artifacts"]
+    } == {(5, 3, 2, 1)}
 
 
 def test_managed_gitignore_preserves_user_content_and_is_idempotent(
@@ -288,6 +314,7 @@ def test_publication_documents_are_portable_and_managed_readme_is_preserved(
     public_result = next(
         item for item in api["declarations"] if item["name"] == "PublicResult"
     )
+    assert api["schema_version"] == 5
     assert public_result["state"] == "proved"
     assert public_result["proof_available"] is True
     assert "trivial" in public_result["formal_code"]
@@ -298,6 +325,8 @@ def test_publication_documents_are_portable_and_managed_readme_is_preserved(
     assert public_result["proof_dependencies"] == [
         "current repo:Main.Foundation.Defs.ProofHelper"
     ]
+    assert public_result["statement"]["formal"]["code"].startswith("import Mathlib")
+    assert public_result["proof"]["formal"]["code"].startswith("theorem PublicResult")
     api_markdown = (
         tmp_path / "docs/lean-constellation/PUBLIC_API.md"
     ).read_text()
@@ -313,6 +342,7 @@ def test_publication_documents_are_portable_and_managed_readme_is_preserved(
             tmp_path / "docs/lean-constellation/public-boundaries.json"
         ).read_text()
     )
+    assert boundaries["schema_version"] == 3
     assert {
         item["declaration"]["name"] for item in boundaries["declarations"]
     } == {"ProofHelper", "PublicResult", "Support"}
@@ -355,6 +385,16 @@ def test_publication_documents_are_portable_and_managed_readme_is_preserved(
     )
     assert prepared.value.public_boundaries_markdown_path == (
         "docs/lean-constellation/PUBLIC_BOUNDARIES.md"
+    )
+    graph = json.loads(
+        (tmp_path / "docs/lean-constellation/declaration-graph.json").read_text()
+    )
+    assert graph["schema_version"] == 2
+    assert {item["visibility"] for item in graph["declarations"]} == {"public"}
+    assert (tmp_path / "docs/lean-constellation/DECLARATION_GRAPH.md").is_file()
+    assert (tmp_path / "docs/lean-constellation/external-dependencies.json").is_file()
+    assert prepared.value.declaration_graph_json_path == (
+        "docs/lean-constellation/declaration-graph.json"
     )
     stale_page = (
         tmp_path
@@ -440,7 +480,7 @@ def test_adapter_publication_exposes_flat_api_and_immutable_upstream(
     api = json.loads(
         (tmp_path / "docs/lean-constellation/public-api.json").read_text()
     )
-    assert api["schema_version"] == 4
+    assert api["schema_version"] == 5
     assert api["repo_format"] == "adapter"
     assert [item["name"] for item in api["declarations"]] == ["main_result"]
     assert api["adapter_upstream"] == {
