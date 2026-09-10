@@ -6,7 +6,7 @@ import hashlib
 import json
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import Field, field_validator
 
@@ -63,6 +63,7 @@ class NodeContract(StrictModel):
     version: int = 1
     status: NodeContractStatus = NodeContractStatus.OPEN
     task_completion_mode: RepoCompletionMode
+    finalized_task_outcome: Literal["ready", "blocked", "failed"] | None = None
     goal: str
     boundary: str
     objective: str | None = None

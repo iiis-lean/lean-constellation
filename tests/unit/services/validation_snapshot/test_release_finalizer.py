@@ -15,6 +15,7 @@ from lean_constellation.domain.repo_release import RepoRelease
 from lean_constellation.services.external_clients import ToolchainCommandView
 from lean_constellation.services.foundation import FoundationContext
 from lean_constellation.services.foundation import WriteMode
+from lean_constellation.services.decl_graph import DeclGraphStrategy
 from lean_constellation.services.node import NodeKind
 from lean_constellation.services.node.contract_fields import ContractMaterialRef, NodeDep
 from lean_constellation.services.validation_snapshot import (
@@ -232,17 +233,21 @@ def test_release_preview_reports_open_strategy_without_repairing_it(
     tmp_path: Path, monkeypatch
 ) -> None:
     runtime, _ = _prepare_release_repo(tmp_path)
-    strategy = runtime.decl_graph.ensure_open_strategy(
-        tmp_path,
+    strategy = DeclGraphStrategy(
+        strategy_id="strategy_release_read_only_fixture",
         node_path="Main.Results",
         objective="Must close at Content completion, not Release.",
     )
-    assert strategy.ok and strategy.value is not None
     strategy_path = runtime.decl_graph.graph_store.strategy_path(
         tmp_path,
         node_path="Main.Results",
-        strategy_id=strategy.value.strategy_id,
+        strategy_id=strategy.strategy_id,
     )
+    assert runtime.foundation.store.write_json_atomic(
+        strategy_path,
+        strategy,
+        mode=WriteMode.CREATE_ONLY,
+    ).ok
     before = strategy_path.read_bytes()
     monkeypatch.setattr(
         runtime.validation_snapshot.readiness_gate,

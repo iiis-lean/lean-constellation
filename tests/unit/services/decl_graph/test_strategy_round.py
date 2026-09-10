@@ -870,6 +870,11 @@ def test_round_creation_and_completion_closeout_share_strategy_lock(
     with service.strategy_round._strategy_mutation_locked(
         tmp_path, node_path=node_path
     ):
+        ensured = service.ensure_open_strategy(
+            tmp_path,
+            node_path=node_path,
+            objective="Must not race closeout.",
+        )
         drafted = service.create_round_draft(
             tmp_path,
             node_path=node_path,
@@ -882,8 +887,18 @@ def test_round_creation_and_completion_closeout_share_strategy_lock(
             contract_version=1,
             decl_graph_head={},
         )
+        manual_close = service.close_strategy(
+            tmp_path,
+            node_path=node_path,
+            strategy_id=strategy.value.strategy_id,
+            summary="Must not race automatic closeout.",
+        )
 
+    assert not ensured.ok
+    assert ensured.issues[0].kind == "strategy_mutation_lock_busy"
     assert not drafted.ok
     assert drafted.issues[0].kind == "strategy_mutation_lock_busy"
     assert not closed.ok
     assert closed.issues[0].kind == "strategy_completion_closeout_lock_busy"
+    assert not manual_close.ok
+    assert manual_close.issues[0].kind == "strategy_mutation_lock_busy"

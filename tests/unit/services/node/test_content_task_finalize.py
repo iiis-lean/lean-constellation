@@ -189,6 +189,13 @@ def test_finalize_ready_closes_exact_strategy_and_retry_reuses_receipt(
     assert receipt.completion_identity == (
         first.value.strategy_closeout.completion_identity
     )
+    replacement = service.runtime.decl_graph.ensure_open_strategy(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        objective="Must wait for a new open Content contract.",
+    )
+    assert not replacement.ok
+    assert replacement.issues[0].kind == "strategy_content_contract_committed"
 
 
 def test_ready_content_commit_survives_strategy_closeout_failure(
@@ -459,3 +466,43 @@ def test_finalize_duplicate_commit_is_idempotent_but_cannot_replace_summary(tmp_
     assert "already finalized" in second.value.summary
     assert not conflicting.ok
     assert conflicting.issues[0].kind == "content_task_already_finalized"
+
+
+def test_blocked_finalize_cannot_be_replayed_as_ready_to_close_strategy(
+    tmp_path: Path,
+) -> None:
+    service, _ready_gate = _make_service_with_content_node(tmp_path)
+    strategy = service.runtime.decl_graph.ensure_open_strategy(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        objective="Remain open after a blocked task.",
+    )
+    assert strategy.ok and strategy.value is not None
+    summary = "Coordinator recorded blocked task."
+    blocked = service.finalize_content_task_result(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        task_result=ContentTaskResultView(
+            outcome=ContentTaskOutcome.BLOCKED,
+            reason="Provider missing.",
+        ),
+        coordinator_summary=summary,
+    )
+
+    replayed = service.finalize_content_task_result(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        task_result=ContentTaskResultView(outcome=ContentTaskOutcome.READY),
+        coordinator_summary=summary,
+    )
+
+    assert blocked.ok
+    assert not replayed.ok
+    assert replayed.issues[0].kind == "content_task_outcome_mismatch"
+    loaded = service.runtime.decl_graph.get_strategy(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        strategy_id=strategy.value.strategy_id,
+    )
+    assert loaded.ok and loaded.value is not None
+    assert loaded.value.status == "open"

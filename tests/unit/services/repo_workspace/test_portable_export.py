@@ -8,7 +8,30 @@ import subprocess
 from tests.unit.services.repo_workspace.test_repo_release import _prepare_release_repo
 
 
-def _freeze_release(repo_root: Path, *, release_id: str) -> str:
+def _freeze_release(
+    repo_root: Path,
+    *,
+    release_id: str,
+    manifest_release_id: str | None = None,
+    write_manifest: bool = True,
+) -> str:
+    if write_manifest:
+        manifest_path = repo_root / f".lean_constellation/releases/{release_id}.json"
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "release_id": manifest_release_id or release_id,
+                    "node_contract_versions": {"node_fixture": 1},
+                    "completion_mode": "graph_proved",
+                    "semantic_manifest_digest": "1" * 64,
+                    "dependency_lock_digest": "2" * 64,
+                    "summary": "Portable export test Release.",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
     subprocess.run(["git", "init", "-q"], cwd=repo_root, check=True)
     subprocess.run(
         ["git", "config", "user.email", "tests@example.invalid"],
@@ -107,7 +130,90 @@ def test_portable_export_can_explicitly_omit_source_corpus(tmp_path: Path) -> No
 
     assert exported.ok and exported.value is not None, exported.issues
     assert exported.value.receipt.source_materialization == "omitted"
-    assert exported.value.receipt.omitted_source_files == [
-        ".lean_constellation/source/paper.tex"
+    assert [
+        item.model_dump(mode="json")
+        for item in exported.value.receipt.omitted_source_files
+    ] == [
+        {
+            "path": ".lean_constellation/source/paper.tex",
+            "reason": "Source Corpus inclusion was explicitly disabled.",
+        }
     ]
     assert not (destination / ".lean_constellation/source").exists()
+
+
+def test_portable_export_supports_reasoned_selective_source_omission(
+    tmp_path: Path,
+) -> None:
+    repo_root = tmp_path / "SourceRepo"
+    destination = tmp_path / "portable"
+    runtime, _ = _prepare_release_repo(repo_root)
+    source_root = repo_root / ".lean_constellation/source"
+    source_root.mkdir(parents=True)
+    (source_root / "public.tex").write_text("public\n", encoding="utf-8")
+    (source_root / "restricted.pdf").write_bytes(b"restricted")
+    assert runtime.repo_workspace.publication.prepare_publication(repo_root).ok
+    _freeze_release(repo_root, release_id="release_test")
+
+    exported = runtime.repo_workspace.portable_export.export_release(
+        repo_root,
+        release_id="release_test",
+        destination=destination,
+        omit_source_files={
+            ".lean_constellation/source/restricted.pdf": "Redistribution not authorized."
+        },
+    )
+
+    assert exported.ok and exported.value is not None, exported.issues
+    assert exported.value.receipt.source_materialization == "partial"
+    assert (destination / ".lean_constellation/source/public.tex").is_file()
+    assert not (destination / ".lean_constellation/source/restricted.pdf").exists()
+    assert exported.value.receipt.omitted_source_files[0].reason == (
+        "Redistribution not authorized."
+    )
+
+
+def test_portable_export_rejects_release_manifest_identity_mismatch(
+    tmp_path: Path,
+) -> None:
+    repo_root = tmp_path / "SourceRepo"
+    destination = tmp_path / "portable"
+    runtime, _ = _prepare_release_repo(repo_root)
+    assert runtime.repo_workspace.publication.prepare_publication(repo_root).ok
+    _freeze_release(
+        repo_root,
+        release_id="release_test",
+        manifest_release_id="release_other",
+    )
+
+    exported = runtime.repo_workspace.portable_export.export_release(
+        repo_root,
+        release_id="release_test",
+        destination=destination,
+    )
+
+    assert not exported.ok
+    assert exported.issues[0].kind == "portable_export_release_identity_mismatch"
+    assert not destination.exists()
+
+
+def test_portable_export_rejects_release_without_manifest(tmp_path: Path) -> None:
+    repo_root = tmp_path / "SourceRepo"
+    destination = tmp_path / "portable"
+    runtime, _ = _prepare_release_repo(repo_root)
+    assert runtime.repo_workspace.publication.prepare_publication(repo_root).ok
+    _freeze_release(
+        repo_root,
+        release_id="release_test",
+        write_manifest=False,
+    )
+
+    exported = runtime.repo_workspace.portable_export.export_release(
+        repo_root,
+        release_id="release_test",
+        destination=destination,
+    )
+
+    assert not exported.ok
+    assert exported.issues[0].kind == "portable_export_release_manifest_missing"
+    assert not destination.exists()

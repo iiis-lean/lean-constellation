@@ -614,6 +614,7 @@ class ContractComponent:
         node_path: str,
         summary: str,
         decl_graph_head: dict[str, int],
+        finalized_task_outcome: str | None = None,
     ) -> ServiceResult[NodeContractView]:
         """System-only primitive; callers must capture and validate the exact head."""
         summary_issue = self._validate_summary(summary)
@@ -632,6 +633,7 @@ class ContractComponent:
                 self.runtime.foundation.issue("contract_not_open", "Only an open contract can be committed.", object_ref=node_path)
             )
         contract.value.decl_graph_head = dict(sorted(decl_graph_head.items()))
+        contract.value.finalized_task_outcome = finalized_task_outcome
         return self._commit_contract(repo_root, node.value, contract.value, summary=summary)
 
     def record_content_contract_summary(self, repo_root: Path, *, node_path: str, summary: str) -> ServiceResult[NodeContractView]:

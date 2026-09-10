@@ -52,6 +52,33 @@ class StrategyRoundComponent:
         rationale: str | None = None,
         execution_constraints: str | None = None,
     ) -> ServiceResult[DeclGraphStrategy]:
+        try:
+            with self._strategy_mutation_locked(repo_root, node_path=node_path):
+                return self._ensure_open_strategy_locked(
+                    repo_root,
+                    node_path=node_path,
+                    objective=objective,
+                    rationale=rationale,
+                    execution_constraints=execution_constraints,
+                )
+        except StrategyMutationLockBusyError as exc:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "strategy_mutation_lock_busy",
+                    str(exc),
+                    object_ref=node_path,
+                )
+            )
+
+    def _ensure_open_strategy_locked(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        objective: str,
+        rationale: str | None = None,
+        execution_constraints: str | None = None,
+    ) -> ServiceResult[DeclGraphStrategy]:
         if not objective or not objective.strip():
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue("strategy_objective_required", "Strategy objective is required.", field="objective")
@@ -71,6 +98,26 @@ class StrategyRoundComponent:
             )
         if open_strategies:
             return self.runtime.foundation.ok(open_strategies[0])
+
+        contract = self.runtime.node.contract.get_current_contract(
+            repo_root, node_path=node_path
+        )
+        if not contract.ok or contract.value is None:
+            return self.runtime.foundation.fail(contract.issues)
+        contract_status = getattr(
+            contract.value.version_status,
+            "value",
+            str(contract.value.version_status),
+        )
+        if contract_status == "committed":
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "strategy_content_contract_committed",
+                    "A new Strategy requires an open Content contract version.",
+                    object_ref=node_path,
+                    current=str(contract.value.version),
+                )
+            )
 
         allocated = self.runtime.foundation.store.allocate_uuid(
             lambda candidate: self.graph_store.strategy_path(
@@ -100,6 +147,35 @@ class StrategyRoundComponent:
         return self.runtime.foundation.ok(strategy)
 
     def close_strategy(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        strategy_id: str,
+        summary: str,
+        reason: str | None = None,
+        failed: bool = False,
+    ) -> ServiceResult[DeclGraphStrategy]:
+        try:
+            with self._strategy_mutation_locked(repo_root, node_path=node_path):
+                return self._close_strategy_locked(
+                    repo_root,
+                    node_path=node_path,
+                    strategy_id=strategy_id,
+                    summary=summary,
+                    reason=reason,
+                    failed=failed,
+                )
+        except StrategyMutationLockBusyError as exc:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "strategy_mutation_lock_busy",
+                    str(exc),
+                    object_ref=node_path,
+                )
+            )
+
+    def _close_strategy_locked(
         self,
         repo_root: Path,
         *,

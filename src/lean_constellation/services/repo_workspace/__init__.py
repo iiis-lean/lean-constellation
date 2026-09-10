@@ -74,6 +74,7 @@ from lean_constellation.services.repo_workspace.publication import (
     RepoProvenanceDocument,
 )
 from lean_constellation.services.repo_workspace.portable_export import (
+    OmittedSourceFile,
     PortableExportComponent,
     PortableExportReceipt,
     PortableExportView,
@@ -137,6 +138,7 @@ __all__ = [
     "PublicBoundaryDeclaration",
     "PublicationDirectoryExclusion",
     "PortableExportComponent",
+    "OmittedSourceFile",
     "PortableExportReceipt",
     "PortableExportView",
     "RepoDependencyChangePreview",

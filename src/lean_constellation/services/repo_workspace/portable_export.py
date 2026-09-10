@@ -14,10 +14,16 @@ from typing import TYPE_CHECKING, Literal
 from pydantic import Field
 
 from lean_constellation.domain.common import StrictModel
+from lean_constellation.domain.repo_release import RepoRelease
 from lean_constellation.services.foundation import ServiceResult, classify_repo_path
 
 if TYPE_CHECKING:
     from lean_constellation.services.runtime import LeanRuntimeServices
+
+
+class OmittedSourceFile(StrictModel):
+    path: str
+    reason: str
 
 
 class PortableExportReceipt(StrictModel):
@@ -26,8 +32,8 @@ class PortableExportReceipt(StrictModel):
     source_commit: str
     include_source_corpus: bool = True
     source_corpus_path: str = ".lean_constellation/source"
-    source_materialization: Literal["included", "omitted", "absent"]
-    omitted_source_files: list[str] = Field(default_factory=list)
+    source_materialization: Literal["included", "partial", "omitted", "absent"]
+    omitted_source_files: list[OmittedSourceFile] = Field(default_factory=list)
     files: dict[str, str] = Field(default_factory=dict)
     summary: str
 
@@ -51,6 +57,7 @@ class PortableExportComponent:
         release_id: str,
         destination: Path,
         include_source_corpus: bool = True,
+        omit_source_files: dict[str, str] | None = None,
     ) -> ServiceResult[PortableExportView]:
         repo_root = Path(repo_root).resolve()
         destination = Path(destination).resolve(strict=False)
@@ -74,12 +81,60 @@ class PortableExportComponent:
                     object_ref=str(destination),
                 )
             )
+        requested_omissions: dict[str, str] = {}
+        for raw_path, raw_reason in (omit_source_files or {}).items():
+            path = PurePosixPath(raw_path)
+            reason = raw_reason.strip()
+            if (
+                path.is_absolute()
+                or path.parts[:2] != (".lean_constellation", "source")
+                or any(part in {"", ".", ".."} for part in path.parts)
+                or not reason
+            ):
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "portable_export_source_omission_invalid",
+                        "Source omission requires a canonical source file path and non-empty reason.",
+                        object_ref=raw_path,
+                    )
+                )
+            requested_omissions[path.as_posix()] = reason
         resolved = self.runtime.repo_workspace.git_release.resolve_release_commit(
             repo_root, release_id=release_id
         )
         if not resolved.ok or resolved.value is None:
             return self.runtime.foundation.fail(resolved.issues)
         commit = resolved.value
+        release_manifest_path = (
+            f".lean_constellation/releases/{release_id}.json"
+        )
+        manifest = self._git(repo_root, "show", f"{commit}:{release_manifest_path}")
+        if manifest.returncode != 0:
+            return self._git_failure(
+                "portable_export_release_manifest_missing",
+                "Release commit does not contain its exact immutable manifest.",
+                manifest,
+                object_ref=release_manifest_path,
+            )
+        try:
+            release = RepoRelease.model_validate_json(manifest.stdout)
+        except ValueError as exc:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "portable_export_release_manifest_invalid",
+                    f"Release commit contains an invalid manifest: {exc}",
+                    object_ref=release_manifest_path,
+                )
+            )
+        if release.release_id != release_id:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "portable_export_release_identity_mismatch",
+                    "Release manifest identity does not match the requested Release ref.",
+                    object_ref=release_id,
+                    current=release.release_id,
+                )
+            )
         listed = self._git(repo_root, "ls-tree", "-r", "-z", "--full-tree", commit)
         if listed.returncode != 0:
             return self._git_failure(
@@ -93,8 +148,9 @@ class PortableExportComponent:
             tempfile.mkdtemp(prefix=f".{destination.name}.lc-export-", dir=destination.parent)
         )
         files: dict[str, str] = {}
-        omitted_source_files: list[str] = []
+        omitted_source_files: list[OmittedSourceFile] = []
         source_seen = False
+        included_source_seen = False
         try:
             for record in listed.stdout.split(b"\0"):
                 if not record:
@@ -126,9 +182,19 @@ class PortableExportComponent:
                 in_source = relative.parts[:2] == (".lean_constellation", "source")
                 if in_source:
                     source_seen = True
-                    if not include_source_corpus:
-                        omitted_source_files.append(relpath)
+                    omission_reason = requested_omissions.get(relpath)
+                    if not include_source_corpus or omission_reason is not None:
+                        omitted_source_files.append(
+                            OmittedSourceFile(
+                                path=relpath,
+                                reason=(
+                                    omission_reason
+                                    or "Source Corpus inclusion was explicitly disabled."
+                                ),
+                            )
+                        )
                         continue
+                    included_source_seen = True
                 blob = self._git(repo_root, "cat-file", "blob", object_id)
                 if blob.returncode != 0:
                     return self._git_failure(
@@ -142,17 +208,33 @@ class PortableExportComponent:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(blob.stdout)
                 files[relpath] = hashlib.sha256(blob.stdout).hexdigest()
-            materialization: Literal["included", "omitted", "absent"] = (
-                "included"
-                if source_seen and include_source_corpus
-                else "omitted" if source_seen else "absent"
+            missing_omissions = sorted(
+                set(requested_omissions)
+                - {item.path for item in omitted_source_files}
+            )
+            if missing_omissions:
+                return self._invalid_tree(
+                    staging,
+                    release_id,
+                    "unknown source omissions: " + ", ".join(missing_omissions),
+                )
+            materialization: Literal["included", "partial", "omitted", "absent"] = (
+                "partial"
+                if included_source_seen and omitted_source_files
+                else "included"
+                if included_source_seen
+                else "omitted"
+                if source_seen
+                else "absent"
             )
             receipt = PortableExportReceipt(
                 release_id=release_id,
                 source_commit=commit,
                 include_source_corpus=include_source_corpus,
                 source_materialization=materialization,
-                omitted_source_files=sorted(omitted_source_files),
+                omitted_source_files=sorted(
+                    omitted_source_files, key=lambda item: item.path
+                ),
                 files={path: files[path] for path in sorted(files)},
                 summary=(
                     f"Exported {len(files)} regular files from Release {release_id}; "
@@ -232,6 +314,7 @@ class PortableExportComponent:
 
 
 __all__ = [
+    "OmittedSourceFile",
     "PortableExportComponent",
     "PortableExportReceipt",
     "PortableExportView",

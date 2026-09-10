@@ -474,7 +474,14 @@ class NodeService:
             return self.runtime.foundation.fail(guarded.issues)
         return self.contract._commit_scope_contract_after_guard(repo_root, scope_path=scope_path, summary=summary)
 
-    def commit_content_contract(self, repo_root: Path, *, node_path: str, summary: str) -> ServiceResult[NodeContractView]:
+    def commit_content_contract(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        summary: str,
+        finalized_task_outcome: ContentTaskOutcome | None = None,
+    ) -> ServiceResult[NodeContractView]:
         if not summary or not summary.strip():
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue("contract_summary_required", "Contract summary is required.", field="summary")
@@ -514,6 +521,11 @@ class NodeService:
             node_path=node_path,
             summary=summary,
             decl_graph_head=head.value,
+            finalized_task_outcome=(
+                finalized_task_outcome.value
+                if finalized_task_outcome is not None
+                else None
+            ),
         )
 
     def preview_delete_node(self, repo_root: Path, *, path: str) -> ServiceResult[DeleteImpactView]:
@@ -832,6 +844,20 @@ class NodeService:
                         expected=requested_summary,
                     )
                 )
+            stored_outcome = current.value.contract.finalized_task_outcome
+            if (
+                stored_outcome is not None
+                and stored_outcome != parsed_result.value.outcome.value
+            ):
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "content_task_outcome_mismatch",
+                        "Content task retry outcome differs from the committed finalize outcome.",
+                        object_ref=node_path,
+                        current=parsed_result.value.outcome.value,
+                        expected=stored_outcome,
+                    )
+                )
             gate = self.runtime.foundation.gate_passed(
                 "content_task_finalize_already_committed",
                 summary="Content task result was already finalized for this committed contract version.",
@@ -840,7 +866,7 @@ class NodeService:
                 repo_root,
                 node_path=node_path,
                 contract=current.value,
-                enabled=parsed_result.value.outcome == ContentTaskOutcome.READY,
+                enabled=stored_outcome == ContentTaskOutcome.READY.value,
             )
             return self.runtime.foundation.ok(
                 self._content_task_finalize_view(
@@ -875,7 +901,12 @@ class NodeService:
                     summary="Content task claimed ready, but the ready gate did not pass.",
                 )
                 return ServiceResult[ContentTaskFinalizeView](ok=False, value=view, issues=gate.value.issues)
-            committed = self.commit_content_contract(repo_root, node_path=node_path, summary=coordinator_summary)
+            committed = self.commit_content_contract(
+                repo_root,
+                node_path=node_path,
+                summary=coordinator_summary,
+                finalized_task_outcome=parsed_result.value.outcome,
+            )
             if not committed.ok or committed.value is None:
                 return self.runtime.foundation.fail(committed.issues)
             strategy_closeout, closeout_issues = self._content_strategy_closeout(
@@ -908,7 +939,12 @@ class NodeService:
             gate_name,
             summary=f"Content task {parsed_result.value.outcome.value} result is accepted for contract commit.",
         )
-        committed = self.commit_content_contract(repo_root, node_path=node_path, summary=coordinator_summary)
+        committed = self.commit_content_contract(
+            repo_root,
+            node_path=node_path,
+            summary=coordinator_summary,
+            finalized_task_outcome=parsed_result.value.outcome,
+        )
         if not committed.ok or committed.value is None:
             return self.runtime.foundation.fail(committed.issues)
         return self.runtime.foundation.ok(
