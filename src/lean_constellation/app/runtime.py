@@ -6,6 +6,7 @@ from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 import hashlib
+import json
 from pathlib import Path
 from threading import current_thread
 from typing import Literal
@@ -742,6 +743,7 @@ class ApplicationSnapshotRuntime:
                     details={"error": str(exc)},
                 )
             )
+        repo_coordinators = []
         active_coordinators = []
         for flow in coordinator_flows:
             if str(flow.status) in {"completed", "failed"}:
@@ -749,6 +751,7 @@ class ApplicationSnapshotRuntime:
             flow_repo = getattr(getattr(flow, "input", None), "repo_root", None)
             if not flow_repo or Path(flow_repo).resolve(strict=False) != repo_root.resolve(strict=False):
                 continue
+            repo_coordinators.append(flow)
             state = getattr(flow, "state", None)
             phase = getattr(getattr(state, "position", None), "phase", None)
             if getattr(state, "pending_dispatch_kind", None) == "content_tasks" and phase in {
@@ -762,6 +765,23 @@ class ApplicationSnapshotRuntime:
         if not batches and not active_coordinators:
             return self.runtime.foundation.ok(None)
         requested_nodes = tuple(sorted(dict.fromkeys(node_paths)))
+        if kind is RepoCheckpointKind.AFTER_INITIAL_REPO_EXPLORATION_CALLBACK:
+            try:
+                if self._initial_callback_content_frontier_matches(
+                    repo_root,
+                    repo_coordinators=repo_coordinators,
+                    batches=batches,
+                    requested_nodes=requested_nodes,
+                ):
+                    return self.runtime.foundation.ok(batches[0].batch_id)
+            except Exception as exc:  # noqa: BLE001 - lineage reads must fail closed.
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "repo_activity_recovery_required",
+                        "Repository activity recovery is required because the initial Callback Snapshot lineage cannot be read.",
+                        details={"error": str(exc)},
+                    )
+                )
         matches = []
         for coordinator in active_coordinators:
             state = coordinator.state
@@ -832,6 +852,169 @@ class ApplicationSnapshotRuntime:
                 )
             )
         return self.runtime.foundation.ok(matching_batches[0].batch_id if matching_batches else None)
+
+    def _initial_callback_content_frontier_matches(
+        self,
+        repo_root: Path,
+        *,
+        repo_coordinators: list[object],
+        batches: Sequence[object],
+        requested_nodes: tuple[str, ...],
+    ) -> bool:
+        """Validate the one pre-dispatch Content frontier created by the initial callback."""
+
+        from agent_runtime_kit.flow.standard_steps import AgentStepState, DispatchStepState
+
+        from lean_constellation.flows.coordinator.flows import (
+            NativeRepoCoordinatorInput,
+            NativeRepoCoordinatorState,
+        )
+        from lean_constellation.flows.common.flow_requests import node_scope_id
+        from lean_constellation.flows.coordinator.submissions import CoordinatorContentTasksSubmission
+        from lean_constellation.flows.coordinator.steps import (
+            CoordinatorStepResult,
+            InitialRepoExplorationPlanStepResult,
+        )
+
+        if requested_nodes or len(repo_coordinators) != 1 or len(batches) != 1:
+            return False
+        coordinator = repo_coordinators[0]
+        if not isinstance(coordinator.input, NativeRepoCoordinatorInput) or not isinstance(
+            coordinator.state, NativeRepoCoordinatorState
+        ):
+            return False
+        state = coordinator.state
+        raw_nodes = tuple(state.pending_content_node_paths)
+        if (
+            state.position.phase != "before_content_task_dispatch_snapshot"
+            or state.pending_dispatch_kind != "content_tasks"
+            or not state.pending_dispatch_source_step_id
+            or not state.pending_dispatch_source_submission_id
+            or not raw_nodes
+            or any(not path or path != path.strip() for path in raw_nodes)
+            or tuple(dict.fromkeys(raw_nodes)) != raw_nodes
+            or state.active_content_task_count != len(raw_nodes)
+            or state.completed_content_task_count != 0
+        ):
+            return False
+
+        flow_service = self.runtime.ark.flow_service
+        if flow_service is None:
+            raise RuntimeError("persisted Flow service is unavailable")
+        source = flow_service.get_step(state.pending_dispatch_source_step_id)
+        if (
+            source.step_type != "coordinator_agent_step"
+            or source.flow_id != coordinator.flow_id
+            or self._status_value(source.status) != "completed"
+            or coordinator.current_step_id is not None
+            or not coordinator.step_ids
+            or coordinator.step_ids[-1] != source.step_id
+            or not isinstance(source.state, AgentStepState)
+            or source.state.prompt_mode != "callback"
+            or not source.state.callback_dispatch_step_id
+            or state.waiting_dispatch_step_id != source.state.callback_dispatch_step_id
+            or not isinstance(source.submission, CoordinatorContentTasksSubmission)
+            or source.submission.submission_id != state.pending_dispatch_source_submission_id
+            or source.submission.repo_key != coordinator.input.repo_key
+            or tuple(source.submission.node_paths) != raw_nodes
+            or len(source.submission.requests) != len(raw_nodes)
+            or tuple(
+                request.params.get("node_path")
+                for request in source.submission.requests
+                if request.flow_type == "content_node_task"
+            )
+            != raw_nodes
+            or not isinstance(source.result, CoordinatorStepResult)
+            or source.result.outcome != "content_tasks"
+            or source.result.repo_key != coordinator.input.repo_key
+            or source.result.content_tasks is None
+            or tuple(source.result.content_tasks.node_paths) != raw_nodes
+            or source.result.content_tasks.request_count != len(raw_nodes)
+        ):
+            return False
+
+        repo_key = coordinator.input.repo_key
+        if not repo_key:
+            return False
+        canonical_repo_root = repo_root.resolve(strict=False)
+        for node_path, request in zip(raw_nodes, source.submission.requests, strict=True):
+            request_repo_path = request.params.get("repo_path")
+            if (
+                request.params.get("repo_key") != repo_key
+                or not isinstance(request_repo_path, str)
+                or Path(request_repo_path).resolve(strict=False) != canonical_repo_root
+            ):
+                return False
+            active_node = self.runtime.node.node_tree.node_store.resolve_active_node(
+                repo_root,
+                path=node_path,
+            )
+            if not active_node.ok or active_node.value is None:
+                return False
+            if request.scope_id != node_scope_id(repo_key, active_node.value.node_id):
+                return False
+
+        exploration_dispatch = flow_service.get_step(source.state.callback_dispatch_step_id)
+        if (
+            exploration_dispatch.step_type != "dispatch_step"
+            or exploration_dispatch.flow_id != coordinator.flow_id
+            or self._status_value(exploration_dispatch.status) != "completed"
+            or not isinstance(exploration_dispatch.state, DispatchStepState)
+            or not exploration_dispatch.state.source_step_id
+            or exploration_dispatch.state.failed_requests
+        ):
+            return False
+        plan_step = flow_service.get_step(exploration_dispatch.state.source_step_id)
+        if (
+            plan_step.step_type != "initial_repo_exploration_plan_step"
+            or plan_step.flow_id != coordinator.flow_id
+            or self._status_value(plan_step.status) != "completed"
+            or not isinstance(plan_step.result, InitialRepoExplorationPlanStepResult)
+            or plan_step.result.outcome != "planned"
+            or not plan_step.result.plan_id
+            or exploration_dispatch.state.source_submission_id != plan_step.result.plan_id
+        ):
+            return False
+
+        initial_children = flow_service.store.list_child_flows(
+            parent_flow_id=coordinator.flow_id,
+            parent_dispatch_step_id=exploration_dispatch.step_id,
+        )
+        created_child_ids = tuple(
+            child.child_flow_id for child in exploration_dispatch.state.created_children
+        )
+        if (
+            not created_child_ids
+            or set(created_child_ids) != {child.flow_id for child in initial_children}
+            or len(created_child_ids) != len(initial_children)
+            or any(
+                self._status_value(child.status) not in {"completed", "failed"}
+                for child in initial_children
+            )
+        ):
+            return False
+        coordinator_children = flow_service.store.list_child_flows(
+            parent_flow_id=coordinator.flow_id
+        )
+        if any(child.flow_type == "content_node_task" for child in coordinator_children):
+            return False
+
+        normalized_nodes = tuple(sorted(raw_nodes))
+        identity_payload = {
+            "coordinator_flow_id": coordinator.flow_id,
+            "source_step_id": state.pending_dispatch_source_step_id,
+            "source_submission_id": state.pending_dispatch_source_submission_id,
+            "node_paths": list(normalized_nodes),
+        }
+        expected_batch_id = "content_batch_" + hashlib.sha256(
+            json.dumps(identity_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()[:20]
+        batch = batches[0]
+        return (
+            getattr(batch, "batch_id", None) == expected_batch_id
+            and getattr(batch, "repo_root", None) == repo_root.resolve(strict=False)
+            and getattr(batch, "node_paths", None) == normalized_nodes
+        )
 
     def _single_content_checkpoint_matches(
         self,

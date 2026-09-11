@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from agent_runtime_kit.flow.contexts import StableStepTerminalContext
-from agent_runtime_kit.flow.models import FlowStatus, FlowStepValidationError
+from agent_runtime_kit.flow.models import FlowStatus, FlowStepValidationError, StepStatus
 from lean_constellation.app.runtime import ApplicationSnapshotRuntime
 from lean_constellation.app.config import AutomaticCheckpointAppConfig
 from lean_constellation.app.semantic_scheduler import (
@@ -284,6 +284,72 @@ def _complete_initial_exploration(runtime: FakeLeanFlowRuntime, flow_id: str):
     return plan, dispatch_step_id, children
 
 
+def _prepare_initial_callback_content_step(
+    runtime: FakeLeanFlowRuntime,
+    lean_runtime,
+    repo_root: Path,
+) -> tuple[str, str, str]:
+    initialize_native_test_repo(repo_root, project_name=repo_root.name)
+    assert lean_runtime.node.node_tree.ensure_root_scope_node(repo_root).ok
+    flow_id = _start_coordinator(runtime, repo_root)
+    _, exploration_dispatch_step_id, _ = _complete_initial_exploration(runtime, flow_id)
+    node_id = _ensure_main_core_node(lean_runtime, repo_root)
+    runtime.agent_service.queue_submission(
+        CoordinatorContentTasksSubmission(
+            submission_id=new_submission_id("sub"),
+            submission_type="coordinator_content_tasks",
+            tool_name="submit_content_node_tasks",
+            repo_key=repo_root.name,
+            node_paths=["Main.Core"],
+            requests=[
+                build_content_node_task_request(
+                    repo_key=repo_root.name,
+                    node_path="Main.Core",
+                    scope_id=f"repo:{repo_root.name}:node:{node_id}",
+                    repo_path=str(repo_root),
+                )
+            ],
+            continuation="wait_for_callback",
+            summary="Run Main.Core after initial exploration.",
+        )
+    )
+    callback_step_id = runtime.flow_service.advance_flow(flow_id)
+    assert callback_step_id is not None
+    return flow_id, exploration_dispatch_step_id, callback_step_id
+
+
+def _prepare_initial_callback_content_frontier(
+    runtime: FakeLeanFlowRuntime,
+    lean_runtime,
+    repo_root: Path,
+) -> tuple[str, str, str]:
+    flow_id, exploration_dispatch_step_id, callback_step_id = (
+        _prepare_initial_callback_content_step(runtime, lean_runtime, repo_root)
+    )
+    runtime.run_step(callback_step_id)
+    flow = runtime.flow_service.get_flow(flow_id)
+    assert flow.status is FlowStatus.RUNNING
+    assert flow.state.position.phase == "before_content_task_dispatch_snapshot"
+    return flow_id, exploration_dispatch_step_id, callback_step_id
+
+
+def _assert_initial_callback_checkpoint_ineligible(
+    lean_runtime,
+    repo_root: Path,
+    *,
+    node_paths: list[str] | None = None,
+    issue_kind: str = "active_content_batch_snapshot_ineligible",
+) -> None:
+    gate = lean_runtime.app.snapshot_runtime.check_repo_stable_point(
+        repo_root,
+        checkpoint_kind=RepoCheckpointKind.AFTER_INITIAL_REPO_EXPLORATION_CALLBACK,
+        node_paths=node_paths,
+    )
+    assert gate.ok and gate.value is not None
+    assert gate.value.passed is False
+    assert gate.value.issues[0].kind == issue_kind
+
+
 def _prepare_requirement_resume_gate(runtime: FakeLeanFlowRuntime, lean_runtime, repo_root: Path):
     provider_root = repo_root.parent / "Provider"
     flow_id = _start_coordinator(runtime, repo_root)
@@ -414,6 +480,7 @@ def test_repo_flow_boundary_group_disabled_skips_coordinator_snapshot_step(tmp_p
                     repo_key="Repo",
                     node_path="Main.Core",
                     scope_id=f"repo:Repo:node:{node_id}",
+                    repo_path=str(repo_root),
                 )
             ],
             continuation="wait_for_callback",
@@ -884,6 +951,542 @@ def test_fresh_native_repo_runs_fixed_initial_exploration_before_coordinator_tur
         (RepoCheckpointKind.COORDINATOR_REQUIREMENT_WAITING, []),
     ]
     assert len(ark_snapshot.created) == 4
+
+
+def test_initial_exploration_callback_can_checkpoint_before_content_dispatch(
+    tmp_path: Path,
+) -> None:
+    runtime, lean_runtime, runtime_stability, ark_snapshot = _runtime(tmp_path)
+    repo_root = tmp_path / "workspace" / "Repo"
+    initialize_native_test_repo(repo_root, project_name="Repo")
+    assert lean_runtime.node.node_tree.ensure_root_scope_node(repo_root).ok
+    flow_id = _start_coordinator(runtime, repo_root)
+
+    _, exploration_dispatch_step_id, exploration_children = _complete_initial_exploration(
+        runtime, flow_id
+    )
+    node_id = _ensure_main_core_node(lean_runtime, repo_root)
+    provider_turn_count = len(runtime.agent_service.start_records)
+    assert lean_runtime.repo_activity.active_batches(repo_root) == ()
+    runtime.agent_service.queue_submission(
+        CoordinatorContentTasksSubmission(
+            submission_id=new_submission_id("sub"),
+            submission_type="coordinator_content_tasks",
+            tool_name="submit_content_node_tasks",
+            repo_key="Repo",
+            node_paths=["Main.Core"],
+            requests=[
+                build_content_node_task_request(
+                    repo_key="Repo",
+                    node_path="Main.Core",
+                    scope_id=f"repo:Repo:node:{node_id}",
+                    repo_path=str(repo_root),
+                )
+            ],
+            continuation="wait_for_callback",
+            summary="Run Main.Core after initial exploration.",
+        )
+    )
+
+    callback_step_id = _advance_and_run(runtime, flow_id)
+
+    callback_step = runtime.flow_service.get_step(callback_step_id)
+    flow = runtime.flow_service.get_flow(flow_id)
+    assert callback_step.result.outcome == "content_tasks"
+    assert callback_step.result.snapshot_id is not None
+    assert flow.status is FlowStatus.RUNNING
+    assert flow.state.position.phase == "before_content_task_dispatch_snapshot"
+    assert flow.state.waiting_dispatch_step_id == exploration_dispatch_step_id
+    assert callback_step.state.callback_dispatch_step_id == exploration_dispatch_step_id
+    assert len(runtime.agent_service.start_records) == provider_turn_count + 1
+    assert all(
+        runtime.flow_service.get_flow(child.flow_id).status is FlowStatus.COMPLETED
+        for child in exploration_children
+    )
+    assert all(
+        child.flow_type != "content_node_task"
+        for child in runtime.flow_service.store.list_child_flows(parent_flow_id=flow_id)
+    )
+    assert runtime_stability.calls[-1] == (
+        RepoCheckpointKind.AFTER_INITIAL_REPO_EXPLORATION_CALLBACK,
+        [],
+    )
+    assert ark_snapshot.created[-1][0] == ["repo:Repo"]
+
+    before_content_step_id = _advance_and_run(runtime, flow_id)
+
+    before_content_step = runtime.flow_service.get_step(before_content_step_id)
+    flow = runtime.flow_service.get_flow(flow_id)
+    assert before_content_step.result.outcome == "snapshot_created"
+    assert before_content_step.result.checkpoint_kind == "before_content_task_dispatch"
+    assert flow.state.position.phase == "dispatch_content_tasks"
+    assert flow.state.waiting_dispatch_step_id == exploration_dispatch_step_id
+    assert len(runtime.agent_service.start_records) == provider_turn_count + 1
+    assert all(
+        child.flow_type != "content_node_task"
+        for child in runtime.flow_service.store.list_child_flows(parent_flow_id=flow_id)
+    )
+    assert runtime_stability.calls[-2:] == [
+        (RepoCheckpointKind.AFTER_INITIAL_REPO_EXPLORATION_CALLBACK, []),
+        (RepoCheckpointKind.BEFORE_CONTENT_TASK_DISPATCH, ["Main.Core"]),
+    ]
+
+
+def test_initial_callback_nonordered_batch_uses_semantic_content_batch_identity(
+    tmp_path: Path,
+) -> None:
+    runtime, lean_runtime, _, _ = _runtime(tmp_path)
+    repo_root = tmp_path / "workspace" / "Repo"
+    initialize_native_test_repo(repo_root, project_name="Repo")
+    assert lean_runtime.node.node_tree.ensure_root_scope_node(repo_root).ok
+    flow_id = _start_coordinator(
+        runtime,
+        repo_root,
+        max_parallel_content_node_tasks=2,
+    )
+    _complete_initial_exploration(runtime, flow_id)
+    core_id = _ensure_main_core_node(lean_runtime, repo_root)
+    other = lean_runtime.node.create_content_node(
+        repo_root,
+        path="Main.Other",
+        goal="Other goal",
+        boundary="Other boundary",
+        objective="Build other.",
+        success_criteria="Other ready.",
+    )
+    assert other.ok and other.value is not None
+    node_ids = {"Main.Core": core_id, "Main.Other": other.value.node_id}
+    node_paths = ["Main.Other", "Main.Core"]
+    submission_id = new_submission_id("sub")
+    runtime.agent_service.queue_submission(
+        CoordinatorContentTasksSubmission(
+            submission_id=submission_id,
+            submission_type="coordinator_content_tasks",
+            tool_name="submit_content_node_tasks",
+            repo_key="Repo",
+            node_paths=node_paths,
+            requests=[
+                build_content_node_task_request(
+                    repo_key="Repo",
+                    node_path=node_path,
+                    scope_id=f"repo:Repo:node:{node_ids[node_path]}",
+                    repo_path=str(repo_root),
+                    max_parallel_content_node_tasks=2,
+                )
+                for node_path in node_paths
+            ],
+            continuation="wait_for_callback",
+            summary="Run a deliberately nonordered batch.",
+        )
+    )
+    callback_step_id = _advance_and_run(runtime, flow_id)
+    assert runtime.flow_service.get_step(callback_step_id).result.snapshot_id is not None
+
+    policy = build_semantic_run_policy(
+        lean_runtime,
+        RuntimeSemanticAdvanceInput(
+            granularity="content_batch",
+            repo_key="Repo",
+            coordinator_flow_id=flow_id,
+            expected_source_submission_id=submission_id,
+        ),
+    )
+
+    assert policy.allow_flow_advance(runtime.flow_service.get_flow(flow_id)) is True
+    _advance_and_run(runtime, flow_id)
+    dispatch_step_id = _advance_and_run(runtime, flow_id)
+    children = runtime.flow_service.store.list_child_flows(
+        parent_flow_id=flow_id,
+        parent_dispatch_step_id=dispatch_step_id,
+    )
+    assert [child.input.node_path for child in children] == node_paths
+
+
+def test_initial_callback_content_frontier_rejects_node_scope(tmp_path: Path) -> None:
+    runtime, lean_runtime, _, _ = _runtime(tmp_path)
+    repo_root = tmp_path / "workspace" / "Repo"
+    _prepare_initial_callback_content_frontier(runtime, lean_runtime, repo_root)
+
+    _assert_initial_callback_checkpoint_ineligible(
+        lean_runtime,
+        repo_root,
+        node_paths=["Main.Core"],
+    )
+
+
+@pytest.mark.parametrize(
+    "drift",
+    [
+        "missing_lineage",
+        "active_count_mismatch",
+        "completed_count_mismatch",
+        "submission_mismatch",
+        "request_mismatch",
+        "request_repo_key_mismatch",
+        "request_repo_path_mismatch",
+        "request_scope_mismatch",
+        "duplicate_nodes",
+        "wrong_waiting_dispatch",
+        "wrong_phase",
+    ],
+)
+def test_initial_callback_content_frontier_rejects_drifted_identity(
+    tmp_path: Path,
+    drift: str,
+) -> None:
+    runtime, lean_runtime, _, _ = _runtime(tmp_path)
+    repo_root = tmp_path / "workspace" / "Repo"
+    flow_id, _, callback_step_id = _prepare_initial_callback_content_frontier(
+        runtime, lean_runtime, repo_root
+    )
+
+    if drift == "missing_lineage":
+        runtime.flow_service.store.update_step_record(
+            callback_step_id,
+            lambda step: setattr(step.state, "callback_dispatch_step_id", None),
+        )
+    elif drift == "active_count_mismatch":
+        runtime.flow_service.store.update_flow_record(
+            flow_id,
+            lambda flow: setattr(flow.state, "active_content_task_count", 2),
+        )
+    elif drift == "completed_count_mismatch":
+        runtime.flow_service.store.update_flow_record(
+            flow_id,
+            lambda flow: setattr(flow.state, "completed_content_task_count", 1),
+        )
+    elif drift == "submission_mismatch":
+        runtime.flow_service.store.update_flow_record(
+            flow_id,
+            lambda flow: setattr(
+                flow.state, "pending_dispatch_source_submission_id", "sub_drifted"
+            ),
+        )
+    elif drift == "request_mismatch":
+        runtime.flow_service.store.update_step_record(
+            callback_step_id,
+            lambda step: setattr(step.submission, "requests", []),
+        )
+    elif drift in {
+        "request_repo_key_mismatch",
+        "request_repo_path_mismatch",
+        "request_scope_mismatch",
+    }:
+        callback_step = runtime.flow_service.get_step(callback_step_id)
+        request = callback_step.submission.requests[0]
+        if drift == "request_repo_key_mismatch":
+            changed_request = request.model_copy(
+                update={"params": {**request.params, "repo_key": "OtherRepo"}}
+            )
+        elif drift == "request_repo_path_mismatch":
+            changed_request = request.model_copy(
+                update={"params": {**request.params, "repo_path": str(repo_root.parent)}}
+            )
+        else:
+            changed_request = request.model_copy(update={"scope_id": "repo:Repo:node:drifted"})
+        runtime.flow_service.store.update_step_record(
+            callback_step_id,
+            lambda step: setattr(step.submission, "requests", [changed_request]),
+        )
+    elif drift == "duplicate_nodes":
+        runtime.flow_service.store.update_flow_record(
+            flow_id,
+            lambda flow: (
+                setattr(flow.state, "pending_content_node_paths", ["Main.Core", "Main.Core"]),
+                setattr(flow.state, "active_content_task_count", 2),
+            ),
+        )
+    elif drift == "wrong_waiting_dispatch":
+        runtime.flow_service.store.update_flow_record(
+            flow_id,
+            lambda flow: setattr(flow.state, "waiting_dispatch_step_id", "dispatch_drifted"),
+        )
+    else:
+        runtime.flow_service.store.update_flow_record(
+            flow_id,
+            lambda flow: setattr(
+                flow.state.position, "phase", "dispatch_content_tasks"
+            ),
+        )
+
+    _assert_initial_callback_checkpoint_ineligible(lean_runtime, repo_root)
+
+
+def test_initial_callback_content_frontier_rejects_nonterminal_initial_child(
+    tmp_path: Path,
+) -> None:
+    runtime, lean_runtime, _, _ = _runtime(tmp_path)
+    repo_root = tmp_path / "workspace" / "Repo"
+    flow_id, exploration_dispatch_step_id, _ = _prepare_initial_callback_content_frontier(
+        runtime, lean_runtime, repo_root
+    )
+    initial_child = runtime.flow_service.store.list_child_flows(
+        parent_flow_id=flow_id,
+        parent_dispatch_step_id=exploration_dispatch_step_id,
+    )[0]
+    runtime.flow_service.store.update_flow_record(
+        initial_child.flow_id,
+        lambda child: setattr(child, "status", FlowStatus.RUNNING),
+    )
+
+    _assert_initial_callback_checkpoint_ineligible(lean_runtime, repo_root)
+
+
+def test_initial_callback_content_frontier_rejects_additional_batch(
+    tmp_path: Path,
+) -> None:
+    runtime, lean_runtime, _, _ = _runtime(tmp_path)
+    repo_root = tmp_path / "workspace" / "Repo"
+    _prepare_initial_callback_content_frontier(runtime, lean_runtime, repo_root)
+    lean_runtime.repo_activity.reserve_content_batch(
+        repo_root,
+        batch_id="content_batch_unexpected",
+        node_paths=["Main.Other"],
+    )
+
+    _assert_initial_callback_checkpoint_ineligible(lean_runtime, repo_root)
+
+
+def test_initial_callback_content_frontier_rejects_content_task_child(
+    tmp_path: Path,
+) -> None:
+    runtime, lean_runtime, _, _ = _runtime(tmp_path)
+    repo_root = tmp_path / "workspace" / "Repo"
+    flow_id, _, callback_step_id = _prepare_initial_callback_content_frontier(
+        runtime, lean_runtime, repo_root
+    )
+    callback_step = runtime.flow_service.get_step(callback_step_id)
+    runtime.flow_service.start_flow(
+        callback_step.submission.requests[0],
+        parent_flow_id=flow_id,
+        parent_dispatch_step_id="unexpected_content_dispatch",
+        enqueue=False,
+    )
+
+    _assert_initial_callback_checkpoint_ineligible(lean_runtime, repo_root)
+
+
+def test_initial_callback_content_frontier_rejects_multiple_coordinators(
+    tmp_path: Path,
+) -> None:
+    runtime, lean_runtime, _, _ = _runtime(tmp_path)
+    repo_root = tmp_path / "workspace" / "Repo"
+    _prepare_initial_callback_content_frontier(runtime, lean_runtime, repo_root)
+    _start_coordinator(runtime, repo_root)
+
+    _assert_initial_callback_checkpoint_ineligible(lean_runtime, repo_root)
+
+
+def test_later_content_callback_cannot_reuse_initial_callback_checkpoint(
+    tmp_path: Path,
+) -> None:
+    runtime, lean_runtime, _, _ = _runtime(tmp_path)
+    repo_root = tmp_path / "workspace" / "Repo"
+    flow_id, _, callback_step_id = _prepare_initial_callback_content_frontier(
+        runtime, lean_runtime, repo_root
+    )
+    initial_callback = runtime.flow_service.get_step(callback_step_id)
+    _advance_and_run(runtime, flow_id)
+    content_dispatch_step_id = _advance_and_run(runtime, flow_id)
+    content_child = runtime.flow_service.store.list_child_flows(
+        parent_flow_id=flow_id,
+        parent_dispatch_step_id=content_dispatch_step_id,
+    )[0]
+    _complete_child_flow(
+        runtime,
+        content_child.flow_id,
+        ContentNodeTaskResult(
+            outcome="ready",
+            repo_key="Repo",
+            node_path="Main.Core",
+            summary="Content task ready.",
+        ),
+    )
+    _advance_and_run(runtime, flow_id)
+    runtime.agent_service.queue_submission(
+        initial_callback.submission.model_copy(
+            update={"submission_id": new_submission_id("sub")}
+        )
+    )
+    later_callback_step_id = _advance_and_run(runtime, flow_id)
+    later_callback = runtime.flow_service.get_step(later_callback_step_id)
+
+    assert later_callback.state.callback_dispatch_step_id == content_dispatch_step_id
+    assert runtime.flow_service.get_flow(flow_id).state.position.phase == "before_content_task_dispatch_snapshot"
+    _assert_initial_callback_checkpoint_ineligible(lean_runtime, repo_root)
+
+
+def test_initial_callback_lineage_read_failure_requires_recovery(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # noqa: ANN001
+    runtime, lean_runtime, _, _ = _runtime(tmp_path)
+    repo_root = tmp_path / "workspace" / "Repo"
+    _prepare_initial_callback_content_frontier(runtime, lean_runtime, repo_root)
+
+    monkeypatch.setattr(
+        runtime.flow_service,
+        "get_step",
+        lambda _step_id: (_ for _ in ()).throw(RuntimeError("injected lineage read failure")),
+    )
+
+    _assert_initial_callback_checkpoint_ineligible(
+        lean_runtime,
+        repo_root,
+        issue_kind="repo_activity_recovery_required",
+    )
+
+
+@pytest.mark.parametrize("drift", ["outcome", "missing_result"])
+def test_initial_callback_plan_drift_fails_the_real_stable_hook(
+    tmp_path: Path,
+    drift: str,
+) -> None:
+    runtime, lean_runtime, _, _ = _runtime(tmp_path)
+    repo_root = tmp_path / "workspace" / "Repo"
+    flow_id, exploration_dispatch_step_id, callback_step_id = (
+        _prepare_initial_callback_content_step(runtime, lean_runtime, repo_root)
+    )
+    exploration_dispatch = runtime.flow_service.get_step(exploration_dispatch_step_id)
+    if drift == "outcome":
+        runtime.flow_service.store.update_step_record(
+            exploration_dispatch.state.source_step_id,
+            lambda step: setattr(
+                step,
+                "result",
+                step.result.model_copy(update={"outcome": "not_required"}),
+            ),
+        )
+    else:
+        runtime.flow_service.store.update_step_record(
+            exploration_dispatch.state.source_step_id,
+            lambda step: setattr(step, "result", None),
+        )
+
+    runtime.run_step(callback_step_id)
+
+    callback_step = runtime.flow_service.get_step(callback_step_id)
+    flow = runtime.flow_service.get_flow(flow_id)
+    assert callback_step.result.outcome == "content_tasks"
+    assert callback_step.result.snapshot_id is None
+    assert flow.status is FlowStatus.FAILED
+    assert flow.error.error_type == "initial_repo_exploration_callback_snapshot_failed"
+    assert "initial_repo_exploration_callback_lineage_ineligible" in flow.error.message
+    assert runtime.flow_service.can_advance_flow(flow_id) is False
+    assert runtime.flow_service.stable_hook_errors == []
+
+
+def test_initial_callback_lineage_read_error_fails_the_real_stable_hook(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # noqa: ANN001
+    runtime, lean_runtime, _, _ = _runtime(tmp_path)
+    repo_root = tmp_path / "workspace" / "Repo"
+    flow_id, exploration_dispatch_step_id, callback_step_id = (
+        _prepare_initial_callback_content_step(runtime, lean_runtime, repo_root)
+    )
+    original_get_step = runtime.flow_service.get_step
+
+    def fail_stable_lineage_read(step_id: str):  # noqa: ANN202
+        callback = original_get_step(callback_step_id)
+        if callback.status is StepStatus.COMPLETED and step_id == exploration_dispatch_step_id:
+            raise RuntimeError("injected stable-hook lineage read failure")
+        return original_get_step(step_id)
+
+    monkeypatch.setattr(runtime.flow_service, "get_step", fail_stable_lineage_read)
+
+    runtime.run_step(callback_step_id)
+
+    callback_step = original_get_step(callback_step_id)
+    flow = runtime.flow_service.get_flow(flow_id)
+    assert callback_step.result.outcome == "content_tasks"
+    assert callback_step.result.snapshot_id is None
+    assert flow.status is FlowStatus.FAILED
+    assert flow.error.error_type == "initial_repo_exploration_callback_snapshot_failed"
+    assert "repo_activity_recovery_required" in flow.error.message
+    assert runtime.flow_service.can_advance_flow(flow_id) is False
+    assert runtime.flow_service.stable_hook_errors == []
+
+
+@pytest.mark.parametrize(
+    ("outcome", "expected_phase"),
+    [
+        ("resource_request", "before_resource_request_dispatch_snapshot"),
+        ("repo_exploration", "ensure_repo_exploration_agents"),
+        ("repo_ready", "mark_repo_ready"),
+    ],
+)
+def test_other_initial_exploration_callback_outcomes_keep_repo_checkpoint(
+    tmp_path: Path,
+    outcome: str,
+    expected_phase: str,
+) -> None:
+    runtime, lean_runtime, runtime_stability, _ = _runtime(tmp_path)
+    repo_root = tmp_path / "workspace" / "Repo"
+    initialize_native_test_repo(repo_root, project_name="Repo")
+    assert lean_runtime.node.node_tree.ensure_root_scope_node(repo_root).ok
+    flow_id = _start_coordinator(runtime, repo_root)
+    _complete_initial_exploration(runtime, flow_id)
+
+    if outcome == "resource_request":
+        submission = CoordinatorResourceRequestSubmission(
+            submission_id=new_submission_id("sub"),
+            submission_type="coordinator_resource_request",
+            tool_name="submit_resource_request",
+            repo_key="Repo",
+            target_kind="arxiv",
+            target="2501.12345",
+            requested_use="supporting_material",
+            consumer_need="Need a supporting lemma.",
+            requests=[
+                build_resource_curation_request(
+                    scope_id="repo:Repo",
+                    repo_key="Repo",
+                    repo_root=str(repo_root),
+                    target_kind="arxiv",
+                    target="2501.12345",
+                    requested_use="supporting_material",
+                    consumer_need="Need a supporting lemma.",
+                    requested_by="coordinator",
+                )
+            ],
+            continuation="wait_for_callback",
+            summary="Curate a supporting paper.",
+        )
+    elif outcome == "repo_exploration":
+        submission = CoordinatorRepoExplorationSubmission(
+            submission_id=new_submission_id("sub"),
+            submission_type="coordinator_repo_exploration",
+            tool_name="submit_repo_exploration",
+            repo_key="Repo",
+            explorations=[
+                RepoExplorationSpec(
+                    kind=RepoExplorationKind.MATHLIB,
+                    objective="Check one more declaration.",
+                )
+            ],
+            summary="Continue repository exploration.",
+        )
+    else:
+        submission = CoordinatorRepoReadySubmission(
+            submission_id=new_submission_id("sub"),
+            submission_type="coordinator_repo_ready",
+            tool_name="submit_repo_ready",
+            repo_key="Repo",
+            summary="Repository is ready for validation.",
+        )
+    runtime.agent_service.queue_submission(submission)
+
+    callback_step_id = _advance_and_run(runtime, flow_id)
+
+    callback_step = runtime.flow_service.get_step(callback_step_id)
+    assert callback_step.result.outcome == outcome
+    assert callback_step.result.snapshot_id is not None
+    assert runtime.flow_service.get_flow(flow_id).state.position.phase == expected_phase
+    assert runtime_stability.calls[-1] == (
+        RepoCheckpointKind.AFTER_INITIAL_REPO_EXPLORATION_CALLBACK,
+        [],
+    )
 
 
 def test_existing_business_node_skips_initial_exploration_plan(

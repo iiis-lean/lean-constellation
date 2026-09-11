@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar, Literal
 
@@ -417,7 +418,19 @@ class NativeRepoCoordinatorFlow(LeanBusinessFlow):
 
         if ctx.step.step_type != "coordinator_agent_step":
             return
-        if _is_initial_repo_exploration_callback(ctx):
+        initial_callback = _classify_initial_repo_exploration_callback(ctx)
+        if initial_callback.failure_kind is not None:
+            _mark_flow_failed_from_stable_snapshot(
+                ctx,
+                "initial_repo_exploration_callback_snapshot_failed",
+                [
+                    ValueError(
+                        f"{initial_callback.failure_kind}: {initial_callback.failure_message}"
+                    )
+                ],
+            )
+            return
+        if initial_callback.is_initial:
             if not repo_flow_boundary_checkpoints_enabled(ctx.app):
                 record_checkpoint_skip_summary(
                     ctx,
@@ -747,21 +760,87 @@ def _native_repo_may_need_initial_exploration(
     )
 
 
-def _is_initial_repo_exploration_callback(ctx: StableStepTerminalContext) -> bool:
+@dataclass(frozen=True)
+class _InitialRepoExplorationCallbackClassification:
+    is_initial: bool
+    failure_kind: str | None = None
+    failure_message: str | None = None
+
+
+def _classify_initial_repo_exploration_callback(
+    ctx: StableStepTerminalContext,
+) -> _InitialRepoExplorationCallbackClassification:
     state = ctx.step.state
     if not isinstance(state, AgentStepState) or state.callback_dispatch_step_id is None:
-        return False
+        return _InitialRepoExplorationCallbackClassification(is_initial=False)
     flow_service = ctx.ark.flow_service
     if flow_service is None:
-        return False
-    dispatch = flow_service.get_step(state.callback_dispatch_step_id)
+        return _InitialRepoExplorationCallbackClassification(
+            is_initial=False,
+            failure_kind="repo_activity_recovery_required",
+            failure_message="The persisted Flow service is unavailable for callback lineage classification.",
+        )
+    try:
+        dispatch = flow_service.get_step(state.callback_dispatch_step_id)
+    except Exception as exc:  # noqa: BLE001 - stable callback lineage must fail closed.
+        return _InitialRepoExplorationCallbackClassification(
+            is_initial=False,
+            failure_kind="repo_activity_recovery_required",
+            failure_message=f"The callback dispatch Step cannot be read: {exc}",
+        )
     if not isinstance(dispatch.state, DispatchStepState):
-        return False
-    source = flow_service.get_step(dispatch.state.source_step_id)
-    return bool(
-        isinstance(source.result, InitialRepoExplorationPlanStepResult)
-        and source.result.outcome == "planned"
-    )
+        return _InitialRepoExplorationCallbackClassification(
+            is_initial=False,
+            failure_kind="initial_repo_exploration_callback_lineage_ineligible",
+            failure_message="The callback dispatch Step has invalid persisted state.",
+        )
+    try:
+        source = flow_service.get_step(dispatch.state.source_step_id)
+    except Exception as exc:  # noqa: BLE001 - stable callback lineage must fail closed.
+        return _InitialRepoExplorationCallbackClassification(
+            is_initial=False,
+            failure_kind="repo_activity_recovery_required",
+            failure_message=f"The callback dispatch source Step cannot be read: {exc}",
+        )
+    if source.step_type != "initial_repo_exploration_plan_step":
+        if isinstance(source.result, InitialRepoExplorationPlanStepResult):
+            return _InitialRepoExplorationCallbackClassification(
+                is_initial=False,
+                failure_kind="initial_repo_exploration_callback_lineage_ineligible",
+                failure_message="The initial exploration result belongs to the wrong Step type.",
+            )
+        return _InitialRepoExplorationCallbackClassification(is_initial=False)
+    if not isinstance(source.result, InitialRepoExplorationPlanStepResult):
+        return _InitialRepoExplorationCallbackClassification(
+            is_initial=False,
+            failure_kind="initial_repo_exploration_callback_lineage_ineligible",
+            failure_message="The initial exploration plan Step has no valid typed result.",
+        )
+    result = source.result
+
+    def status_value(value: object) -> str:
+        return str(getattr(value, "value", value))
+
+    flow_state = getattr(ctx.flow, "state", None)
+    if (
+        result.outcome != "planned"
+        or not result.plan_id
+        or ctx.step.flow_id != ctx.flow.flow_id
+        or dispatch.step_id != state.callback_dispatch_step_id
+        or dispatch.step_type != "dispatch_step"
+        or dispatch.flow_id != ctx.flow.flow_id
+        or status_value(dispatch.status) != "completed"
+        or dispatch.state.source_submission_id != result.plan_id
+        or source.flow_id != ctx.flow.flow_id
+        or status_value(source.status) != "completed"
+        or getattr(flow_state, "waiting_dispatch_step_id", None) != dispatch.step_id
+    ):
+        return _InitialRepoExplorationCallbackClassification(
+            is_initial=False,
+            failure_kind="initial_repo_exploration_callback_lineage_ineligible",
+            failure_message="The initial exploration callback lineage identity is inconsistent.",
+        )
+    return _InitialRepoExplorationCallbackClassification(is_initial=True)
 
 
 def _record_stable_repo_snapshot(
