@@ -460,7 +460,7 @@ def _build_content_batch_policy(runtime, request: RuntimeSemanticAdvanceInput) -
         "coordinator_flow_id": coordinator.flow_id,
         "source_step_id": state.pending_dispatch_source_step_id,
         "source_submission_id": request.expected_source_submission_id,
-        "node_paths": list(node_paths),
+        "node_paths": sorted(node_paths),
     }
     batch_id = "content_batch_" + hashlib.sha256(
         json.dumps(identity_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
