@@ -11,7 +11,7 @@ from pathlib import Path
 import time
 from typing import Any, Literal
 
-from agent_runtime_kit.agent.models import to_jsonable
+from agent_runtime_kit.agent.models import AgentContextMaintenanceBlocked, to_jsonable
 from agent_runtime_kit.flow import (
     AgentStepRecoveryView,
     LostStepSubmissionFinalizeUnavailableError,
@@ -590,9 +590,36 @@ class DeclGraphRoundRecoveryGateView(StrictModel):
     issue_kinds: list[str] = Field(default_factory=list)
 
 
+class AgentContextMaintenanceAdminView(StrictModel):
+    agent_id: str
+    provider_type: str
+    session_id: str | None = None
+    status: str
+    unresolved: bool
+    reconciliation_token: str = Field(min_length=64, max_length=64)
+
+
 class AgentStepRecoveryAdminView(StrictModel):
     recovery: AgentStepRecoveryView
     decl_graph_round_gate: DeclGraphRoundRecoveryGateView | None = None
+    context_maintenance: AgentContextMaintenanceAdminView | None = None
+    summary: str
+
+
+class ReconcileAgentStepContextMaintenanceInput(StrictModel):
+    step_id: str
+    expected_context_maintenance_token: str = Field(min_length=64, max_length=64)
+
+
+class ReconcileAgentStepContextMaintenanceView(StrictModel):
+    step_id: str
+    agent_id: str
+    provider_type: str
+    session_id: str | None = None
+    status: str
+    unresolved: bool
+    reconciliation_token: str = Field(min_length=64, max_length=64)
+    next_action: Literal["resume_suspended"] = "resume_suspended"
     summary: str
 
 
@@ -3847,6 +3874,9 @@ class LeanAdminApi:
             )
         try:
             recovery = flow_service.inspect_agent_step_recovery(step_id)
+            context_maintenance = flow_service.inspect_agent_step_context_maintenance(
+                step_id
+            )
             flow = flow_service.get_flow(recovery.flow_id)
             round_gate = None
             if (
@@ -3890,6 +3920,18 @@ class LeanAdminApi:
                 AgentStepRecoveryAdminView(
                     recovery=recovery,
                     decl_graph_round_gate=round_gate,
+                    context_maintenance=(
+                        AgentContextMaintenanceAdminView(
+                            agent_id=context_maintenance.agent_id,
+                            provider_type=context_maintenance.provider_type,
+                            session_id=context_maintenance.session_id,
+                            status=context_maintenance.status,
+                            unresolved=context_maintenance.unresolved,
+                            reconciliation_token=context_maintenance.reconciliation_token,
+                        )
+                        if context_maintenance is not None
+                        else None
+                    ),
                     summary=f"Inspected recovery boundary for AgentStep {step_id}.",
                 )
             )
@@ -3899,6 +3941,68 @@ class LeanAdminApi:
                     "inspect_agent_step_recovery_failed",
                     f"Failed to inspect AgentStep recovery: {exc}",
                     object_ref=step_id,
+                )
+            )
+
+    @_reject_during_paired_restore
+    def reconcile_agent_step_context_maintenance(
+        self,
+        input_model: ReconcileAgentStepContextMaintenanceInput,
+    ) -> ServiceResult[ReconcileAgentStepContextMaintenanceView]:
+        """Reconcile context maintenance for one current suspended AgentStep."""
+
+        flow_service = self.runtime.ark.flow_service
+        if flow_service is None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "flow_service_missing",
+                    "ARK flow service is not configured.",
+                )
+            )
+        try:
+            maintenance = flow_service.reconcile_agent_step_context_maintenance(
+                step_id=input_model.step_id,
+                expected_reconciliation_token=(
+                    input_model.expected_context_maintenance_token
+                ),
+            )
+            if maintenance.unresolved:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "agent_context_maintenance_reconciliation_required",
+                        "Agent context maintenance remains unresolved after reconciliation.",
+                        object_ref=input_model.step_id,
+                    )
+                )
+            return self.runtime.foundation.ok(
+                ReconcileAgentStepContextMaintenanceView(
+                    step_id=input_model.step_id,
+                    agent_id=maintenance.agent_id,
+                    provider_type=maintenance.provider_type,
+                    session_id=maintenance.session_id,
+                    status=maintenance.status,
+                    unresolved=maintenance.unresolved,
+                    reconciliation_token=maintenance.reconciliation_token,
+                    summary=(
+                        "Reconciled Agent context maintenance; the suspended Step "
+                        "may now be resumed explicitly."
+                    ),
+                )
+            )
+        except AgentContextMaintenanceBlocked:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "agent_context_maintenance_reconciliation_required",
+                    "Agent context maintenance could not yet be confirmed.",
+                    object_ref=input_model.step_id,
+                )
+            )
+        except Exception:  # noqa: BLE001 - admin recovery boundary.
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "reconcile_agent_step_context_maintenance_failed",
+                    "Failed to reconcile AgentStep context maintenance.",
+                    object_ref=input_model.step_id,
                 )
             )
 

@@ -296,6 +296,7 @@ def _admin_input_model(endpoint: Any) -> type[BaseModel] | None:
 def _admin_route_owned_fields(endpoint: Any) -> list[str]:
     names = set(endpoint.__code__.co_names)
     if endpoint.__name__ in {
+        "repo_reconcile_agent_step_context_maintenance",
         "repo_recover_agent_step",
         "repo_set_agent_step_operator_instruction",
     }:

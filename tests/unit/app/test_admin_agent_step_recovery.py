@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from agent_runtime_kit.agent.models import AgentContextMaintenanceBlocked
 from agent_runtime_kit.flow import (
     AgentStep,
     AgentStepState,
@@ -17,6 +18,7 @@ from starlette.testclient import TestClient
 from lean_constellation.app import (
     LeanAdminApi,
     LeanAppConfig,
+    ReconcileAgentStepContextMaintenanceInput,
     RecoverAgentStepInput,
     create_app_runtime_services,
     create_production_app_server,
@@ -140,6 +142,153 @@ def test_inspect_agent_step_recovery_wraps_ark_view_without_mutation(tmp_path) -
     assert result.value.decl_graph_round_gate is None
     assert runtime.ark.flow_service.get_flow(flow_id).model_dump(mode="json") == before_flow
     assert runtime.ark.flow_service.get_step(step_id).model_dump(mode="json") == before_step
+
+
+def test_inspect_agent_step_recovery_includes_sanitized_context_maintenance(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    runtime = create_app_runtime_services(runtime_root=tmp_path / ".runtime", start_paused=True)
+    flow_id, agent = _content_plan_boundary(runtime, tmp_path / "MainRepo")
+    step_id = _suspended_content_plan_step(runtime, flow_id, agent.agent_id)
+    monkeypatch.setattr(
+        runtime.ark.flow_service,
+        "inspect_agent_step_context_maintenance",
+        lambda target_step_id: SimpleNamespace(
+            agent_id=agent.agent_id,
+            provider_type="codex",
+            session_id="session-safe",
+            status="unknown_terminal",
+            unresolved=True,
+            reconciliation_token="a" * 64,
+            baseline={"secret": "must-not-be-exposed"},
+        )
+        if target_step_id == step_id
+        else None,
+    )
+
+    result = LeanAdminApi(runtime).inspect_agent_step_recovery(step_id)
+
+    assert result.ok and result.value is not None, result.issues
+    maintenance = result.value.context_maintenance
+    assert maintenance is not None
+    assert maintenance.agent_id == agent.agent_id
+    assert maintenance.status == "unknown_terminal"
+    assert maintenance.unresolved is True
+    assert maintenance.reconciliation_token == "a" * 64
+    assert "baseline" not in maintenance.model_dump(mode="json")
+
+
+def test_admin_reconciles_context_maintenance_without_resuming_step(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    runtime = create_app_runtime_services(runtime_root=tmp_path / ".runtime", start_paused=True)
+    flow_id, agent = _content_plan_boundary(runtime, tmp_path / "MainRepo")
+    step_id = _suspended_content_plan_step(runtime, flow_id, agent.agent_id)
+    before_step = runtime.ark.flow_service.get_step(step_id).model_dump(mode="json")
+    before_flow = runtime.ark.flow_service.get_flow(flow_id).model_dump(mode="json")
+    calls: list[tuple[str, str]] = []
+
+    def reconcile(*, step_id: str, expected_reconciliation_token: str):
+        calls.append((step_id, expected_reconciliation_token))
+        return SimpleNamespace(
+            agent_id=agent.agent_id,
+            provider_type="codex",
+            session_id="session-safe",
+            status="confirmed",
+            unresolved=False,
+            reconciliation_token="b" * 64,
+        )
+
+    monkeypatch.setattr(
+        runtime.ark.flow_service,
+        "reconcile_agent_step_context_maintenance",
+        reconcile,
+    )
+
+    result = LeanAdminApi(runtime).reconcile_agent_step_context_maintenance(
+        ReconcileAgentStepContextMaintenanceInput(
+            step_id=step_id,
+            expected_context_maintenance_token="a" * 64,
+        )
+    )
+
+    assert result.ok and result.value is not None, result.issues
+    assert calls == [(step_id, "a" * 64)]
+    assert result.value.step_id == step_id
+    assert result.value.agent_id == agent.agent_id
+    assert result.value.status == "confirmed"
+    assert result.value.unresolved is False
+    assert result.value.next_action == "resume_suspended"
+    assert runtime.ark.flow_service.get_step(step_id).model_dump(mode="json") == before_step
+    assert runtime.ark.flow_service.get_flow(flow_id).model_dump(mode="json") == before_flow
+
+
+def test_admin_reports_context_reconciliation_still_unresolved_without_resuming(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    runtime = create_app_runtime_services(runtime_root=tmp_path / ".runtime", start_paused=True)
+    flow_id, agent = _content_plan_boundary(runtime, tmp_path / "MainRepo")
+    step_id = _suspended_content_plan_step(runtime, flow_id, agent.agent_id)
+    before_step = runtime.ark.flow_service.get_step(step_id).model_dump(mode="json")
+    before_flow = runtime.ark.flow_service.get_flow(flow_id).model_dump(mode="json")
+    monkeypatch.setattr(
+        runtime.ark.flow_service,
+        "reconcile_agent_step_context_maintenance",
+        lambda **_kwargs: SimpleNamespace(
+            agent_id=agent.agent_id,
+            provider_type="codex",
+            session_id="session-safe",
+            status="unknown_terminal",
+            unresolved=True,
+            reconciliation_token="a" * 64,
+        ),
+    )
+
+    result = LeanAdminApi(runtime).reconcile_agent_step_context_maintenance(
+        ReconcileAgentStepContextMaintenanceInput(
+            step_id=step_id,
+            expected_context_maintenance_token="a" * 64,
+        )
+    )
+
+    assert result.ok is False
+    assert [issue.kind for issue in result.issues] == [
+        "agent_context_maintenance_reconciliation_required"
+    ]
+    assert runtime.ark.flow_service.get_step(step_id).model_dump(mode="json") == before_step
+    assert runtime.ark.flow_service.get_flow(flow_id).model_dump(mode="json") == before_flow
+
+
+def test_admin_sanitizes_unconfirmed_context_reconciliation_error(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    runtime = create_app_runtime_services(runtime_root=tmp_path / ".runtime", start_paused=True)
+    flow_id, agent = _content_plan_boundary(runtime, tmp_path / "MainRepo")
+    step_id = _suspended_content_plan_step(runtime, flow_id, agent.agent_id)
+
+    def unconfirmed(**_kwargs):
+        raise AgentContextMaintenanceBlocked("raw-provider-secret")
+
+    monkeypatch.setattr(
+        runtime.ark.flow_service,
+        "reconcile_agent_step_context_maintenance",
+        unconfirmed,
+    )
+
+    result = LeanAdminApi(runtime).reconcile_agent_step_context_maintenance(
+        ReconcileAgentStepContextMaintenanceInput(
+            step_id=step_id,
+            expected_context_maintenance_token="a" * 64,
+        )
+    )
+
+    assert result.ok is False
+    assert result.issues[0].kind == "agent_context_maintenance_reconciliation_required"
+    assert "raw-provider-secret" not in result.issues[0].message
 
 
 def test_admin_surfaces_suspended_provider_boundary_and_fresh_resume(tmp_path) -> None:
@@ -501,3 +650,62 @@ def test_production_http_recovers_agent_step_with_route_owned_step_id(tmp_path) 
     assert "route-owned" in forbidden.json()["issues"][0]["message"]
     assert response.status_code == 200
     assert response.json()["value"]["source_step_id"] == step_id
+
+
+def test_production_http_reconciles_context_maintenance_with_route_owned_step_id(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    repo_root = workspace / "MainRepo"
+    (repo_root / ".lean_constellation").mkdir(parents=True)
+    app_result = create_production_app_server(
+        LeanAppConfig(
+            workspace_root=workspace,
+            scheduler_enabled=False,
+            materialize_agent_homes=False,
+        )
+    )
+    assert app_result.ok and app_result.value is not None
+    registry = app_result.value.state.lean_constellation_registry
+
+    with TestClient(app_result.value) as client:
+        assert client.post("/admin/workspace/repos/MainRepo/load").status_code == 200
+        runtime = registry.try_get_loaded("MainRepo")
+        assert runtime is not None
+        flow_id, agent = _content_plan_boundary(runtime, repo_root)
+        step_id = _suspended_content_plan_step(runtime, flow_id, agent.agent_id)
+
+        def reconcile(*, step_id: str, expected_reconciliation_token: str):
+            assert expected_reconciliation_token == "a" * 64
+            return SimpleNamespace(
+                agent_id=agent.agent_id,
+                provider_type="codex",
+                session_id="session-safe",
+                status="confirmed",
+                unresolved=False,
+                reconciliation_token="b" * 64,
+            )
+
+        monkeypatch.setattr(
+            runtime.ark.flow_service,
+            "reconcile_agent_step_context_maintenance",
+            reconcile,
+        )
+        body = {"expected_context_maintenance_token": "a" * 64}
+        forbidden = client.post(
+            f"/admin/repos/MainRepo/steps/{step_id}/context-maintenance/reconcile",
+            json={**body, "step_id": "other"},
+        )
+        response = client.post(
+            f"/admin/repos/MainRepo/steps/{step_id}/context-maintenance/reconcile",
+            json=body,
+        )
+
+    assert forbidden.status_code == 422
+    assert "route-owned" in forbidden.json()["issues"][0]["message"]
+    assert response.status_code == 200
+    value = response.json()["value"]
+    assert value["step_id"] == step_id
+    assert value["status"] == "confirmed"
+    assert value["next_action"] == "resume_suspended"
