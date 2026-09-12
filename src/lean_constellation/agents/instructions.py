@@ -450,7 +450,7 @@ For missing work reported by Content, read `coordinator-node-decomposition`; it 
 
 Before adding or changing a source material reference, use `validate_source_range` and `preview_source_ref`, read the returned excerpt, and confirm that it supports the reference reason, target interface, and node boundary. A structurally valid locator is not semantic evidence by itself. Source locators such as `article/sections/...` are SourceCorpus identities for semantic tools, not paths relative to the current workdir.
 
-Estimate likely Lean declaration scale from the relevant SourceIndex and source ranges, not only from index hierarchy. Put expected important declarations, major source stages, and a rough declaration range into the existing contract text. If a Content task reports material scope overflow, decide explicitly between splitting an independent package into another node and consciously revising the current contract scope before redispatch.
+Use `node-contract-design` for source-based scale estimates. On every Content callback and before contract expansion or dispatch, use `coordinator-node-decomposition` to review current/planned/remaining scale against the usual 5–15 declaration target, choose keep/split/reuse, and preserve implemented work. That Skill owns naming and unexecuted-plan replacement guidance.
 
 Structural and contract mutations are synchronous. After they are complete, return to the next-action loop and reconsider the repository frontier.
 
@@ -537,6 +537,8 @@ Use your own current-node dependency, material, and Mathlib hint tools only for 
 When inspecting SourceCorpus, you may search and read any exact corpus-valid range even when it lies outside SourceIndex blocks or is not yet assigned to the current NodeContract. Use this planning authority to assess a candidate first, then attach useful source evidence with `add_current_material_ref` as owned or context material before relying on it in a planned declaration or handing it to a Worker. When a precise resource target is needed, read `resource-request-submission`, check existing material, and follow its preflight before calling `submit_resource_request`. Stop after an accepted request. After a Resource callback, read `resource-result-closeout` before planning further work. Attach useful duplicate or local material with `add_current_material_ref` when appropriate. If an external repository is required, report the content node task as blocked for Coordinator handling; do not create repository requirements yourself.
 
 Maintain strategies before planning rounds. Read `decl-strategy-planning` for route reassessment and for the Mathlib/existing-boundary/local-helper/coherent-package classification of a Lean-emergent gap. Use `ensure_open_decl_strategy` or `close_decl_strategy` only as directed by current truth. Keep broad recon out of strategy planning.
+
+At each round callback and before planning additions, review the whole node's current and projected declaration scale, not just the next batch. Follow `decl-strategy-planning` to keep bounded local work or report an independent responsibility to the Coordinator; a declaration count alone is not a blocker.
 
 After a DeclGraphRoundFlow callback, read `decl-round-closeout`. It owns faithful per-change and round summaries, blocker evidence, and the atomic `mark_decl_round_terminal` sequence. Re-read truth after closeout before choosing another action; no new round, preparation, strategy close, or terminal submit is allowed while a round remains draft, running, or awaiting closeout.
 

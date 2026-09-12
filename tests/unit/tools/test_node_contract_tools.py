@@ -25,6 +25,8 @@ def test_node_contract_tools_are_registered() -> None:
         "set_node_contract_task_completion_mode",
         "preview_delete_node",
         "delete_node",
+        "preview_abandon_node_plan",
+        "abandon_node_plan",
         "list_current_node_deps",
         "add_current_node_dep",
         "remove_current_node_dep",
@@ -103,7 +105,7 @@ def test_node_contract_groups_expose_expected_tools() -> None:
     )
     assert_group_contains("node_contract_read_by_node", {"get_node_contract", "list_node_material_refs"})
     assert_group_contains("node_tree_read", {"get_node_tree", "get_node"})
-    assert_group_contains("node_tree_write", {"create_scope_node", "create_content_node", "preview_delete_node", "delete_node"})
+    assert_group_contains("node_tree_write", {"create_scope_node", "create_content_node", "preview_delete_node", "delete_node", "preview_abandon_node_plan", "abandon_node_plan"})
     assert_group_contains("node_contract_text_write_by_node", {"update_node_contract_text"})
     assert_group_contains(
         "node_contract_task_target_write_by_node",

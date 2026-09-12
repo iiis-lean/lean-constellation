@@ -221,20 +221,27 @@ def _set_node_contract_task_completion_mode(
     )
 
 
-def _node_delete_runtime_blockers(runtime, ctx, *, node_path: str):
+def _node_delete_runtime_blockers(runtime, ctx, *, node_path: str, require_unstarted: bool = False):
     node = runtime.node.node_tree.get_node(ctx.repo_root, path=node_path)
     if not node.ok or node.value is None:
         return runtime.foundation.fail(node.issues)
     scope_id = node_scope_id(ctx.repo.repo_key, node.value.node_id)
     try:
-        flows = runtime.list_flows(scope_id=scope_id)
-        steps = runtime.list_steps(scope_id=scope_id)
+        flows = list(runtime.list_flows(scope_id=scope_id))
+        steps = list(runtime.list_steps(scope_id=scope_id))
         agent_service = runtime.ark.agent_service
         if agent_service is None or not hasattr(agent_service, "list_agents"):
             raise RuntimeError("ARK agent service does not expose list_agents.")
         agents = list(agent_service.list_agents(scope_id=scope_id))
     except Exception as exc:  # noqa: BLE001 - fail closed at the runtime boundary
         return runtime.foundation.ok([f"runtime_inspection_failed:{exc}"])
+
+    if require_unstarted:
+        return runtime.foundation.ok([
+            f"node_plan_runtime_history:{kind}"
+            for kind, records in (("flows", flows), ("steps", steps), ("agents", agents))
+            if records
+        ])
 
     blockers = [
         f"running_content_task:{getattr(flow, 'flow_id', '')}"
@@ -299,6 +306,47 @@ def _delete_node(runtime, ctx, args: NodeDeleteArgs):
             "node_delete_runtime_guard_failed",
             f"Node deletion runtime guard failed: {exc}",
             object_ref=args.node_path,
+        ))
+
+
+def _preview_abandon_node_plan(runtime, ctx, args: NodePathArgs):
+    runtime_blockers = _node_delete_runtime_blockers(
+        runtime, ctx, node_path=args.node_path, require_unstarted=True,
+    )
+    if not runtime_blockers.ok or runtime_blockers.value is None:
+        return runtime.foundation.fail(runtime_blockers.issues)
+    data = runtime.node.preview_abandon_node_plan(ctx.repo_root, path=args.node_path)
+    if not data.ok or data.value is None:
+        return runtime.foundation.fail(data.issues)
+    blockers = sorted(set([*data.value.blocking_reasons, *runtime_blockers.value]))
+    return runtime.foundation.ok(data.value.model_copy(update={
+        "deletable": not blockers,
+        "blocking_reasons": blockers,
+        "summary": "Node plan abandonment is blocked." if blockers else data.value.summary,
+    }))
+
+
+def _abandon_node_plan(runtime, ctx, args: NodeDeleteArgs):
+    try:
+        with runtime.repo_workspace.lifecycle_lock.locked(ctx.repo_root):
+            preview = _preview_abandon_node_plan(runtime, ctx, args)
+            if not preview.ok or preview.value is None:
+                return runtime.foundation.fail(preview.issues)
+            current = _node_delete_runtime_blockers(
+                runtime, ctx, node_path=args.node_path, require_unstarted=True,
+            )
+            if not current.ok or current.value is None:
+                return runtime.foundation.fail(current.issues)
+            blockers = sorted(set([*preview.value.blocking_reasons, *current.value]))
+            if blockers:
+                return runtime.foundation.fail(runtime.foundation.issue(
+                    "node_plan_abandon_blocked", "Node plan has data or runtime impacts.",
+                    object_ref=args.node_path, details={"blocking_reasons": ",".join(blockers)},
+                ))
+            return runtime.node.abandon_node_plan(ctx.repo_root, path=args.node_path, reason=args.reason)
+    except Exception as exc:  # same lifecycle/runtime boundary as ordinary node deletion
+        return runtime.foundation.fail(runtime.foundation.issue(
+            "node_plan_abandon_guard_failed", f"Node plan guard failed: {exc}", object_ref=args.node_path,
         ))
 
 
@@ -983,6 +1031,26 @@ def build_tool_specs() -> list[ToolSpec]:
             groups={AppGroup.NODE_TREE_WRITE},
             roles=coordinator_roles,
             handler=_delete_node,
+        ),
+        handler_tool(
+            name="preview_abandon_node_plan",
+            description="Inspect whether an initial, unexecuted node plan can be withdrawn despite its open contract. Apply rechecks current truth.",
+            args_model=NodePathArgs,
+            capability=ToolCapability.READ,
+            result_view="node_delete_impact",
+            groups={AppGroup.NODE_TREE_WRITE},
+            roles=coordinator_roles,
+            handler=_preview_abandon_node_plan,
+        ),
+        handler_tool(
+            name="abandon_node_plan",
+            description="Withdraw an unexecuted initial node plan without marking its draft complete. Preserve obsolete history; the path may then be recreated with a new node identity.",
+            args_model=NodeDeleteArgs,
+            capability=ToolCapability.WRITE,
+            result_view="mutation",
+            groups={AppGroup.NODE_TREE_WRITE},
+            roles=coordinator_roles,
+            handler=_abandon_node_plan,
         ),
         handler_tool(
             name="list_current_node_deps",

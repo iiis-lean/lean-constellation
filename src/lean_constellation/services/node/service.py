@@ -552,6 +552,24 @@ class NodeService:
             )
         return self.node_tree._mark_node_deleted_after_guard(repo_root, path=path, reason=reason)
 
+    def preview_abandon_node_plan(self, repo_root: Path, *, path: str) -> ServiceResult[DeleteImpactView]:
+        return self.release_guard.preview_abandon_node_plan(repo_root, path=path)
+
+    def abandon_node_plan(self, repo_root: Path, *, path: str, reason: str) -> ServiceResult[MutationSummaryView]:
+        if not reason or not reason.strip():
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("abandon_reason_required", "Plan abandonment requires a reason.", field="reason")
+            )
+        preview = self.preview_abandon_node_plan(repo_root, path=path)
+        if not preview.ok or preview.value is None:
+            return self.runtime.foundation.fail(preview.issues)
+        if not preview.value.deletable:
+            return self.runtime.foundation.fail(self.runtime.foundation.issue(
+                "node_plan_abandon_blocked", "Node plan cannot be abandoned.", object_ref=path,
+                details={"blocking_reasons": ",".join(preview.value.blocking_reasons)},
+            ))
+        return self.node_tree._mark_node_deleted_after_guard(repo_root, path=path, reason=reason)
+
     def get_current_contract_view(self, repo_root: Path, *, node_path: str) -> ServiceResult[CurrentNodeContractView]:
         contract = self.contract.get_current_contract(repo_root, node_path=node_path)
         if not contract.ok or contract.value is None:

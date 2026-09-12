@@ -19,7 +19,7 @@ from lean_constellation.services.decl_graph.models import (
     RepoDeclDep,
 )
 from lean_constellation.services.foundation import ServiceResult
-from lean_constellation.services.node.node_tree import DeleteImpactView, NodeContract, NodeKind, NodeLifecycle
+from lean_constellation.services.node.node_tree import DeleteImpactView, NodeContract, NodeContractStatus, NodeKind, NodeLifecycle
 
 if TYPE_CHECKING:
     from lean_constellation.services.repo_workspace.repo_release import (
@@ -491,6 +491,46 @@ class NodeReleaseGuard:
                 summary=("Node can be soft-deleted." if not blockers else f"Node delete is blocked by: {', '.join(blockers)}."),
             )
         )
+
+    def preview_abandon_node_plan(self, repo_root: Path, *, path: str) -> ServiceResult[DeleteImpactView]:
+        """Allow withdrawal of an initial draft, never retirement of executed work."""
+        preview = self.preview_delete_node(repo_root, path=path)
+        if not preview.ok or preview.value is None:
+            return self.runtime.foundation.fail(preview.issues)
+        store = self.runtime.node.node_tree.node_store
+        node = store.resolve_active_node(repo_root, path=path)
+        if not node.ok or node.value is None:
+            return self.runtime.foundation.fail(node.issues)
+        contracts = self.runtime.node.contract.list_contract_versions(repo_root, node_path=path)
+        if not contracts.ok or contracts.value is None:
+            return self.runtime.foundation.fail(contracts.issues)
+        blockers = set(preview.value.blocking_reasons) - {"open_contract"}
+        if (
+            node.value.active_contract_version is not None
+            or node.value.current_contract_version != 1
+            or node.value.open_contract_version != 1
+            or len(contracts.value) != 1
+            or contracts.value[0].version != 1
+            or contracts.value[0].status != NodeContractStatus.OPEN
+        ):
+            blockers.add("node_plan_not_initial_open")
+        # Inspect records, not active-state lists: even deleted/closed work is history.
+        # Empty graph indexes may have been materialized by ordinary read helpers.
+        graph = store.decl_graph_dir(repo_root, node_id=node.value.node_id)
+        if any(next(graph.glob(pattern), None) is not None for pattern in (
+            "decls/*/decl.json", "strategies/*.json", "rounds/*.json",
+        )):
+            blockers.add("node_plan_has_execution_history")
+        return self.runtime.foundation.ok(DeleteImpactView.build(
+            path=path,
+            deletable=not blockers,
+            affected_children=preview.value.affected_children,
+            inbound_refs=preview.value.inbound_refs,
+            blocking_reasons=list(blockers),
+            public_decl_count=preview.value.public_decl_count,
+            summary=("Initial node plan can be abandoned; its draft remains historical, not completed."
+                     if not blockers else "Node plan abandonment is blocked."),
+        ))
 
     def _historical_node_refs(
         self,
