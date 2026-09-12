@@ -994,7 +994,6 @@ class LakeDependencyComponent:
             repo_root / f"{project_name}.lean": f"import {project_name}.Main.Prelude\nimport {project_name}.Main.Interfaces\n",
             main_dir / "Prelude.lean": "import Mathlib\n" if config.mathlib_enabled else "",
             main_dir / "Interfaces.lean": f"import {project_name}.Main.Prelude\n",
-            main_dir / "Basic.lean": f"import {project_name}.Main.Prelude\n",
         }
         written: list[Path] = []
         for path, text in files.items():

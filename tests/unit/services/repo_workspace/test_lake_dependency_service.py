@@ -152,6 +152,10 @@ def test_initialize_native_skeleton_and_parse_dependencies(tmp_path: Path) -> No
     assert (tmp_path / "lean-toolchain").read_text(encoding="utf-8") == "lean/test\n"
     assert (tmp_path / "MyProject.lean").exists()
     assert (tmp_path / "MyProject" / "Main" / "Interfaces.lean").exists()
+    assert sorted(path.name for path in (tmp_path / "MyProject" / "Main").iterdir()) == [
+        "Interfaces.lean",
+        "Prelude.lean",
+    ]
     assert external.lake.built == [(tmp_path, None)]
 
     deps = component.parse_lake_dependencies(tmp_path)
