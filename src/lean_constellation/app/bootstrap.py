@@ -14,6 +14,7 @@ from pydantic import Field
 from agent_runtime_kit.agent.provider_contracts import BaseConfigSource, ModelBackendIdentity
 from agent_runtime_kit.agent.providers import OpenCodeHomeOptions
 from agent_runtime_kit.agent.providers.codex_home import CodexHomeOptions
+from agent_runtime_kit.agent.providers.grok_home import GrokHomeOptions
 
 from lean_constellation.agents import (
     AgentHomeBootstrapSpec,
@@ -23,6 +24,8 @@ from lean_constellation.agents import (
     get_agent_type_spec,
 )
 from lean_constellation.app.agent_provider_config import (
+    CODEX_NATIVE_FILE_AGENT_TYPES,
+    CODEX_NATIVE_WEB_AGENT_TYPES,
     codex_native_config_defaults,
     model_identity_from_override,
     opencode_native_tool_defaults,
@@ -145,6 +148,18 @@ def materialize_agent_home(
                 permission_names=permission_names,
                 force_full_access=codex_force_full_access,
             )
+        elif resolved_provider_type == "grok":
+            if resolved_provider_options is not None and not isinstance(resolved_provider_options, GrokHomeOptions):
+                raise TypeError("grok provider_options must be GrokHomeOptions")
+            grok_options = resolved_provider_options or GrokHomeOptions()
+            if grok_options.tools is None:
+                tools = ["read_file", "list_dir", "grep"]
+                if permission_names & CODEX_NATIVE_FILE_AGENT_TYPES:
+                    tools.extend(("search_replace", "run_terminal_cmd"))
+                if permission_names & CODEX_NATIVE_WEB_AGENT_TYPES:
+                    tools.extend(("web_search", "web_fetch"))
+                grok_options = replace(grok_options, tools=tuple(tools))
+            resolved_provider_options = grok_options
         elif resolved_provider_type == "opencode":
             if resolved_provider_options is not None and not isinstance(
                 resolved_provider_options, OpenCodeHomeOptions
@@ -211,7 +226,12 @@ def materialize_agent_home(
     except Exception as exc:  # noqa: BLE001 - bootstrap boundary.
         return runtime.foundation.fail(runtime.foundation.issue("agent_home_materialization_failed", f"Agent home materialization failed: {exc}"))
 
-    skill_paths = _materialized_skill_paths(home_root, spec)
+    skill_paths = {name: str(path) for name, path in home_service.get_skill_paths(
+        record.provider_type, record.home_id
+    ).items() if name in spec.skill_specs}
+    # Older renderers may not enumerate skill files in their materialization manifest.
+    if not skill_paths and spec.skill_specs:
+        skill_paths = _materialized_skill_paths(home_root, spec)
     return runtime.foundation.ok(
         AgentHomeMaterializationView(
             agent_type=spec.agent_type,

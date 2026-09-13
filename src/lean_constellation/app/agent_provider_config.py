@@ -16,6 +16,8 @@ from agent_runtime_kit.agent.providers import (
     build_opencode_provider_bundle,
     build_pi_provider_bundle,
     CodexProvider,
+    GrokHomeOptions,
+    build_grok_provider_bundle,
 )
 from agent_runtime_kit.agent.providers.claude_code_home import ClaudeCodeHomeOptions
 from agent_runtime_kit.agent.providers.claude_code_bundle import build_claude_code_provider_bundle
@@ -138,6 +140,8 @@ def build_builtin_provider_registry(
         registry.register(build_claude_code_provider_bundle(provider, runtime_root=root))
     if "pi" in provider_types:
         registry.register(build_pi_provider_bundle(runtime_root=root))
+    if "grok" in provider_types:
+        registry.register(build_grok_provider_bundle(runtime_root=root))
     if "openai_agents" in provider_types:
         provider = OpenAIAgentsProvider()
         provider.registry.register_agent_factory(
@@ -201,6 +205,16 @@ def provider_options_from_override(
     override: AgentHomeOverrideAppConfig | None,
 ) -> object | None:
     options = dict(override.provider_options if override is not None else {})
+    if provider_type == "grok":
+        if override is not None:
+            options.setdefault("model", override.model)
+            options.setdefault("reasoning_effort", override.model_reasoning_effort)
+        for field_name in ("auth_json_path", "binary_path"):
+            if options.get(field_name) is not None:
+                options[field_name] = Path(options[field_name]).expanduser()
+        if options.get("tools") is not None:
+            options["tools"] = tuple(options["tools"])
+        return GrokHomeOptions(**options)
     if provider_type == "codex":
         for field_name in ("auth_json_path",):
             if field_name in options and options[field_name] is not None:

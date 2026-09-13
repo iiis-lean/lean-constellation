@@ -13,7 +13,7 @@ from lean_constellation.domain.common import StrictModel
 from lean_constellation.services.tool_facade.context_resolver import ActorRole
 
 
-AgentHomeType = Literal["codex", "claude_code", "pi", "openai_agents", "opencode"]
+AgentHomeType = Literal["codex", "claude_code", "pi", "openai_agents", "opencode", "grok"]
 AgentLifecycleGroup = Literal[
     "repo_lifecycle",
     "coordinator",

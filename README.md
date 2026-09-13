@@ -23,7 +23,7 @@
     <img alt="ARK 0.3" src="https://img.shields.io/badge/ARK-0.3-0f8f88?style=flat-square">
   </a>
   <a href="#agent-providers">
-    <img alt="Five Agent providers" src="https://img.shields.io/badge/Agent_Providers-5-2563eb?style=flat-square">
+    <img alt="Six Agent providers" src="https://img.shields.io/badge/Agent_Providers-6-2563eb?style=flat-square">
   </a>
   <a href="https://github.com/iiis-lean/lean-mcp-toolkit">
     <img alt="MCP tool runtime" src="https://img.shields.io/badge/MCP-Lean_Toolkit-e45132?style=flat-square">
@@ -202,6 +202,7 @@ for individual AgentTypes.
 | `pi` | Pi JSONL RPC subprocess | Compatible Pi CLI and prepared Node dependencies for MCP projection |
 | `openai_agents` | OpenAI Agents Python SDK with durable sessions | `provider-openai-agents` extra and an application/model endpoint |
 | `opencode` | Isolated OpenCode server and session storage | Compatible OpenCode executable and environment-referenced credentials |
+| `grok` | Grok Build ACP, isolated Home, skills and per-turn MCP context | Pinned Grok Build 1.0.30 and local auth; [setup and verified limits](docs/grok-provider.md) |
 
 Global selection uses `default_agent_provider_type`; per-AgentType
 `agent_home_overrides` can independently select the Provider, model/backend
