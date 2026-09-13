@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import ClassVar, Literal
+from typing import TYPE_CHECKING, ClassVar, Literal
 
 from agent_runtime_kit.flow.contexts import FlowBuildContext, FlowContext, FlowStepContext
-from agent_runtime_kit.flow.models import BaseFlowError, BaseFlowInput, BaseFlowResult, BaseFlowState, FlowPosition
+from agent_runtime_kit.flow.models import BaseFlow, BaseFlowError, BaseFlowInput, BaseFlowResult, BaseFlowState, FlowPosition
 from agent_runtime_kit.flow.standard_steps import AgentStepIncompleteResult
 from pydantic import Field
 
@@ -38,6 +38,9 @@ from lean_constellation.flows.content_node_task.decl_round.steps import (
     StageGateAndAuditStepState,
     new_decl_round_step_id,
 )
+
+if TYPE_CHECKING:
+    from agent_runtime_kit.flow.services import FlowService
 
 
 STAGE_ORDER: tuple[DeclStageName, ...] = (
@@ -74,6 +77,13 @@ REVIEWER_VIEW_KEYS: dict[DeclStageName, str] = {
     "proof_nl": "proof_nl_reviewer",
     "proof_formal": "proof_formal_reviewer",
 }
+
+SHARED_STAGE_AGENT_ROLES: frozenset[str] = frozenset(
+    {
+        *(f"{stage}_worker" for stage in STAGE_ORDER),
+        *(f"{stage}_reviewer" for stage in STAGE_ORDER),
+    }
+)
 
 
 class DeclGraphRoundParams(LeanFlowParams):
@@ -584,7 +594,9 @@ def _inherit_stage_agent_binding_from_parent(ctx: FlowContext, flow: DeclGraphRo
     flow_service = ctx.ark.flow_service
     if flow_service is None:
         return
-    parent = flow_service.get_flow(flow.parent_flow_id)
+    parent = resolve_content_task_shared_stage_parent(flow_service, flow, role)
+    if parent is None:
+        return
     agent_id = parent.agent_bindings.get(role)
     if not agent_id:
         return
@@ -593,6 +605,25 @@ def _inherit_stage_agent_binding_from_parent(ctx: FlowContext, flow: DeclGraphRo
         flow.flow_id,
         lambda stored: stored.agent_bindings.by_role.__setitem__(role, agent_id),
     )
+
+
+def resolve_content_task_shared_stage_parent(
+    flow_service: FlowService,
+    flow: BaseFlow,
+    role: str,
+) -> BaseFlow | None:
+    """Resolve the ContentTask that explicitly owns a DeclRound shared stage role."""
+
+    if (
+        flow.flow_type != "decl_graph_round"
+        or role not in SHARED_STAGE_AGENT_ROLES
+        or not flow.parent_flow_id
+    ):
+        return None
+    parent = flow_service.get_flow(flow.parent_flow_id)
+    if parent.flow_type != "content_node_task" or parent.scope_id != flow.scope_id:
+        return None
+    return parent
 
 
 def _agent_variables(

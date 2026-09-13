@@ -4024,6 +4024,28 @@ class LeanAdminApi:
         try:
             preview = flow_service.inspect_agent_step_recovery(input_model.step_id)
             flow = flow_service.get_flow(preview.flow_id)
+            source_step = flow_service.get_step(input_model.step_id)
+            from lean_constellation.flows.content_node_task.decl_round.flow import (
+                resolve_content_task_shared_stage_parent,
+            )
+
+            source_role = (
+                source_step.state.agent_role
+                if isinstance(source_step.state, AgentStepState)
+                else ""
+            )
+            shared_stage_parent = (
+                resolve_content_task_shared_stage_parent(
+                    flow_service,
+                    flow,
+                    source_role,
+                )
+                if input_model.action in {"restart", "resume_suspended"}
+                else None
+            )
+            shared_stage_parent_id = (
+                shared_stage_parent.flow_id if shared_stage_parent is not None else None
+            )
             round_target = None
             if (
                 flow.flow_type == "decl_graph_round"
@@ -4055,6 +4077,7 @@ class LeanAdminApi:
 
             reopened_round_id = None
             round_reopened = False
+            shared_parent_replacement: tuple[str, str, str, str] | None = None
 
             def reopen_round_boundary(target_flow, source_step, replacement_step) -> None:
                 nonlocal round_reopened, reopened_round_id
@@ -4097,14 +4120,114 @@ class LeanAdminApi:
                         + ",".join(issue.kind for issue in rolled_back.issues)
                     )
 
+            def synchronize_shared_stage_parent(
+                target_flow,
+                source_step,
+                replacement_step,
+            ) -> None:
+                nonlocal shared_parent_replacement
+                if shared_stage_parent_id is None:
+                    return
+                role = source_step.state.agent_role
+                source_agent_id = source_step.agent_bindings.get(role)
+                child_agent_id = target_flow.agent_bindings.get(role)
+                if not source_agent_id or child_agent_id != source_agent_id:
+                    raise ValueError(
+                        "DeclGraph shared stage binding changed before recovery"
+                    )
+                replacement_agent_id = replacement_step.agent_bindings.get(role)
+                if not replacement_agent_id:
+                    raise ValueError(
+                        "DeclGraph replacement Step has no shared stage Agent binding"
+                    )
+                if replacement_agent_id == source_agent_id:
+                    return
+
+                def replace_parent_binding(parent) -> None:
+                    nonlocal shared_parent_replacement
+                    if (
+                        parent.flow_id != shared_stage_parent_id
+                        or parent.flow_type != "content_node_task"
+                        or parent.scope_id != target_flow.scope_id
+                        or parent.status in {FlowStatus.COMPLETED, FlowStatus.FAILED}
+                        or parent.agent_bindings.get(role) != source_agent_id
+                    ):
+                        raise ValueError(
+                            "ContentTask shared stage Agent binding changed before recovery"
+                        )
+                    shared_parent_replacement = (
+                        shared_stage_parent_id,
+                        role,
+                        source_agent_id,
+                        replacement_agent_id,
+                    )
+                    parent.agent_bindings.by_role[role] = replacement_agent_id
+
+                flow_service.store.update_flow_record(
+                    shared_stage_parent_id,
+                    replace_parent_binding,
+                )
+
+            def rollback_shared_stage_parent() -> None:
+                if shared_parent_replacement is None:
+                    return
+                parent_id, role, previous_agent_id, replacement_agent_id = (
+                    shared_parent_replacement
+                )
+
+                def restore_parent_binding(parent) -> None:
+                    current_agent_id = parent.agent_bindings.get(role)
+                    if current_agent_id == previous_agent_id:
+                        return
+                    if current_agent_id != replacement_agent_id:
+                        raise ValueError(
+                            "ContentTask shared stage Agent binding changed before compensation"
+                        )
+                    parent.agent_bindings.by_role[role] = previous_agent_id
+
+                flow_service.store.update_flow_record(parent_id, restore_parent_binding)
+
+            def apply_recovery_boundaries(
+                target_flow,
+                source_step,
+                replacement_step,
+            ) -> None:
+                reopen_round_boundary(target_flow, source_step, replacement_step)
+                synchronize_shared_stage_parent(
+                    target_flow,
+                    source_step,
+                    replacement_step,
+                )
+
+            def rollback_recovery_boundaries() -> None:
+                failures: list[str] = []
+                try:
+                    rollback_shared_stage_parent()
+                except Exception as exc:  # noqa: BLE001 - preserve both compensations.
+                    failures.append(f"shared stage parent: {exc}")
+                try:
+                    rollback_round_boundary()
+                except Exception as exc:  # noqa: BLE001 - preserve both compensations.
+                    failures.append(f"DeclGraph round: {exc}")
+                if failures:
+                    raise ValueError("; ".join(failures))
+
+            has_lc_recovery_boundary = (
+                round_target is not None or shared_stage_parent_id is not None
+            )
+
             recovered = flow_service.recover_agent_step(
                 step_id=input_model.step_id,
                 expected_status=StepStatus(input_model.expected_status),
                 expected_recovery_token=input_model.expected_recovery_token,
                 action=input_model.action,
                 agent_mode=input_model.agent_mode,
-                boundary_mutator=(reopen_round_boundary if round_target is not None else None),
-                boundary_compensator=(rollback_round_boundary if round_target is not None else None),
+                boundary_mutator=(
+                    apply_recovery_boundaries if has_lc_recovery_boundary else None
+                ),
+                boundary_compensator=(
+                    rollback_recovery_boundaries if has_lc_recovery_boundary else None
+                ),
             )
             return self.runtime.foundation.ok(
                 RecoverAgentStepView(
