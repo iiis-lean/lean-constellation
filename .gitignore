@@ -33,6 +33,7 @@ dev_docs/
 
 # Data artifacts
 data/
+/.runtime/
 
 # Local config (keep only examples)
 .env
