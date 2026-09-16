@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from agent_runtime_kit.agent.diagnostics import exception_diagnostics
+
 from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
@@ -1298,6 +1300,9 @@ class ArkRuntimeSnapshotProviderAdapter:
                 self.runtime.foundation.issue(
                     "ark_runtime_snapshot_failed",
                     f"ARK runtime snapshot failed with status {result.status}.",
+                    details={"scope_errors": {key: {"exception_type": type(error).__name__,
+                             "diagnostics": exception_diagnostics(error)}
+                             for key, error in result.errors.items()}},
                 )
             )
         return self.runtime.foundation.ok(

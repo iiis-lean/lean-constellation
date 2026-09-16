@@ -821,6 +821,188 @@ class LeanToolchainClient:
         self._cache_put(key, view)
         return view
 
+    def inspect_core_declaration(
+        self,
+        repo_root: Path,
+        *,
+        module: str,
+        decl_name: str,
+        timeout_seconds: int | None = None,
+    ) -> ToolchainDeclarationView:
+        """Verify a compiler-visible declaration whose defining source is Lean core.
+
+        The compiler check is paired with compiler-derived defining-module metadata
+        and the same toolchain's installed core source file. This keeps an arbitrary repository declaration
+        from being admitted merely because ``#check`` succeeds.
+        """
+        normalized_module = module.strip()
+        normalized_name = decl_name.strip()
+        if not normalized_module or not normalized_name:
+            return ToolchainDeclarationView(
+                ok=False,
+                provider="lake_command",
+                name=normalized_name,
+                module=normalized_module or None,
+                summary="Core declaration inspection requires a module and declaration name.",
+                issue_code="core_decl_input_invalid",
+            )
+        identifier = re.compile(r"^[A-Za-z_][A-Za-z0-9_']*(?:\.[A-Za-z_][A-Za-z0-9_']*)*$")
+        if not identifier.fullmatch(normalized_module) or not identifier.fullmatch(normalized_name):
+            return ToolchainDeclarationView(
+                ok=False,
+                provider="lake_command",
+                name=normalized_name,
+                module=normalized_module,
+                summary="Core declaration inspection rejected an unsafe Lean identifier.",
+                issue_code="core_decl_input_invalid",
+            )
+        checked = self.run_snippet_check(
+            repo_root,
+            imports=[normalized_module],
+            code=f"#check {normalized_name}\n#print {normalized_name}",
+            timeout_seconds=timeout_seconds,
+        )
+        if not checked.ok:
+            return ToolchainDeclarationView(
+                ok=False,
+                provider=checked.provider,
+                name=normalized_name,
+                module=normalized_module,
+                summary=checked.summary,
+                raw_excerpt=checked.diagnostics_excerpt,
+                issue_code=checked.issue_code or "core_decl_access_check_failed",
+            )
+        signature, kind = self._parse_compiler_decl_output(
+            checked.diagnostics_excerpt,
+            normalized_name,
+        )
+        if signature is None or kind is None:
+            return ToolchainDeclarationView(
+                ok=False,
+                provider=checked.provider,
+                name=normalized_name,
+                module=normalized_module,
+                summary=f"Compiler output did not confirm exact declaration identity for {normalized_name}.",
+                raw_excerpt=checked.diagnostics_excerpt,
+                issue_code="core_decl_identity_mismatch",
+            )
+        metadata = self._compiler_core_metadata(
+            repo_root,
+            module=normalized_module,
+            decl_name=normalized_name,
+            timeout_seconds=timeout_seconds,
+        )
+        if metadata is None:
+            return ToolchainDeclarationView(
+                ok=False,
+                provider=checked.provider,
+                name=normalized_name,
+                module=normalized_module,
+                summary=f"Compiler could not prove a Lean core defining module for {normalized_name}.",
+                raw_excerpt=checked.diagnostics_excerpt,
+                issue_code="core_decl_provenance_unresolved",
+            )
+        source_module, source_path, toolchain_prefix = metadata
+        source_ref = (
+            f"Lean core defining module {source_module} ({source_path}); "
+            f"toolchain prefix {toolchain_prefix}"
+        )
+        return ToolchainDeclarationView(
+            ok=True,
+            provider=checked.provider,
+            name=normalized_name,
+            module=normalized_module,
+            kind=kind,
+            signature=signature,
+            code=f"{kind} {signature}",
+            summary=(
+                f"Compiler verified {normalized_name}; {normalized_module} is import context, "
+                f"not its defining source ({source_ref})."
+            ),
+            raw_excerpt=source_ref,
+        )
+
+    @staticmethod
+    def _parse_compiler_decl_output(
+        excerpt: str | None,
+        expected_name: str,
+    ) -> tuple[str | None, str | None]:
+        if not excerpt:
+            return None, None
+        prefix = expected_name + " "
+        signature: str | None = None
+        kind: str | None = None
+        declaration_prefix = re.compile(
+            rf"^(theorem|lemma|def|abbrev|opaque|axiom|instance|class|structure|inductive)\s+"
+            rf"{re.escape(expected_name)}(?:\s|:|$)"
+        )
+        for line in excerpt.splitlines():
+            try:
+                item = json.loads(line)
+            except (TypeError, json.JSONDecodeError):
+                continue
+            data = str(item.get("data") or "").strip()
+            if (data.startswith(prefix) or data == expected_name) and signature is None:
+                signature = data
+            declaration_match = declaration_prefix.match(data)
+            if declaration_match:
+                kind = declaration_match.group(1)
+        return signature, kind
+
+    def _compiler_core_metadata(
+        self,
+        repo_root: Path,
+        *,
+        module: str,
+        decl_name: str,
+        timeout_seconds: int | None,
+    ) -> tuple[str, str, str] | None:
+        # The extra `Lean` import is used only for environment introspection. The
+        # preceding #check was compiled with exactly the requested import context.
+        code = (
+            "import Lean\n"
+            "open Lean Elab Command\n"
+            "run_cmd do\n"
+            "  let env ← getEnv\n"
+            f"  let name : Name := ``{decl_name}\n"
+            "  let some module_idx := env.getModuleIdxFor? name | throwError \"missing declaration\"\n"
+            "  let module_name := env.header.moduleNames[module_idx.toNat]!\n"
+            "  logInfo m!\"LC_CORE_DECL|{name}|{module_name}\"\n"
+        )
+        metadata = self.run_snippet_check(
+            repo_root,
+            imports=[module],
+            code=code,
+            timeout_seconds=timeout_seconds,
+        )
+        if not metadata.ok or not metadata.diagnostics_excerpt:
+            return None
+        marker = f"LC_CORE_DECL|{decl_name}|"
+        defining_module: str | None = None
+        for line in metadata.diagnostics_excerpt.splitlines():
+            try:
+                item = json.loads(line)
+            except (TypeError, json.JSONDecodeError):
+                continue
+            data = str(item.get("data") or "").strip()
+            if data.startswith(marker):
+                defining_module = data[len(marker) :].strip()
+                break
+        if not defining_module or not (defining_module.startswith("Init.") or defining_module.startswith("Lean.")):
+            return None
+        prefix_result = self.lake.run_command(
+            Path(repo_root),
+            [self.lake.config.lake_bin, "env", self.lake.config.lean_bin, "--print-prefix"],
+            timeout=timeout_seconds,
+        )
+        if not prefix_result.ok or not prefix_result.stdout_excerpt:
+            return None
+        toolchain_prefix = prefix_result.stdout_excerpt.strip().splitlines()[0]
+        source_path = Path(toolchain_prefix) / "src" / "lean" / (defining_module.replace(".", "/") + ".lean")
+        if not source_path.is_file():
+            return None
+        return defining_module, str(source_path), toolchain_prefix
+
     def inspect_mathlib_module(self, repo_root: Path, module: str) -> ToolchainModuleView:
         normalized_module = module.strip()
         normalized_root = Path(repo_root).resolve()

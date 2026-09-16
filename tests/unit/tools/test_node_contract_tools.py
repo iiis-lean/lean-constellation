@@ -180,3 +180,29 @@ def test_dependency_and_scope_tool_descriptions_require_stable_child_boundaries(
     assert "active committed direct-child boundary" in specs[
         "add_scope_export"
     ].description
+
+
+def test_remove_scope_export_forwards_atomic_refs_and_returns_receipt(tmp_path):
+    from types import SimpleNamespace
+    from lean_constellation.domain.refs import DeclRef
+    from lean_constellation.tools.args import ScopeExportRemoveArgs
+    from lean_constellation.tools.internal.node_contract import _remove_scope_export
+    from tests.unit.services.node.test_export import _create_tree, _component_with_provider
+    from lean_constellation.services.node import NodeContractSnapshot
+    from lean_constellation.services.foundation import FoundationContext, WriteMode
+
+    _create_tree(tmp_path)
+    component = _component_with_provider(tmp_path)
+    foundation = component.runtime.foundation
+    path = foundation.node_contract_path(FoundationContext(repo_root=tmp_path), 'Main.Topic', 1)
+    contract = foundation.read_json(path, NodeContractSnapshot).value
+    first = DeclRef(node='Main.Topic.Core', name='stale_first')
+    second = DeclRef(node='Main.Topic.Core', name='stale_second')
+    contract.exports = [first, second]
+    assert foundation.write_json_atomic(path, contract, mode=WriteMode.UPDATE_EXISTING).ok
+    result = _remove_scope_export(component.runtime, SimpleNamespace(repo_root=tmp_path),
+                                  ScopeExportRemoveArgs(scope_path='Main.Topic', decl_node=first.node,
+                                                        decl_name=first.name, additional_refs=[second]))
+    assert result.ok, result.issues
+    assert result.value.additional_removed_refs == [second]
+    assert component.list_scope_exports(tmp_path, scope_path='Main.Topic').value == []

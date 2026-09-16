@@ -3,6 +3,7 @@ from pathlib import Path
 from tests.unit_services_helpers import make_runtime
 
 from lean_constellation.services.external_clients import LeanMcpToolkitClient
+from lean_constellation.services.external_clients.lean_toolchain import ToolchainDeclarationView
 from lean_constellation.services.mathlib import MathlibService
 
 
@@ -358,3 +359,187 @@ def test_record_mathlib_batch_missing_exact_module_writes_nothing(tmp_path: Path
         module="Mathlib.Data.Nat.Basic",
     ).ok
     assert not service.get_mathlib_decl_entry(tmp_path, name="Nat.add_assoc").ok
+
+
+def test_missing_search_entry_uses_exact_local_module_and_checks_before_record(tmp_path: Path) -> None:
+    calls = []
+    name = "Real.binEntropy_strictMonoOn"
+    module = "Mathlib.Analysis.SpecialFunctions.BinaryEntropy"
+
+    def dispatch(tool_name, payload):
+        calls.append(tool_name)
+        if tool_name == "lean_explore.find":
+            return {"results": []}
+        if tool_name == "mathlib_nav.file_outline":
+            assert payload["target"] == module
+            return {"declarations": [{"full_name": name, "decl_kind": "lemma", "line_start": 422,
+                                      "header_preview": "lemma binEntropy_strictMonoOn : StrictMonoOn binEntropy (Icc 0 2⁻¹) := by"}]}
+        if tool_name == "lsp.run_snippet":
+            assert f"import {module}" in payload["code"]
+            assert f"#check {name}" in payload["code"]
+            return {"diagnostics": []}
+        raise KeyError(tool_name)
+
+    service = _service(dispatch)
+    recorded = service.record_mathlib_decl_checked(tmp_path, decl_name=name, module_name=module)
+    assert recorded.ok, recorded.issues
+    assert recorded.value.module == module
+    assert recorded.value.kind == "lemma"
+    assert any(i.kind == "mathlib_decl_local_navigation" for i in recorded.issues)
+    assert "lsp.run_snippet" in calls
+    # Subsequent name-only navigation can use the recorded module, still verified locally.
+    navigation = service.inspect_mathlib_declaration(tmp_path, decl_name=name)
+    assert navigation.ok
+    assert "Not LeanExplore index metadata" in navigation.value.context
+    assert service.toolkit_ingestion.resolve_mathlib_decl_entry(tmp_path, decl_name=name, module_name=module).ok
+
+
+def test_local_curation_does_not_accept_short_name_match(tmp_path: Path) -> None:
+    def dispatch(tool_name, payload):
+        if tool_name == "lean_explore.find":
+            return {"results": []}
+        if tool_name == "mathlib_nav.file_outline":
+            return {"declarations": [{"full_name": "Other.target", "header_preview": "lemma target : True := by"}]}
+        raise AssertionError("Must not check or record a different declaration")
+
+    service = _service(dispatch)
+    result = service.record_mathlib_decl_checked(tmp_path, decl_name="Real.target", module_name="Mathlib.Test")
+    assert not result.ok
+    assert not service.get_mathlib_decl_entry(tmp_path, name="Real.target").ok
+
+
+def test_local_curation_failed_lean_check_does_not_write(tmp_path: Path) -> None:
+    def dispatch(tool_name, payload):
+        if tool_name == "lean_explore.find":
+            return {"results": []}
+        if tool_name == "mathlib_nav.file_outline":
+            return {"declarations": [{"full_name": "Real.target", "header_preview": "lemma target : True := by"}]}
+        if tool_name == "lsp.run_snippet":
+            return {"diagnostics": [{"severity": "error", "message": "unknown constant"}]}
+        raise KeyError(tool_name)
+
+    service = _service(dispatch)
+    result = service.record_mathlib_decl_checked(tmp_path, decl_name="Real.target", module_name="Mathlib.Test")
+    assert not result.ok
+    assert result.issues[0].kind == "mathlib_decl_access_check_failed"
+    assert not service.get_mathlib_decl_entry(tmp_path, name="Real.target").ok
+
+
+
+def test_local_navigation_does_not_mask_tool_failure(tmp_path: Path) -> None:
+    from lean_constellation.services.external_clients.lean_mcp_toolkit import ToolkitTimeoutError
+
+    def dispatch(tool_name, payload):
+        if tool_name == "lean_explore.find":
+            raise ToolkitTimeoutError("offline")
+        raise AssertionError("Transport failure must not trigger local fallback")
+
+    service = _service(dispatch)
+    result = service.record_mathlib_decl_checked(tmp_path, decl_name="Real.target", module_name="Mathlib.Test")
+    assert not result.ok
+    assert not service.get_mathlib_decl_entry(tmp_path, name="Real.target").ok
+
+
+def test_core_declaration_navigation_requires_compiler_identity_and_persists_provenance(
+    tmp_path: Path,
+) -> None:
+    name = "Int.toNat_of_nonneg"
+    module = "Mathlib.Data.Int.Init"
+
+    def dispatch(tool_name: str, payload: dict):
+        assert tool_name == "lsp.run_snippet"
+        assert f"#check {name}" in payload["code"]
+        return {"diagnostics": []}
+
+    service = _service(dispatch)
+    toolchain = service.runtime.external.lean_toolchain
+    toolchain.inspect_mathlib_declaration = lambda _root, _name: ToolchainDeclarationView(
+        ok=False,
+        provider="lean_mcp_toolkit",
+        name=name,
+        summary="not indexed",
+        issue_code="declaration_not_found",
+    )
+    toolchain.inspect_core_declaration = lambda _root, *, module, decl_name: ToolchainDeclarationView(
+        ok=True,
+        provider="lake_command",
+        name=decl_name,
+        module=module,
+        kind="theorem",
+        signature="Int.toNat_of_nonneg {a : Int} (h : 0 <= a) : ...",
+        code="Lean core defining module Init.Data.Int.Order (/toolchain/src/lean/Init/Data/Int/Order.lean)",
+        summary="Compiler verified exact declaration; Mathlib module is import context.",
+    )
+
+    recorded = service.record_mathlib_decl_checked(tmp_path, decl_name=name, module_name=module)
+
+    assert recorded.ok, recorded.issues
+    assert recorded.value is not None
+    assert recorded.value.module == module
+    assert recorded.value.note is not None
+    assert "Lean core" in recorded.value.note
+
+
+def test_core_navigation_does_not_accept_unverified_repository_name(tmp_path: Path) -> None:
+    name = "Foo.target"
+    module = "Mathlib.Test"
+
+    def dispatch(tool_name: str, payload: dict):
+        if tool_name == "lean_explore.find":
+            return {"results": []}
+        if tool_name == "mathlib_nav.file_outline":
+            return {"declarations": []}
+        raise AssertionError(f"unexpected toolkit call: {tool_name}")
+
+    service = _service(dispatch)
+    toolchain = service.runtime.external.lean_toolchain
+    toolchain.inspect_core_declaration = lambda *_args, **_kwargs: ToolchainDeclarationView(
+        ok=False,
+        provider="lake_command",
+        name=name,
+        module=module,
+        summary="no core provenance",
+        issue_code="declaration_not_found",
+    )
+
+    result = service.record_mathlib_decl_checked(tmp_path, decl_name=name, module_name=module)
+
+    assert not result.ok
+    assert result.issues[0].kind == "declaration_not_found"
+    assert not service.get_mathlib_decl_entry(tmp_path, name=name).ok
+
+
+def test_core_compiler_access_failure_does_not_write_index(tmp_path: Path) -> None:
+    name = "Int.toNat_of_nonneg"
+    module = "Mathlib.Data.Int.Init"
+
+    def dispatch(tool_name: str, payload: dict):
+        if tool_name == "lean_explore.find":
+            return {"results": []}
+        if tool_name == "mathlib_nav.file_outline":
+            return {"declarations": []}
+        raise AssertionError(f"unexpected toolkit call: {tool_name}")
+
+    service = _service(dispatch)
+    toolchain = service.runtime.external.lean_toolchain
+    toolchain.inspect_mathlib_declaration = lambda _root, _name: ToolchainDeclarationView(
+        ok=False,
+        provider="lean_mcp_toolkit",
+        name=name,
+        summary="not indexed",
+        issue_code="declaration_not_found",
+    )
+    toolchain.inspect_core_declaration = lambda *_args, **_kwargs: ToolchainDeclarationView(
+        ok=False,
+        provider="lake_command",
+        name=name,
+        module=module,
+        summary="requested import context cannot access declaration",
+        issue_code="core_decl_access_check_failed",
+    )
+
+    result = service.record_mathlib_decl_checked(tmp_path, decl_name=name, module_name=module)
+
+    assert not result.ok
+    assert result.issues[0].kind == "core_decl_access_check_failed"
+    assert not service.get_mathlib_decl_entry(tmp_path, name=name).ok

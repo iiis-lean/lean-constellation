@@ -953,7 +953,9 @@ class SourceCorpusComponent:
                         )
                     )
             if resolved.kind in {"pdf", "html", "tex_source_archive"} or (
-                resolved.kind == "unknown_binary" and "asset" not in roles
+                resolved.kind == "unknown_binary"
+                and "asset" not in roles
+                and not self._is_png_asset(candidate)
             ):
                 issues.append(
                     self.runtime.foundation.issue(
@@ -1524,6 +1526,19 @@ class SourceCorpusComponent:
         if not preparation.ok or preparation.value is None:
             return set()
         return {item.role for item in preparation.value.input.source_material_inputs}
+
+    @staticmethod
+    def _is_png_asset(path: Path) -> bool:
+        """Recognize PNG assets without treating arbitrary binary files as source."""
+        if path.suffix.lower() != ".png":
+            return False
+        with path.open("rb") as stream:
+            header = stream.read(24)
+        return (
+            len(header) == 24
+            and header[:16] == b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
+            and all(struct.unpack(">II", header[16:24]))
+        )
 
     @staticmethod
     def _contains_forbidden_control_chars(path: Path) -> bool:

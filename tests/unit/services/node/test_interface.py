@@ -1208,3 +1208,36 @@ def test_submit_root_interface_prepare_ready_reports_summary_gate_and_supplement
     supplement_fail = component.submit_root_interface_prepare_ready(tmp_path, summary="Ready.")
     assert not supplement_fail.ok
     assert supplement_fail.issues[0].kind == "supplement_interface_summary_missing"
+
+
+@pytest.mark.parametrize("actual", ["inductive", "structure", "class", "type"])
+def test_type_interface_binds_public_type_declarations(tmp_path: Path, actual: str) -> None:
+    _init_main(tmp_path, interfaces=[])
+    _create_content_node(tmp_path, "Main.Core")
+    component, _ = _component_with_public_decls(tmp_path, {
+        "Main.Core": [DeclPublicView(ref=DeclRef(node="Main.Core", name="Formula", revision=1), kind=actual)],
+    })
+    assert component.add_interface(tmp_path, node_path="Main.Core", name="formula_type",
+                                   kind="type", summary="Public formula representation.", actor="coordinator").ok
+    bound = component.bind_interface_to_decl(tmp_path, node_path="Main.Core",
+                                            interface_name="formula_type", decl_name="Formula")
+    assert bound.ok, bound.issues
+
+
+@pytest.mark.parametrize("required,actual,expected", [
+    ("type", "definition", False), ("type", "theorem", False), ("type", "other", False),
+    ("structure", "inductive", False), ("class", "structure", False),
+    ("structure", "type", False), ("other", "inductive", False),
+    ("definition", "abbrev", True), ("theorem", "lemma", True),
+])
+def test_type_interface_keeps_exact_kind_boundaries(required: str, actual: str, expected: bool) -> None:
+    from lean_constellation.domain.interface import decl_kind_compatible
+    assert decl_kind_compatible(required, actual) is expected
+
+
+def test_interface_tool_schema_explains_type_mapping() -> None:
+    from lean_constellation.tools.args import InterfaceAddArgs, RootInterfaceAddArgs
+    from lean_constellation.tools.submit_args import RequirementInterfaceArg
+    for model in (DeclInterface, InterfaceAddArgs, RootInterfaceAddArgs, RequirementInterfaceArg):
+        description = model.model_json_schema()["properties"]["kind"]["description"]
+        assert "inductive" in description and "other is not a wildcard" in description

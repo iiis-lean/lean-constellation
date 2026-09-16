@@ -26,7 +26,7 @@ from lean_constellation.flows.common.checkpoint_policy import repo_flow_boundary
 
 class SemanticAdvanceSafety(StrictModel):
     max_flow_advances: int = Field(default=500, ge=0)
-    max_step_starts: int = Field(default=200, ge=0)
+    max_step_starts: int = Field(default=500, ge=0)
 
     @model_validator(mode="after")
     def validate_non_empty(self) -> "SemanticAdvanceSafety":

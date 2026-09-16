@@ -156,7 +156,6 @@ class RootInterfacePreparationFlow(LeanBusinessFlow):
                     state=AgentStepState(
                         agent_role="root_interface_preparer",
                         agent_type="RootInterfacePrepareAgent",
-                        home_id="RootInterfacePrepareAgent",
                         create_agent_if_missing=True,
                         bind_created_agent_to="step",
                         variables={

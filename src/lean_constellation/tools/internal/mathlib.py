@@ -80,6 +80,7 @@ def _record_mathlib_decl(runtime, ctx, args: MathlibDeclRecordArgs):
     recorded = runtime.mathlib.record_mathlib_decl_checked(
         ctx.repo_root,
         decl_name=args.decl_name,
+        module_name=args.module_name,
         summary=args.summary,
         source=args.source,
     )
@@ -259,7 +260,8 @@ def build_tool_specs() -> list[ToolSpec]:
             name="record_mathlib_decl",
             description=(
                 "Resolve compiler/index metadata for one exact Mathlib declaration name, verify that it is accessible "
-                "from the current repo, record it, and return only the changed fields receipt."
+                "from the current repo, record it, and return only the changed fields receipt. "
+                "Supply module_name for exact local verification if the external index has no entry."
             ),
             args_model=MathlibDeclRecordArgs,
             capability=ToolCapability.WRITE,

@@ -423,3 +423,113 @@ def test_production_http_resets_coordinator_for_current_truth(tmp_path) -> None:
     assert response.status_code == 200
     assert response.json()["value"]["previous_agent_id"] == previous.agent_id
     assert response.json()["value"]["current_phase"] == "coordinator_agent"
+
+
+def _incomplete_boundary(runtime, tmp_path, monkeypatch):
+    from agent_runtime_kit.flow.models import BaseFlowError
+    from lean_constellation.flows.coordinator.steps import CoordinatorStepResult
+
+    flow_id, agent = _create_callback_boundary(runtime, tmp_path / 'MainRepo')
+    step = CoordinatorAgentStep(
+        step_id='incomplete_callback', flow_id=flow_id, scope_id='repo:MainRepo',
+        status=StepStatus.COMPLETED,
+        state=AgentStepState(agent_role='coordinator', agent_type='CoordinatorAgent'),
+        result=CoordinatorStepResult(outcome='incomplete', summary='No valid submission.'),
+    )
+    step.agent_bindings.by_role['coordinator'] = agent.agent_id
+    runtime.ark.step_service.create_step(step, enqueue=False)
+
+    def fail(flow):
+        flow.status = FlowStatus.FAILED
+        flow.error = BaseFlowError(error_type='coordinator_agent_incomplete', message='No submission')
+        flow.finished_at = '2026-09-14T04:08:17Z'
+        flow.step_ids = [step.step_id]
+    runtime.ark.flow_service.store.update_flow_record(flow_id, fail)
+    monkeypatch.setattr(runtime.ark.agent_service.home_service, 'build_execution_context', lambda *a: None)
+    return flow_id, agent, step
+
+
+def test_incomplete_coordinator_reset_preserves_history_and_starts_fresh(tmp_path, monkeypatch):
+    runtime = create_app_runtime_services(runtime_root=tmp_path / '.runtime', start_paused=True)
+    flow_id, previous, step = _incomplete_boundary(runtime, tmp_path, monkeypatch)
+    before = runtime.ark.step_service.store.get_step(step.step_id).model_dump(mode='json')
+    runtime.ark.agent_service.home_service.create_home(
+        ProviderHomeSpec(provider_type='codex', home_id='CoordinatorLunaNew'))
+    runtime.ark.agent_service.agent_types.get('CoordinatorAgent').default_home_id = 'CoordinatorLunaNew'
+    result = LeanAdminApi(runtime).reset_coordinator_for_current_truth(
+        ResetCoordinatorForCurrentTruthInput(flow_id=flow_id, expected_agent_id=previous.agent_id,
+                                            expected_incomplete_step_id=step.step_id))
+    assert result.ok, result.issues
+    new = runtime.ark.agent_service.get_agent(result.value.replacement_agent_id)
+    assert new.agent_id != previous.agent_id and new.session_locator is None
+    assert new.home_id == 'CoordinatorLunaNew' and previous.home_id == 'CoordinatorAgent'
+    flow = runtime.ark.flow_service.get_flow(flow_id)
+    assert flow.status == FlowStatus.RUNNING and flow.error is None and flow.finished_at is None
+    assert flow.state.position.phase == 'coordinator_agent'
+    assert flow.step_ids == [step.step_id]
+    assert runtime.ark.step_service.store.get_step(step.step_id).model_dump(mode='json') == before
+    assert runtime.ark.pause_controller.is_paused(None)
+    runtime.ark.pause_controller.resume(None)
+    next_id = runtime.ark.flow_service.advance_flow(flow_id)
+    assert runtime.ark.step_service.store.get_step(next_id).state.prompt_mode == 'initial'
+    assert runtime.ark.flow_service.get_flow(flow_id).agent_bindings.get('coordinator') == new.agent_id
+
+
+def test_incomplete_coordinator_reset_rejects_stale_identity_and_other_failure(tmp_path, monkeypatch):
+    runtime = create_app_runtime_services(runtime_root=tmp_path / '.runtime', start_paused=True)
+    flow_id, previous, step = _incomplete_boundary(runtime, tmp_path, monkeypatch)
+    admin = LeanAdminApi(runtime)
+    for agent_id, step_id in [('wrong', step.step_id), (previous.agent_id, 'missing')]:
+        before = _reset_boundary_identity(runtime, flow_id)
+        result = admin.reset_coordinator_for_current_truth(ResetCoordinatorForCurrentTruthInput(
+            flow_id=flow_id, expected_agent_id=agent_id, expected_incomplete_step_id=step_id))
+        assert not result.ok
+        assert _reset_boundary_identity(runtime, flow_id) == before
+    runtime.ark.flow_service.store.update_flow_record(
+        flow_id, lambda f: setattr(f.error, 'error_type', 'coordinator_stable_snapshot_failed'))
+    before = _reset_boundary_identity(runtime, flow_id)
+    result = admin.reset_coordinator_for_current_truth(ResetCoordinatorForCurrentTruthInput(
+        flow_id=flow_id, expected_agent_id=previous.agent_id, expected_incomplete_step_id=step.step_id))
+    assert not result.ok and _reset_boundary_identity(runtime, flow_id) == before
+
+
+def test_incomplete_coordinator_reset_rejects_unpaused_and_valid_result(tmp_path, monkeypatch):
+    from lean_constellation.flows.coordinator.steps import CoordinatorStepResult
+
+    runtime = create_app_runtime_services(runtime_root=tmp_path / '.runtime', start_paused=True)
+    flow_id, previous, step = _incomplete_boundary(runtime, tmp_path, monkeypatch)
+    request = ResetCoordinatorForCurrentTruthInput(flow_id=flow_id, expected_agent_id=previous.agent_id,
+                                                 expected_incomplete_step_id=step.step_id)
+    runtime.ark.pause_controller.resume(None)
+    assert not LeanAdminApi(runtime).reset_coordinator_for_current_truth(request).ok
+    runtime.ark.pause_controller.pause(None)
+    runtime.ark.step_service.store.update_step_record(step.step_id, lambda s: setattr(
+        s, 'result', CoordinatorStepResult(outcome='repo_ready', summary='valid')))
+    before = _reset_boundary_identity(runtime, flow_id)
+    assert not LeanAdminApi(runtime).reset_coordinator_for_current_truth(request).ok
+    assert _reset_boundary_identity(runtime, flow_id) == before
+
+
+def test_incomplete_coordinator_reset_rolls_back_failed_transaction(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+
+    runtime = create_app_runtime_services(runtime_root=tmp_path / '.runtime', start_paused=True)
+    flow_id, previous, step = _incomplete_boundary(runtime, tmp_path, monkeypatch)
+    store = runtime.ark.flow_service.store
+    before = runtime.ark.flow_service.get_flow(flow_id).model_dump(mode='json')
+    old_ids = {a.agent_id for a in runtime.ark.agent_service.list_agents()}
+    original = store.edit_session
+
+    @contextmanager
+    def fail_commit(*args, **kwargs):
+        with original(*args, **kwargs) as tx:
+            yield tx
+            raise RuntimeError('injected commit failure')
+
+    monkeypatch.setattr(store, 'edit_session', fail_commit)
+    result = LeanAdminApi(runtime).reset_coordinator_for_current_truth(ResetCoordinatorForCurrentTruthInput(
+        flow_id=flow_id, expected_agent_id=previous.agent_id, expected_incomplete_step_id=step.step_id))
+    assert not result.ok
+    assert runtime.ark.flow_service.get_flow(flow_id).model_dump(mode='json') == before
+    created = [a for a in runtime.ark.agent_service.list_agents() if a.agent_id not in old_ids]
+    assert len(created) == 1 and created[0].status == 'closed'

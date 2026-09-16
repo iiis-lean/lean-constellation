@@ -181,7 +181,6 @@ class ResourceCurationFlow(LeanBusinessFlow):
                     state=AgentStepState(
                         agent_role="resource_curator",
                         agent_type="ResourceCuratorAgent",
-                        home_id="ResourceCuratorAgent",
                         create_agent_if_missing=True,
                         bind_created_agent_to="step",
                         variables={

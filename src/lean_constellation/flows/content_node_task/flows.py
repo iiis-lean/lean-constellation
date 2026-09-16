@@ -541,7 +541,6 @@ def _content_plan_agent_step(
         state=AgentStepState(
             agent_role="content_plan",
             agent_type="ContentPlanAgent",
-            home_id="ContentPlanAgent",
             create_agent_if_missing=True,
             bind_created_agent_to="flow",
             variables=variables,
@@ -706,7 +705,7 @@ def _valid_content_plan_agent_binding(ctx: FlowContext, agent_id: str, *, scope_
     if agent_type != "ContentPlanAgent" and home_id != "ContentPlanAgent":
         return False
     status = str(getattr(agent, "status", "idle"))
-    if status in {"deleted", "archived", "failed"}:
+    if status != "idle":
         return False
     return True
 

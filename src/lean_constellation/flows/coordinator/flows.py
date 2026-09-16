@@ -889,7 +889,10 @@ def _mark_flow_failed_from_stable_snapshot(ctx: StableStepTerminalContext, error
     now = utc_now_iso()
 
     def patch_flow(flow) -> None:  # noqa: ANN001
-        flow.error = BaseFlowError(error_type=error_type, message=message)
+        flow.error = BaseFlowError(error_type=error_type, message=message, details={
+            "issues": [{"code": getattr(issue, "code", None), "details": getattr(issue, "details", {})}
+                       for issue in issues],
+        })
         flow.status = FlowStatus.FAILED
         flow.finished_at = now
         flow.updated_at = now
@@ -948,7 +951,6 @@ def _coordinator_agent_step(
         state=AgentStepState(
             agent_role="coordinator",
             agent_type="CoordinatorAgent",
-            home_id="CoordinatorAgent",
             create_agent_if_missing=not requirement_resume,
             bind_created_agent_to="flow",
             variables={

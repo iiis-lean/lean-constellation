@@ -93,7 +93,6 @@ class NodeDirDependencyReconFlow(LeanBusinessFlow):
                     state=AgentStepState(
                         agent_role="node_dir_dependency_recon",
                         agent_type="NodeDirDependencyReconAgent",
-                        home_id="NodeDirDependencyReconAgent",
                         create_agent_if_missing=True,
                         bind_created_agent_to="step",
                         variables={

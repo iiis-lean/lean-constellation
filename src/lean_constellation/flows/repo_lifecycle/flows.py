@@ -194,7 +194,6 @@ class RequirementGroupRepoBootstrapFlow(LeanBusinessFlow):
                     state=AgentStepState(
                         agent_role="repo_format_discovery",
                         agent_type="RepoFormatDiscoveryAgent",
-                        home_id="RepoFormatDiscoveryAgent",
                         create_agent_if_missing=True,
                         bind_created_agent_to="step",
                         variables={
@@ -577,7 +576,6 @@ class NativeRepoPreparationFlow(LeanBusinessFlow):
                     state=AgentStepState(
                         agent_role="source_corpus_builder",
                         agent_type="SourceCorpusBuilderAgent",
-                        home_id="SourceCorpusBuilderAgent",
                         create_agent_if_missing=True,
                         bind_created_agent_to="flow",
                         variables={"repo_key": input_model.repo_key},
@@ -602,7 +600,6 @@ class NativeRepoPreparationFlow(LeanBusinessFlow):
                     state=AgentStepState(
                         agent_role="source_corpus_reviewer",
                         agent_type="SourceCorpusReviewerAgent",
-                        home_id="SourceCorpusReviewerAgent",
                         create_agent_if_missing=True,
                         bind_created_agent_to="flow",
                         variables={"repo_key": input_model.repo_key},
@@ -1081,7 +1078,6 @@ class AdapterRepoPreparationFlow(LeanBusinessFlow):
                     state=AgentStepState(
                         agent_role="adapter_decl_catalog",
                         agent_type="AdapterDeclCatalogAgent",
-                        home_id="AdapterDeclCatalogAgent",
                         create_agent_if_missing=True,
                         bind_created_agent_to="step",
                         variables={"repo_key": input_model.repo_key},

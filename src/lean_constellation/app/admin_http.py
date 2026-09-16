@@ -534,6 +534,53 @@ def create_workspace_admin_http_routes(
             admin_result.value.inspect_agent_step_recovery(request.path_params["step_id"])
         )
 
+    async def repo_retry_content_snapshot(request: Request) -> JSONResponse:
+        data = await _json_or_empty(request)
+        if set(data) != {"expected_step_id"} or not isinstance(data["expected_step_id"], str) or not data["expected_step_id"]:
+            return _request_validation_response("Provide only expected_step_id.")
+        admin_result = repo_admin(request)
+        if not admin_result.ok or admin_result.value is None:
+            return _service_result_response(admin_result)
+        record = registry.discover_repo(request.path_params["repo_key"])
+        if not record.ok or record.value is None:
+            return _service_result_response(record)
+        with record.value.lock:
+            return _service_result_response(admin_result.value.retry_coordinator_content_snapshot(
+                request.path_params["flow_id"], data["expected_step_id"],
+            ))
+
+    async def repo_provider_switch(request: Request) -> JSONResponse:
+        from lean_constellation.app.provider_switch import ProviderSwitchInput, provider_switch
+
+        try:
+            input_model = ProviderSwitchInput.model_validate(await _json_or_empty(request))
+        except ValidationError as exc:
+            return _request_validation_response(str(exc))
+        admin_result = repo_admin(request)
+        if not admin_result.ok or admin_result.value is None:
+            return _service_result_response(admin_result)
+        record = registry.discover_repo(request.path_params["repo_key"])
+        if not record.ok or record.value is None:
+            return _service_result_response(record)
+        with record.value.lock:
+            from lean_constellation.app.runtime import check_repo_recovery_interlock
+
+            interlock = check_repo_recovery_interlock(admin_result.value.runtime, record.value.repo_root)
+            if not interlock.ok:
+                return _service_result_response(interlock)
+            try:
+                result = provider_switch(
+                    admin_result.value.runtime, request.path_params["repo_key"], input_model,
+                    apply=request.url.path.endswith("/apply"),
+                )
+            except Exception as exc:
+                # Provider/Home errors can contain environment values; never echo them.
+                return JSONResponse(
+                    {"error": "provider_switch_rejected", "error_type": type(exc).__name__},
+                    status_code=400,
+                )
+            return JSONResponse(result)
+
     async def repo_recover_agent_step(request: Request) -> JSONResponse:
         data = await _json_or_empty(request)
         if "step_id" in data:
@@ -573,12 +620,15 @@ def create_workspace_admin_http_routes(
         record = registry.discover_repo(request.path_params["repo_key"])
         if not record.ok or record.value is None:
             return _service_result_response(record)
-        with record.value.lock:
-            return _service_result_response(
-                admin_result.value.reconcile_agent_step_context_maintenance(
+        def reconcile():
+            with record.value.lock:
+                return admin_result.value.reconcile_agent_step_context_maintenance(
                     input_model
                 )
-            )
+
+        # Native session resume may call this server's MCP initialization endpoint.
+        # Keep the event loop available while waiting for the provider.
+        return _service_result_response(await asyncio.to_thread(reconcile))
 
     async def repo_reset_coordinator_for_current_truth(request: Request) -> JSONResponse:
         data = await _json_or_empty(request)
@@ -1177,6 +1227,8 @@ def create_workspace_admin_http_routes(
             repo_content_task_progress,
             methods=["GET"],
         ),
+        Route("/admin/repos/{repo_key:str}/flows/{flow_id:str}/coordinator/retry-content-snapshot",
+              repo_retry_content_snapshot, methods=["POST"]),
         Route("/admin/repos/{repo_key:str}/steps/{step_id:str}", repo_step_monitor, methods=["GET"]),
         Route(
             "/admin/repos/{repo_key:str}/steps/{step_id:str}/operator-instruction",
@@ -1193,6 +1245,8 @@ def create_workspace_admin_http_routes(
             repo_step_terminal_wait,
             methods=["GET"],
         ),
+        Route("/admin/repos/{repo_key:str}/provider-switch/plan", repo_provider_switch, methods=["POST"]),
+        Route("/admin/repos/{repo_key:str}/provider-switch/apply", repo_provider_switch, methods=["POST"]),
         Route(
             "/admin/repos/{repo_key:str}/steps/{step_id:str}/recover",
             repo_recover_agent_step,

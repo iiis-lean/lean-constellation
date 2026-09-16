@@ -8,7 +8,7 @@ from typing import Literal
 from pydantic import Field, ValidationInfo, field_validator, model_validator
 
 from lean_constellation.domain.common import StrictModel
-from lean_constellation.domain.interface import DeclKind
+from lean_constellation.domain.interface import INTERFACE_KIND_DESCRIPTION, DeclKind
 
 
 def _normalized_non_empty_items(values: list[str], *, field_name: str) -> list[str]:
@@ -207,7 +207,7 @@ class SubmitRepoExplorationArgs(SummarySubmitArgs):
 
 class RequirementInterfaceArg(StrictModel):
     name: str = Field(description="Stable public interface identity that the provider repository must expose.")
-    kind: DeclKind = Field(description="Required public declaration kind that the provider repository must expose.")
+    kind: DeclKind = Field(description=INTERFACE_KIND_DESCRIPTION)
     summary: str = Field(description="Concise mathematical meaning of the public interface required from the provider.")
     statement_hint: str | None = Field(default=None, description="Optional informal statement or signature guidance when no exact Lean header is required.")
     expected_statement_lean_code: str | None = Field(

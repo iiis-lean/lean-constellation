@@ -88,7 +88,6 @@ class MathlibReconFlow(LeanBusinessFlow):
                     state=AgentStepState(
                         agent_role="mathlib_recon",
                         agent_type="MathlibReconAgent",
-                        home_id="MathlibReconAgent",
                         create_agent_if_missing=True,
                         bind_created_agent_to="step",
                         variables={

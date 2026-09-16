@@ -30,6 +30,7 @@ class AgentTypeSpec(StrictModel):
     agent_type: str
     role: ActorRole
     home_type: AgentHomeType = "codex"
+    default_home_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]+$")
     lifecycle_group: AgentLifecycleGroup
     context_scope: AgentContextScope
     agent_step_type: str

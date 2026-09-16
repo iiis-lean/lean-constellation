@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from functools import partial
+from threading import Lock
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +23,16 @@ from agent_runtime_kit.agent.homes import (
 from lean_constellation.mcp.server import LeanMcpViewEndpoint, create_mcp_server
 from lean_constellation.services.foundation import ServiceResult
 from lean_constellation.services.runtime import LeanRuntimeServices
+
+
+# Keep the prior single-event-loop tool execution ordering while moving blocking
+# Lean/Toolkit calls off that loop. Do not hold this lock for MCP negotiation.
+_PROTOCOL_TOOL_LOCK = Lock()
+
+
+def _serialized_protocol_call(*args, **kwargs) -> types.CallToolResult:
+    with _PROTOCOL_TOOL_LOCK:
+        return mcp_protocol_call_tool(*args, **kwargs)
 
 
 def create_mcp_protocol_server(runtime: LeanRuntimeServices, *, view_key: str) -> ServiceResult[Server]:
@@ -42,13 +54,18 @@ def create_mcp_protocol_server(runtime: LeanRuntimeServices, *, view_key: str) -
 
     @protocol_server.call_tool(validate_input=True)
     async def call_tool(tool_name: str, arguments: dict[str, Any]) -> types.CallToolResult:
-        return mcp_protocol_call_tool(
+        # Capture request identity on the request task; the worker must not read
+        # a later request's context. Default shielding waits for tool completion
+        # on disconnect rather than abandoning a possible mutation mid-flight.
+        call = partial(
+            _serialized_protocol_call,
             endpoint,
             tool_name,
             arguments,
             headers=_current_request_headers(protocol_server),
             env=dict(os.environ),
         )
+        return await anyio.to_thread.run_sync(call, abandon_on_cancel=False)
 
     return runtime.foundation.ok(protocol_server)
 

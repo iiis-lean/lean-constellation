@@ -177,7 +177,6 @@ class _RepoExplorationFlow(LeanBusinessFlow):
                 state=AgentStepState(
                     agent_role=self.agent_role,
                     agent_type=self.agent_type,
-                    home_id=self.agent_type,
                     create_agent_if_missing=False,
                     variables={
                         "repo_key": input_model.repo_key,

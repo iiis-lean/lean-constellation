@@ -200,7 +200,6 @@ class SourceIndexBuildFlow(LeanBusinessFlow):
                     state=AgentStepState(
                         agent_role="source_index_builder",
                         agent_type="SourceIndexBuilderAgent",
-                        home_id="SourceIndexBuilderAgent",
                         create_agent_if_missing=True,
                         bind_created_agent_to="flow",
                         variables=_agent_context(input_model, state),
@@ -221,7 +220,6 @@ class SourceIndexBuildFlow(LeanBusinessFlow):
                     state=AgentStepState(
                         agent_role="source_index_reviewer",
                         agent_type="SourceIndexReviewerAgent",
-                        home_id="SourceIndexReviewerAgent",
                         create_agent_if_missing=True,
                         bind_created_agent_to="flow",
                         variables=_agent_context(input_model, state),

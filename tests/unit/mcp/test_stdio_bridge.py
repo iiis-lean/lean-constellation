@@ -70,7 +70,7 @@ def test_stdio_bridge_exposes_self_contained_repo_discovery_schemas() -> None:
 
     declaration = mathlib.inputSchema["properties"]["declarations"]["items"]
     assert declaration["type"] == "object"
-    assert set(declaration["properties"]) == {"decl_name", "summary", "source"}
+    assert set(declaration["properties"]) == {"decl_name", "module_name", "summary", "source"}
 
 
 def test_stdio_bridge_reports_nested_argument_errors_with_field_paths(tmp_path) -> None:

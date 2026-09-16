@@ -291,6 +291,27 @@ def test_admin_sanitizes_unconfirmed_context_reconciliation_error(
     assert "raw-provider-secret" not in result.issues[0].message
 
 
+def test_admin_context_reconciliation_reports_exception_type_only(tmp_path, monkeypatch):
+    runtime = create_app_runtime_services(runtime_root=tmp_path / ".runtime", start_paused=True)
+    flow_id, agent = _content_plan_boundary(runtime, tmp_path / "MainRepo")
+    step_id = _suspended_content_plan_step(runtime, flow_id, agent.agent_id)
+
+    def failed(**_kwargs):
+        raise RuntimeError("raw-provider-secret")
+
+    monkeypatch.setattr(runtime.ark.flow_service, "reconcile_agent_step_context_maintenance", failed)
+    result = LeanAdminApi(runtime).reconcile_agent_step_context_maintenance(
+        ReconcileAgentStepContextMaintenanceInput(
+            step_id=step_id, expected_context_maintenance_token="a" * 64,
+        )
+    )
+    assert not result.ok
+    assert result.issues[0].details["exception_type"] == "RuntimeError"
+    import json
+    assert json.loads(result.issues[0].details["diagnostics_json"])["exception_type"] == "RuntimeError"
+    assert "raw-provider-secret" not in str(result)
+
+
 def test_admin_surfaces_suspended_provider_boundary_and_fresh_resume(tmp_path) -> None:
     runtime = create_app_runtime_services(runtime_root=tmp_path / ".runtime", start_paused=True)
     flow_id, agent = _content_plan_boundary(runtime, tmp_path / "MainRepo")
@@ -677,6 +698,15 @@ def test_production_http_reconciles_context_maintenance_with_route_owned_step_id
         step_id = _suspended_content_plan_step(runtime, flow_id, agent.agent_id)
 
         def reconcile(*, step_id: str, expected_reconciliation_token: str):
+            import asyncio
+
+            # Provider session resume must not block the HTTP/MCP event loop.
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError("reconciliation is blocking the event loop")
             assert expected_reconciliation_token == "a" * 64
             return SimpleNamespace(
                 agent_id=agent.agent_id,

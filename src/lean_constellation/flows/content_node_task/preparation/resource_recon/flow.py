@@ -241,7 +241,6 @@ def _resource_recon_agent_step(
         state=AgentStepState(
             agent_role="resource_recon",
             agent_type="ResourceReconAgent",
-            home_id="ResourceReconAgent",
             create_agent_if_missing=True,
             bind_created_agent_to="flow",
             variables={

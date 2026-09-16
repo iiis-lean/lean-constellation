@@ -418,7 +418,7 @@ class EnsureDeclStageAgentsStep(BaseStep):
             if flow.agent_bindings.get(role):
                 continue
             agent_type = self.STAGE_AGENT_TYPES[role]
-            agent = agent_service.create_agent(ctx.scope_id, agent_type, home_id=agent_type)
+            agent = agent_service.create_agent(ctx.scope_id, agent_type)
             agent_id = str(agent.agent_id)
             bindings[role] = agent_id
             initialized.append(role)

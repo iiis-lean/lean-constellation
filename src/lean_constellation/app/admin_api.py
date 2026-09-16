@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+
 import base64
 from collections.abc import Callable
 from contextlib import ExitStack
@@ -11,6 +12,7 @@ from pathlib import Path
 import time
 from typing import Any, Literal
 
+from agent_runtime_kit.agent.diagnostics import exception_diagnostics
 from agent_runtime_kit.agent.models import AgentContextMaintenanceBlocked, to_jsonable
 from agent_runtime_kit.flow import (
     AgentStepRecoveryView,
@@ -707,6 +709,7 @@ class AgentStepOperatorInstructionView(StrictModel):
 class ResetCoordinatorForCurrentTruthInput(StrictModel):
     flow_id: str
     expected_agent_id: str
+    expected_incomplete_step_id: str | None = None
 
 
 class ResetCoordinatorForCurrentTruthView(StrictModel):
@@ -3997,12 +4000,13 @@ class LeanAdminApi:
                     object_ref=input_model.step_id,
                 )
             )
-        except Exception:  # noqa: BLE001 - admin recovery boundary.
+        except Exception as exc:  # noqa: BLE001 - admin recovery boundary.
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
                     "reconcile_agent_step_context_maintenance_failed",
                     "Failed to reconcile AgentStep context maintenance.",
                     object_ref=input_model.step_id,
+                    details={"exception_type": type(exc).__name__, "diagnostics_json": json.dumps(exception_diagnostics(exc))},
                 )
             )
 
@@ -4264,6 +4268,17 @@ class LeanAdminApi:
             )
 
     @_reject_during_paired_restore
+    def retry_coordinator_content_snapshot(self, flow_id: str, step_id: str):
+        from .snapshot_recovery import retry_content_snapshot
+
+        try:
+            return self.runtime.foundation.ok(retry_content_snapshot(self.runtime, flow_id, step_id))
+        except Exception as exc:
+            return self.runtime.foundation.fail(self.runtime.foundation.issue(
+                "stable_snapshot_retry_failed", str(exc), object_ref=flow_id,
+            ))
+
+    @_reject_during_paired_restore
     def reset_coordinator_for_current_truth(
         self,
         input_model: ResetCoordinatorForCurrentTruthInput,
@@ -4290,6 +4305,20 @@ class LeanAdminApi:
             )
         try:
             flow = flow_service.get_flow(input_model.flow_id)
+            if input_model.expected_incomplete_step_id is not None:
+                from .coordinator_recovery import reset_incomplete_coordinator
+
+                replacement_id = reset_incomplete_coordinator(
+                    self.runtime, input_model.flow_id,
+                    input_model.expected_incomplete_step_id, input_model.expected_agent_id,
+                )
+                return self.runtime.foundation.ok(ResetCoordinatorForCurrentTruthView(
+                    flow_id=flow.flow_id, scope_id=flow.scope_id,
+                    previous_agent_id=input_model.expected_agent_id,
+                    replacement_agent_id=replacement_id,
+                    previous_phase="coordinator_callback", current_phase="coordinator_agent",
+                    summary="Reopened incomplete Coordinator with a fresh current-truth Agent; runtime remains paused.",
+                ))
             if flow.flow_type != "native_repo_coordinator":
                 raise ValueError("current-truth reset requires a native_repo_coordinator Flow")
             if flow.status is not FlowStatus.RUNNING:

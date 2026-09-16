@@ -1550,3 +1550,30 @@ def test_scope_export_operation_rejects_wrong_repo_context_without_writes(
     assert not rejected.ok
     assert rejected.issues[0].kind == "scope_export_operation_context_mismatch"
     assert after == before
+
+
+def test_remove_multiple_stale_exports_atomically_without_weakening_projection(tmp_path: Path):
+    _create_tree(tmp_path)
+    component = _component_with_provider(tmp_path)
+    foundation = make_runtime().foundation
+    path = foundation.node_contract_path(FoundationContext(repo_root=tmp_path), 'Main.Topic', 1)
+    loaded = foundation.read_json(path, NodeContractSnapshot)
+    assert loaded.ok and loaded.value is not None
+    first = DeclRef(node='Main.Topic.Core', name='stale_first', revision=1)
+    second = DeclRef(node='Main.Topic.Core', name='stale_second', revision=1)
+    loaded.value.exports = [first, second]
+    assert foundation.write_json_atomic(path, loaded.value, mode=WriteMode.UPDATE_EXISTING).ok
+    original = path.read_bytes()
+    # Existing single deletion fails because the other invalid reference remains.
+    single = component.remove_scope_export(tmp_path, scope_path='Main.Topic', ref=first)
+    assert not single.ok
+    assert any(i.kind == 'scope_export_not_public' for i in single.issues)
+    assert path.read_bytes() == original
+    missing = component.remove_scope_export(tmp_path, scope_path='Main.Topic', ref=first,
+                                           additional_refs=[DeclRef(name='missing')])
+    assert not missing.ok and path.read_bytes() == original
+    removed = component.remove_scope_export(tmp_path, scope_path='Main.Topic', ref=first,
+                                           additional_refs=[second])
+    assert removed.ok, removed.issues
+    assert removed.value.exports == []
+    assert foundation.read_json(path, NodeContractSnapshot).value.exports == []

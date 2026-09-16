@@ -276,3 +276,47 @@ def test_local_dir_import_preserves_manifest_recovery_when_manifest_restore_fail
     )
     assert len(transactions) == 1
     assert (transactions[0] / "previous_manifest.json").read_bytes() == before_manifest
+
+
+def test_local_import_preserves_png_asset_and_frozen_manifest(tmp_path: Path) -> None:
+    import base64
+    import hashlib
+
+    runtime = make_runtime()
+    repo = tmp_path / "repo"
+    source = tmp_path / "source"
+    _write_corpus(source, theorem="The diagram accompanies the proof.")
+    image = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aWQAAAABJRU5ErkJggg=="
+    )
+    (source / "figures").mkdir()
+    (source / "figures/diagram.png").write_bytes(image)
+    (source / "paper.tex").write_text(r"\includegraphics{figures/diagram.png}")
+    result = runtime.material.import_local_source_corpus(
+        repo, source_dir=source, entry_path="README.md",
+        overview="Paper with its PNG figure.", preparation_summary="Preserve all assets.",
+    )
+    assert result.ok, result.issues
+    assert (repo / ".lean_constellation/source/figures/diagram.png").read_bytes() == image
+    manifest = runtime.material.source_corpus.get_source_corpus_manifest(repo)
+    assert manifest.ok and manifest.value is not None
+    entry = next(item for item in manifest.value.files if item.path == "figures/diagram.png")
+    assert not entry.readable_text and entry.sha256 == hashlib.sha256(image).hexdigest()
+    frozen = runtime.material.source_corpus.validate_frozen_source_corpus_manifest(repo)
+    assert frozen.ok, frozen.issues
+
+
+def test_local_import_still_rejects_disguised_binary_and_raw_pdf(tmp_path: Path) -> None:
+    runtime = make_runtime()
+    for name, content in [("fake.png", b"\xff\x00arbitrary binary"), ("paper.pdf", b"%PDF-1.4\nfixture")]:
+        source = tmp_path / name.replace(".", "_")
+        repo = tmp_path / (name + "_repo")
+        _write_corpus(source, theorem="Theorem.")
+        (source / name).write_bytes(content)
+        result = runtime.material.import_local_source_corpus(
+            repo, source_dir=source, entry_path="README.md",
+            overview="Invalid material.", preparation_summary="Must reject.",
+        )
+        assert not result.ok
+        assert any(issue.kind == "source_corpus_raw_container_forbidden" for issue in result.issues)
+        assert not (repo / ".lean_constellation/source").exists()

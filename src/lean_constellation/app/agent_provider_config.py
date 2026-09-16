@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from agent_runtime_kit.agent.provider_contracts import ModelBackendIdentity, ProviderRegistry
+from agent_runtime_kit.agent.store import AgentStoreService
 from agent_runtime_kit.agent.providers import (
     ClaudeCodeProvider,
     OpenAIAgentsHomeOptions,
@@ -110,16 +111,20 @@ def apply_agent_home_overrides(
     """Apply only the Provider binding; resources remain owned by AgentTypeSpec."""
 
     configured = overrides or {}
-    return [
-        spec.model_copy(
-            update={"home_type": configured[spec.agent_type].provider_type}
-        )
-        if spec.agent_type in configured and configured[spec.agent_type].provider_type is not None
-        else spec.model_copy(update={"home_type": default_provider_type})
-        if default_provider_type is not None
-        else spec
-        for spec in specs
-    ]
+    result = []
+    for spec in specs:
+        override = configured.get(spec.agent_type)
+        updates = {}
+        provider = (override.provider_type if override else None) or default_provider_type
+        if provider is not None:
+            updates["home_type"] = provider
+        if override is not None and override.home_id is not None:
+            updates["default_home_id"] = override.home_id
+        result.append(spec.model_copy(update=updates) if updates else spec)
+    identities = [(spec.home_type, spec.default_home_id or spec.agent_type) for spec in result]
+    if len(set(identities)) != len(identities):
+        raise ValueError("AgentType Homes must have distinct provider/home identities")
+    return result
 
 
 def build_builtin_provider_registry(
@@ -131,6 +136,10 @@ def build_builtin_provider_registry(
 
     provider_types = {spec.home_type for spec in specs}
     root = Path(runtime_root).expanduser()
+    # Historical sessions still need their provider's artifact/query adapters after
+    # destination role defaults change. Registration does not start provider turns.
+    if (root / "scopes").exists():
+        provider_types.update(agent.provider_type for agent in AgentStoreService(root).list_agents())
     registry = ProviderRegistry()
     if "codex" in provider_types:
         provider = CodexProvider(runtime_root=root)

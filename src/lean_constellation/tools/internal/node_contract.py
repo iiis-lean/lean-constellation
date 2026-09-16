@@ -110,6 +110,7 @@ class ScopeExportMutationReceipt(StrictModel):
     operation: str
     changed: bool
     export: ScopeExportDeclView
+    additional_removed_refs: list[DeclRef] = Field(default_factory=list)
     bound_interface_name: str | None = None
     summary: str
 
@@ -686,7 +687,9 @@ def _remove_scope_export(runtime, ctx, args: ScopeExportRemoveArgs):
             )
         )
     removed = _scope_export_decl_view(removed)
-    updated = runtime.node.export.remove_scope_export(ctx.repo_root, scope_path=args.scope_path, ref=ref)
+    updated = runtime.node.export.remove_scope_export(
+        ctx.repo_root, scope_path=args.scope_path, ref=ref, additional_refs=args.additional_refs,
+    )
     if not updated.ok or updated.value is None:
         return runtime.foundation.fail(updated.issues)
     return runtime.foundation.ok(
@@ -695,6 +698,7 @@ def _remove_scope_export(runtime, ctx, args: ScopeExportRemoveArgs):
             operation="remove",
             changed=updated.value.changed,
             export=removed,
+            additional_removed_refs=args.additional_refs,
             summary=updated.value.summary,
         ),
         warnings=[*before.issues, *updated.issues],
@@ -1334,7 +1338,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="remove_scope_export",
-            description="Remove one Scope export by its exact declaration reference and return only the mutation receipt.",
+            description="Remove exact Scope exports atomically. Use additional_refs to remove multiple stale exports together without invalid intermediate projections. Bound interfaces and release compatibility remain guarded.",
             args_model=ScopeExportRemoveArgs,
             capability=ToolCapability.WRITE,
             result_view="scope_export_mutation_receipt",

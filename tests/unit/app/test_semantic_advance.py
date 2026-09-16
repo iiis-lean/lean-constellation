@@ -48,6 +48,20 @@ def _start_coordinator(admin: LeanAdminApi, repo_root: Path) -> str:
     return result.value.flow_id
 
 
+@pytest.mark.parametrize("target", [
+    {"granularity": "step", "action": "logic", "scope_id": "repo:Repo"},
+    {"granularity": "content_batch", "repo_key": "Repo", "coordinator_flow_id": "coordinator",
+     "expected_source_submission_id": "submission", "expected_dispatch_step_id": "dispatch"},
+])
+def test_semantic_safety_defaults_and_explicit_override(target) -> None:
+    default = RuntimeSemanticAdvanceInput.model_validate(target)
+    assert default.safety.model_dump() == {"max_flow_advances": 500, "max_step_starts": 500}
+    override = RuntimeSemanticAdvanceInput.model_validate({
+        **target, "safety": {"max_flow_advances": 50, "max_step_starts": 50},
+    })
+    assert override.safety.model_dump() == {"max_flow_advances": 50, "max_step_starts": 50}
+
+
 def test_semantic_advance_input_has_strict_discriminated_shapes() -> None:
     assert RuntimeSemanticAdvanceInput(granularity="step", action="logic", scope_id="repo:Repo").action == "logic"
     assert RuntimeSemanticAdvanceInput(granularity="step", action="agent", step_id="s_1").action == "agent"

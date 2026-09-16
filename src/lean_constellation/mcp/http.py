@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
+from functools import partial
 from typing import TYPE_CHECKING, Any
 from urllib.parse import unquote
 
@@ -87,6 +88,7 @@ class RepoMcpHttpRouter:
         self.registry = registry
         self.view_keys = sorted({str(view_key) for view_key in view_keys}) if view_keys is not None else None
         self._managers: dict[tuple[str, str], StreamableHTTPSessionManager] = {}
+        self._manager_locks: dict[tuple[str, str], anyio.Lock] = {}
         self._manager_runners: dict[tuple[str, str], _RunningManager] = {}
         self._task_group_cm: Any | None = None
         self._task_group: anyio.abc.TaskGroup | None = None
@@ -118,7 +120,7 @@ class RepoMcpHttpRouter:
         manager_scope["path"] = "/"
         manager_scope["raw_path"] = b"/"
         headers = list(manager_scope.get("headers") or [])
-        record = self.registry.discover_repo(repo_key)
+        record = await anyio.to_thread.run_sync(self.registry.discover_repo, repo_key)
         if record.ok and record.value is not None:
             headers.append((b"x-lean-constellation-expected-repo-key", record.value.repo_key.encode()))
             headers.append((b"x-lean-constellation-expected-repo-root", str(record.value.repo_root).encode()))
@@ -145,7 +147,9 @@ class RepoMcpHttpRouter:
             await self._stop_manager(key)
 
     async def _send_view_index(self, repo_key: str, scope, receive, send) -> None:  # noqa: ANN001
-        loaded = self.registry.get_or_load(repo_key, refresh_homes=False)
+        loaded = await anyio.to_thread.run_sync(
+            partial(self.registry.get_or_load, repo_key, refresh_homes=False)
+        )
         if not loaded.ok or loaded.value is None:
             response = JSONResponse(loaded.model_dump(mode="json"), status_code=400)
             await response(scope, receive, send)
@@ -175,7 +179,18 @@ class RepoMcpHttpRouter:
         existing = self._managers.get(cache_key)
         if existing is not None:
             return self.registry.result.ok(existing)
-        loaded = self.registry.get_or_load(repo_key, refresh_homes=False)
+        lock = self._manager_locks.setdefault(cache_key, anyio.Lock())
+        async with lock:
+            existing = self._managers.get(cache_key)
+            if existing is not None:
+                return self.registry.result.ok(existing)
+            return await self._create_manager(repo_key, view_key)
+
+    async def _create_manager(self, repo_key: str, view_key: str) -> ServiceResult[StreamableHTTPSessionManager]:
+        cache_key = (repo_key, view_key)
+        loaded = await anyio.to_thread.run_sync(
+            partial(self.registry.get_or_load, repo_key, refresh_homes=False)
+        )
         if not loaded.ok or loaded.value is None:
             return self.registry.result.fail(loaded.issues)
         protocol = create_mcp_protocol_server(loaded.value, view_key=view_key)

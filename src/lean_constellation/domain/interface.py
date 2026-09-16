@@ -10,6 +10,7 @@ from lean_constellation.domain.refs import DeclRef, MaterialRef
 
 
 class DeclKind(StrEnum):
+    TYPE = "type"
     DEFINITION = "definition"
     THEOREM = "theorem"
     LEMMA = "lemma"
@@ -21,6 +22,7 @@ class DeclKind(StrEnum):
 
 _DECL_KIND_ALIASES: dict[str, DeclKind] = {
     "abbrev": DeclKind.DEFINITION,
+    "inductive": DeclKind.TYPE,
 }
 
 
@@ -49,6 +51,8 @@ def decl_kind_compatible(
     actual_kind = normalize_decl_kind(actual)
     if required_kind is None or actual_kind is None:
         return False
+    if required_kind is DeclKind.TYPE:
+        return actual_kind in {DeclKind.TYPE, DeclKind.STRUCTURE, DeclKind.CLASS}
     if required_kind == actual_kind:
         return True
     return {required_kind, actual_kind} == {
@@ -66,9 +70,18 @@ def exact_interface_lean_decl_name(interface_name: str) -> str | None:
     return normalized if "." in normalized else None
 
 
+INTERFACE_KIND_DESCRIPTION = (
+    "Required interface category: type accepts structure, class or inductive declarations "
+    "(including inductively defined predicates); structure and class require their exact kind. "
+    "definition accepts def/abbrev; theorem and lemma are mutually compatible. "
+    "A def returning Type is still a definition. other is not a wildcard. "
+    "Kind compatibility does not establish equality of definitions or constructors."
+)
+
+
 class DeclInterface(StrictModel):
     name: str
-    kind: DeclKind
+    kind: DeclKind = Field(description=INTERFACE_KIND_DESCRIPTION)
     summary: str
     source_refs: list[MaterialRef] = Field(default_factory=list)
     expected_statement_lean_code: str | None = None

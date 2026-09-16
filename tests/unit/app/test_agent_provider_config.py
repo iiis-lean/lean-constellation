@@ -513,3 +513,17 @@ def test_all_builtin_provider_bundles_compose_with_codex(tmp_path: Path) -> None
         "openai_agents",
         "opencode",
     }
+
+
+def test_destination_registry_keeps_retired_provider_artifact_adapter(tmp_path):
+    from agent_runtime_kit.agent.store import AgentStoreService
+
+    store = AgentStoreService(tmp_path)
+    source = store.create_agent_record(scope_id="repo:Repo", agent_type="ContentPlanAgent", provider_type="grok")
+    store.patch_agent(source.agent_id, status="closed")
+    specs = build_agent_type_specs()
+    registry = build_builtin_provider_registry(tmp_path, specs, None)
+    assert {bundle.provider_type for bundle in registry.list()} == {"codex", "grok"}
+    assert registry.get("grok").artifacts is not None
+    assert all(spec.home_type == "codex" for spec in specs)
+    assert store.get_agent(source.agent_id).status == "closed"

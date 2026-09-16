@@ -318,13 +318,87 @@ class ToolkitIngestionComponent:
             warnings=warnings,
         )
 
-    def inspect_mathlib_declaration(self, repo_root: Path, *, decl_name: str) -> ServiceResult[MathlibNavigationView]:
+    def inspect_mathlib_declaration(
+        self, repo_root: Path, *, decl_name: str, module_hint: str | None = None,
+    ) -> ServiceResult[MathlibNavigationView]:
         normalized_name = decl_name.strip()
         if not normalized_name:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue("mathlib_decl_name_empty", "Mathlib declaration name must be non-empty.", field="decl_name")
             )
         result = self.runtime.external.lean_toolchain.inspect_mathlib_declaration(repo_root, normalized_name)
+        if not result.ok and result.issue_code == "declaration_not_found":
+            existing = self.mathlib_index.get_mathlib_decl_entry(repo_root, name=normalized_name)
+            local_module = module_hint or (existing.value.module if existing.ok and existing.value else None)
+            if local_module and local_module.startswith("Mathlib."):
+                outline = self.runtime.external.lean_toolchain.inspect_mathlib_module(repo_root, local_module)
+                matches = [
+                    item for item in outline.declarations
+                    if item.get("full_name") == normalized_name
+                ] if outline.ok else []
+                if len(matches) == 1 and matches[0].get("header_preview"):
+                    header = str(matches[0]["header_preview"])
+                    kind, signature = self._parse_decl_header(header)
+                    return self.runtime.foundation.ok(
+                        MathlibNavigationView(
+                            decl_name=normalized_name,
+                            module=local_module,
+                            kind=kind,
+                            signature=signature,
+                            code_excerpt=header,
+                            context=f"Local Mathlib module outline in {Path(repo_root).resolve()}: {local_module}; line {matches[0].get('line_start')}. Not LeanExplore index metadata.",
+                            summary=f"Inspected local Mathlib declaration {normalized_name}.",
+                        ),
+                        warnings=[self.runtime.foundation.issue(
+                            "mathlib_decl_local_navigation",
+                            "LeanExplore has no exact entry; used the current repo's exact local module outline. Checked curation still requires the Lean access gate.",
+                            severity=IssueSeverity.WARNING,
+                            object_ref=normalized_name,
+                        )],
+                    )
+                inspect_core = getattr(self.runtime.external.lean_toolchain, "inspect_core_declaration", None)
+                if callable(inspect_core):
+                    core_result = inspect_core(
+                        repo_root,
+                        module=local_module,
+                        decl_name=normalized_name,
+                    )
+                    if core_result.ok:
+                        if core_result.name != normalized_name or core_result.module != local_module:
+                            return self.runtime.foundation.fail(self.runtime.foundation.issue(
+                                "mathlib_decl_identity_mismatch",
+                                "Compiler declaration identity or import context does not match the request.",
+                                object_ref=normalized_name,
+                            ))
+                        return self.runtime.foundation.ok(
+                            MathlibNavigationView(
+                                decl_name=normalized_name,
+                                module=local_module,
+                                kind=core_result.kind,
+                                signature=core_result.signature,
+                                code_excerpt=core_result.code,
+                                context=" ".join(
+                                    value
+                                    for value in (core_result.summary, core_result.code)
+                                    if value
+                                ),
+                                summary=f"Compiler-verified core declaration {normalized_name}.",
+                            ),
+                            warnings=[self.runtime.foundation.issue(
+                                "mathlib_decl_core_navigation",
+                                "Compiler verified the exact declaration; requested Mathlib module is import context and the defining source is Lean core.",
+                                severity=IssueSeverity.WARNING,
+                                object_ref=normalized_name,
+                            )],
+                        )
+                    if core_result.issue_code not in {None, "declaration_not_found"}:
+                        return self.runtime.foundation.fail(
+                            self.runtime.foundation.issue(
+                                core_result.issue_code,
+                                core_result.summary,
+                                object_ref=normalized_name,
+                            )
+                        )
         if not result.ok:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
@@ -621,7 +695,7 @@ class ToolkitIngestionComponent:
             kind=kind,
             signature=signature,
             summary=summary,
-            source=source,
+            source=self._merge_provenance_note(source, prepared.value.get("provenance_note")),
             snippet=snippet,
         )
         if not recorded.ok or recorded.value is None:
@@ -647,7 +721,7 @@ class ToolkitIngestionComponent:
                     field="decl_name",
                 )
             )
-        navigation = self.inspect_mathlib_declaration(repo_root, decl_name=normalized_decl)
+        navigation = self.inspect_mathlib_declaration(repo_root, decl_name=normalized_decl, module_hint=requested_module)
         if not navigation.ok or navigation.value is None:
             return self.runtime.foundation.fail(navigation.issues)
         canonical_module = navigation.value.module
@@ -775,6 +849,9 @@ class ToolkitIngestionComponent:
             prepared["kind"] = resolved.value["kind"]
             prepared["signature"] = resolved.value["signature"]
             prepared["snippet"] = resolved.value["snippet"]
+            prepared["source"] = self._merge_provenance_note(
+                prepared.get("source"), resolved.value.get("provenance_note")
+            )
             prepared_decls.append(prepared)
 
         imports = [item["module_name"] for item in prepared_modules]
@@ -887,7 +964,7 @@ class ToolkitIngestionComponent:
     ) -> ServiceResult[dict[str, Any]]:
         existing = self.mathlib_index.get_mathlib_decl_entry(repo_root, name=decl_name)
         existing_module = existing.value.module if existing.ok and existing.value is not None else None
-        navigation = self.inspect_mathlib_declaration(repo_root, decl_name=decl_name)
+        navigation = self.inspect_mathlib_declaration(repo_root, decl_name=decl_name, module_hint=module)
         if not navigation.ok or navigation.value is None:
             return self.runtime.foundation.fail(navigation.issues)
         canonical_module = navigation.value.module
@@ -911,7 +988,7 @@ class ToolkitIngestionComponent:
                     expected=canonical_module,
                 )
             )
-        warnings: list[ServiceIssue] = []
+        warnings: list[ServiceIssue] = list(navigation.issues)
         if existing_module is not None and existing_module != canonical_module:
             warnings.append(
                 self.runtime.foundation.issue(
@@ -930,6 +1007,11 @@ class ToolkitIngestionComponent:
                 "kind": navigation.value.kind or kind,
                 "signature": navigation.value.signature or signature,
                 "snippet": navigation.value.code_excerpt or snippet,
+                "provenance_note": (
+                    navigation.value.context
+                    if any(issue.kind == "mathlib_decl_core_navigation" for issue in navigation.issues)
+                    else None
+                ),
             },
             warnings=warnings,
         )
@@ -959,6 +1041,11 @@ class ToolkitIngestionComponent:
         if not recorded.ok or recorded.value is None:
             return self.runtime.foundation.fail(recorded.issues)
         return self.runtime.foundation.ok(recorded.value, warnings=recorded.issues)
+
+    @staticmethod
+    def _merge_provenance_note(source: str | None, provenance: str | None) -> str | None:
+        values = [value.strip() for value in (source, provenance) if value and value.strip()]
+        return " ".join(dict.fromkeys(values)) or None
 
     def ingest_mathlib_candidate(
         self,

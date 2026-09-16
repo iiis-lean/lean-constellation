@@ -155,6 +155,7 @@ class AgentTraceReportAppConfig(StrictModel):
 
 
 class AgentHomeOverrideAppConfig(StrictModel):
+    home_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]+$")
     provider_type: AgentHomeType | None = None
     base_config_path: Path | None = None
     config_overrides: dict[str, Any] = Field(default_factory=dict)

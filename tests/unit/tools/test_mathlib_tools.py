@@ -66,3 +66,54 @@ def test_mathlib_mutation_result_views_match_compact_receipts() -> None:
         "remove_node_mathlib_decl_hint",
     }:
         assert specs[name].result_view == "node_mathlib_hint_mutation"
+
+
+def test_agent_curation_tools_forward_module_hint_through_real_service(tmp_path):
+    from lean_constellation.services import create_test_runtime_services
+    from lean_constellation.services.external_clients import LeanMcpToolkitClient
+    from tests.unit.tools.test_application_tool_invocation_smoke import _raw, _unwrap_tool_result
+
+    module = "Mathlib.Analysis.SpecialFunctions.BinaryEntropy"
+    name = "Real.binEntropy_strictMonoOn"
+    calls = []
+
+    def dispatch(tool_name, payload):
+        calls.append(tool_name)
+        if tool_name == "lean_explore.find":
+            return {"results": []}
+        if tool_name == "mathlib_nav.file_outline":
+            assert payload["target"] == module
+            return {"declarations": [{"full_name": name, "header_preview": "lemma binEntropy_strictMonoOn : StrictMonoOn binEntropy (Icc 0 2⁻¹) := by"}]}
+        if tool_name == "lsp.run_snippet":
+            assert f"import {module}" in payload["code"]
+            assert f"#check {name}" in payload["code"]
+            return {"diagnostics": []}
+        raise KeyError(tool_name)
+
+    for tool_name in ("record_mathlib_decl", "record_mathlib_batch"):
+        root = tmp_path / tool_name
+        root.mkdir()
+        runtime = create_test_runtime_services(
+            register_application_tools=True,
+            external_overrides={"lean_mcp_toolkit": LeanMcpToolkitClient(dispatcher=dispatch)},
+        )
+        args = {"decl_name": name, "module_name": module}
+        if tool_name == "record_mathlib_batch":
+            args = {"declarations": [args]}
+        _unwrap_tool_result(runtime.tool_facade.invoke_agent_tool(
+            _raw(root, view="mathlib_recon", agent_type="mathlib_recon", node_path="Main.Topic"),
+            tool_name=tool_name, flat_args=args,
+        ))
+        entry = runtime.mathlib.get_mathlib_decl_entry(root, name=name)
+        assert entry.ok and entry.value.module == module
+    assert calls.count("lsp.run_snippet") == 2
+
+
+def test_module_hint_is_optional_in_single_and_batch_agent_schemas():
+    from lean_constellation.tools.args import MathlibBatchRecordArgs, MathlibDeclRecordArgs
+    schema = MathlibDeclRecordArgs.model_json_schema()
+    assert "module_name" in schema["properties"]
+    assert "module_name" not in schema.get("required", [])
+    batch = MathlibBatchRecordArgs.model_json_schema()
+    assert "module_name" in batch["$defs"]["MathlibDeclRecordArgs"]["properties"]
+    assert MathlibDeclRecordArgs(decl_name="Nat.add_comm").module_name is None

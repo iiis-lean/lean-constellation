@@ -415,22 +415,26 @@ class ExportComponent:
             warnings=warnings,
         )
 
-    def remove_scope_export(self, repo_root: Path, *, scope_path: str, ref: DeclRef) -> ServiceResult[ScopeExportView]:
+    def remove_scope_export(
+        self, repo_root: Path, *, scope_path: str, ref: DeclRef,
+        additional_refs: list[DeclRef] | None = None,
+    ) -> ServiceResult[ScopeExportView]:
         current = self.contract.get_edit_contract(repo_root, node_path=scope_path)
         if not current.ok or current.value is None:
             return self.runtime.foundation.fail(current.issues)
         candidate_contract = deepcopy(current.value.contract)
-        key = self._decl_ref_key(ref)
-        if not any(self._decl_ref_key(ref) == key for ref in candidate_contract.exports):
+        keys = {self._decl_ref_key(item) for item in [ref, *(additional_refs or [])]}
+        existing_keys = {self._decl_ref_key(item) for item in candidate_contract.exports}
+        if not keys.issubset(existing_keys):
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
                     "scope_export_missing",
-                    f"Scope export not found: {ref.node}:{ref.name}@{ref.revision}",
+                    "One or more exact Scope export references were not found.",
                     object_ref=scope_path,
                     field="ref",
                 )
             )
-        bound_interfaces = [interface.name for interface in candidate_contract.interfaces if interface.bound_decl and self._decl_ref_key(interface.bound_decl) == key]
+        bound_interfaces = [interface.name for interface in candidate_contract.interfaces if interface.bound_decl and self._decl_ref_key(interface.bound_decl) in keys]
         if bound_interfaces:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
@@ -441,7 +445,7 @@ class ExportComponent:
                     suggested_action="Unbind or rebind the interfaces before removing the export.",
                 )
             )
-        candidate_contract.exports = [ref for ref in candidate_contract.exports if self._decl_ref_key(ref) != key]
+        candidate_contract.exports = [ref for ref in candidate_contract.exports if self._decl_ref_key(ref) not in keys]
         guarded = self.runtime.node.release_guard.check_scope_contract_candidate(
             repo_root, scope_path=scope_path, candidate=candidate_contract
         )
@@ -458,7 +462,7 @@ class ExportComponent:
                 scope_path=scope_path,
                 exports=listed.value,
                 changed=True,
-                summary="Removed Scope export.",
+                summary=f"Removed {len(keys)} Scope export(s) atomically.",
             ),
             warnings=refreshed.issues,
         )

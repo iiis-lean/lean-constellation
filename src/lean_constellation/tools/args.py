@@ -7,7 +7,9 @@ from typing import Literal
 from pydantic import Field, model_validator
 
 from lean_constellation.domain.common import StrictModel
+from lean_constellation.domain.interface import INTERFACE_KIND_DESCRIPTION
 from lean_constellation.domain.repo import RepoCompletionMode
+from lean_constellation.domain.refs import DeclRef
 
 
 class NoArgs(StrictModel):
@@ -494,6 +496,10 @@ class ScopeExportRemoveArgs(ScopePathArgs):
     decl_name: str = Field(description="Exact declaration name of the export to remove.")
     decl_repo: str | None = Field(default=None, description="Exact provider repo key; omit for the current repo.")
     revision: int = Field(default=1, ge=1, description="Exact declaration revision of the export to remove.")
+    additional_refs: list[DeclRef] = Field(
+        default_factory=list,
+        description="Optional additional exact {repo, node, name, revision} exports to remove in the same atomic operation. Use for mutually blocking stale exports; all references must exist and be unbound.",
+    )
 
 
 class IndexArgs(StrictModel):
@@ -506,7 +512,7 @@ class ContentNodeBatchArgs(StrictModel):
 
 class InterfaceAddArgs(NodePathArgs):
     name: str = Field(description="Interface name.")
-    kind: str = Field(description="Interface declaration kind.")
+    kind: str = Field(description=INTERFACE_KIND_DESCRIPTION)
     summary: str = Field(description="Interface summary.")
     statement_hint: str | None = Field(default=None, description="Optional statement hint.")
 
@@ -523,7 +529,7 @@ class InterfaceNameArgs(NodePathArgs):
 
 class RootInterfaceAddArgs(StrictModel):
     name: str = Field(description="Root Main interface name.")
-    kind: str = Field(description="Root Main interface declaration kind.")
+    kind: str = Field(description=INTERFACE_KIND_DESCRIPTION)
     summary: str = Field(description="Root Main interface summary.")
     statement_hint: str | None = Field(default=None, description="Optional statement hint.")
 
@@ -662,6 +668,7 @@ class MathlibModuleRecordArgs(StrictModel):
 
 
 class MathlibDeclRecordArgs(StrictModel):
+    module_name: str | None = Field(default=None, description="Optional defining Mathlib module to verify against exact metadata; enables local declaration verification when the external index lacks this name. Not a trusted override.")
     decl_name: str = Field(description="Mathlib declaration name to verify as accessible from the current repo before recording.")
     summary: str | None = Field(default=None, description="Short summary of why the declaration is reusable for this repo or current node.")
     source: str | None = Field(default=None, description="Search result, source inspection, or reasoning source that led to this declaration candidate.")

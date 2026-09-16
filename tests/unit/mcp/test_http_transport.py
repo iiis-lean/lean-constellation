@@ -236,7 +236,7 @@ async def _exercise_discovery_schema_http_mcp(app, tmp_path: Path) -> None:  # n
 
     declaration = schemas["record_mathlib_batch"]["properties"]["declarations"]["items"]
     assert declaration["type"] == "object"
-    assert set(declaration["properties"]) == {"decl_name", "summary", "source"}
+    assert set(declaration["properties"]) == {"decl_name", "module_name", "summary", "source"}
 
 
 def _runtime_headers(env: dict[str, str]) -> dict[str, str]:
@@ -275,3 +275,84 @@ def _assert_no_schema_refs(value) -> None:  # noqa: ANN001 - recursive JSON help
     elif isinstance(value, list):
         for child in value:
             _assert_no_schema_refs(child)
+
+
+@pytest.mark.parametrize("operation", ["manager", "index", "request"])
+def test_repo_router_slow_registry_does_not_block_event_loop(operation, monkeypatch):
+    import asyncio
+    from threading import Event, get_ident
+    from types import SimpleNamespace
+
+    from lean_constellation.mcp.http import RepoMcpHttpRouter
+
+    runtime = make_mcp_runtime()
+    entered, release = Event(), Event()
+    calls = []
+    main_thread = get_ident()
+
+    def slow(*args, **kwargs):
+        calls.append(get_ident())
+        entered.set()
+        assert release.wait(3)
+        if operation == "request":
+            return runtime.foundation.ok(SimpleNamespace(repo_key="RepoA", repo_root=Path("/RepoA")))
+        return runtime.foundation.ok(runtime)
+
+    registry = SimpleNamespace(
+        result=runtime.foundation,
+        normalize_repo_key=lambda key: runtime.foundation.ok(key),
+        get_or_load=slow,
+        discover_repo=slow,
+    )
+    router = RepoMcpHttpRouter(registry, view_keys=["resource_curator"])
+    started = []
+    received_headers = []
+
+    async def start(manager):
+        started.append(manager)
+        return SimpleNamespace(error=None)
+
+    async def handle(scope, receive, send):
+        received_headers.extend(scope["headers"])
+
+    async def noop(*args):
+        pass
+
+    monkeypatch.setattr(router, "_start_manager", start)
+    if operation == "request":
+        router._managers[("RepoA", "resource_curator")] = SimpleNamespace(handle_request=handle)
+
+    async def run():
+        scope = {"type": "http", "path": "/RepoA/mcp/views/resource_curator", "headers": []}
+        if operation == "manager":
+            call = router._get_manager("RepoA", "resource_curator")
+        elif operation == "index":
+            call = router._send_view_index("RepoA", scope, noop, noop)
+        else:
+            call = router(scope, noop, noop)
+        task = asyncio.create_task(call)
+        second = None
+        try:
+            for _ in range(100):
+                if entered.is_set():
+                    break
+                await asyncio.sleep(.01)
+            assert entered.is_set()
+            assert not task.done()
+            if operation == "manager":
+                second = asyncio.create_task(router._get_manager("RepoA", "resource_curator"))
+                await asyncio.sleep(.02)
+                assert len(calls) == 1
+        finally:
+            release.set()
+        first = await task
+        if second is not None:
+            other = await second
+            assert first.value is other.value
+            assert len(started) == 1
+
+    asyncio.run(run())
+    assert calls and all(thread != main_thread for thread in calls)
+    if operation == "request":
+        assert (b"x-lean-constellation-expected-repo-key", b"RepoA") in received_headers
+        assert (b"x-lean-constellation-expected-repo-root", b"/RepoA") in received_headers

@@ -330,7 +330,7 @@ class EnsureRepoExplorationAgentsStep(BaseStep):
                     agent_type=agent_type,
                 )
             if agent_id is None:
-                agent = agent_service.create_agent(ctx.scope_id, agent_type, home_id=agent_type)
+                agent = agent_service.create_agent(ctx.scope_id, agent_type)
                 agent_id = str(agent.agent_id)
                 created.append(role)
             else:

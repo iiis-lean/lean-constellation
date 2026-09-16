@@ -308,8 +308,19 @@ def materialize_production_agent_homes(
     specs = list(agent_type_specs) if agent_type_specs is not None else build_agent_type_specs()
     codex_required = any(spec.home_type == "codex" for spec in specs)
     missing: list[dict[str, str]] = []
-    if codex_required and (base_config is None or not base_config.exists()):
-        missing.append({"field": "codex_base_config_path", "path": str(base_config) if base_config else ""})
+    codex_base_configs = {}
+    for spec in specs:
+        if spec.home_type != "codex":
+            continue
+        override = (agent_home_overrides or {}).get(spec.agent_type)
+        configured_path = getattr(override, "base_config_path", None) or base_config
+        effective_path = Path(configured_path).expanduser() if configured_path is not None else None
+        codex_base_configs[spec.agent_type] = effective_path
+        if effective_path is None or not effective_path.is_file():
+            missing.append({
+                "field": "codex_base_config_path", "agent_type": spec.agent_type,
+                "path": str(effective_path) if effective_path else "",
+            })
     if codex_required and (auth_json is None or not auth_json.exists()):
         missing.append({"field": "codex_auth_json_path", "path": str(auth_json) if auth_json else ""})
     if missing:
@@ -349,12 +360,12 @@ def materialize_production_agent_homes(
             result = materialize_agent_home(
                 runtime,
                 spec.agent_type,
-                home_id=spec.agent_type,
+                home_id=spec.default_home_id or spec.agent_type,
                 mcp_http_base_url=mcp_http_base_url,
                 base_config_path=(
                     getattr(configured_override, "base_config_path", None)
                     if provider_type != "codex"
-                    else base_config
+                    else codex_base_configs[spec.agent_type]
                 ),
                 auth_json_path=auth_json if provider_type == "codex" else None,
                 fixed_env={"ELAN_HOME": str(elan_home)},
