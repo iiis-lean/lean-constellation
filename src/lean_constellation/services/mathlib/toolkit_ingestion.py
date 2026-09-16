@@ -399,6 +399,53 @@ class ToolkitIngestionComponent:
                                 object_ref=normalized_name,
                             )
                         )
+                inspect_local_mathlib = getattr(
+                    self.runtime.external.lean_toolchain,
+                    "inspect_local_mathlib_declaration",
+                    None,
+                )
+                if callable(inspect_local_mathlib):
+                    local_result = inspect_local_mathlib(
+                        repo_root,
+                        module=local_module,
+                        decl_name=normalized_name,
+                    )
+                    if local_result.ok:
+                        if local_result.name != normalized_name or local_result.module != local_module:
+                            return self.runtime.foundation.fail(self.runtime.foundation.issue(
+                                "mathlib_decl_identity_mismatch",
+                                "Compiler declaration identity or defining module does not match the request.",
+                                object_ref=normalized_name,
+                            ))
+                        return self.runtime.foundation.ok(
+                            MathlibNavigationView(
+                                decl_name=normalized_name,
+                                module=local_module,
+                                kind=local_result.kind,
+                                signature=local_result.signature,
+                                code_excerpt=local_result.code,
+                                context=" ".join(
+                                    value
+                                    for value in (local_result.summary, local_result.raw_excerpt)
+                                    if value
+                                ),
+                                summary=f"Compiler-verified local Mathlib declaration {normalized_name}.",
+                            ),
+                            warnings=[self.runtime.foundation.issue(
+                                "mathlib_decl_compiler_navigation",
+                                "Compiler verified the exact declaration and its local Mathlib defining source.",
+                                severity=IssueSeverity.WARNING,
+                                object_ref=normalized_name,
+                            )],
+                        )
+                    if local_result.issue_code not in {None, "declaration_not_found"}:
+                        return self.runtime.foundation.fail(
+                            self.runtime.foundation.issue(
+                                local_result.issue_code,
+                                local_result.summary,
+                                object_ref=normalized_name,
+                            )
+                        )
         if not result.ok:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
@@ -1009,7 +1056,13 @@ class ToolkitIngestionComponent:
                 "snippet": navigation.value.code_excerpt or snippet,
                 "provenance_note": (
                     navigation.value.context
-                    if any(issue.kind == "mathlib_decl_core_navigation" for issue in navigation.issues)
+                    if any(
+                        issue.kind in {
+                            "mathlib_decl_compiler_navigation",
+                            "mathlib_decl_core_navigation",
+                        }
+                        for issue in navigation.issues
+                    )
                     else None
                 ),
             },

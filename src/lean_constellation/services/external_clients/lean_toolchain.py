@@ -922,6 +922,123 @@ class LeanToolchainClient:
             raw_excerpt=source_ref,
         )
 
+    def inspect_local_mathlib_declaration(
+        self,
+        repo_root: Path,
+        *,
+        module: str,
+        decl_name: str,
+        timeout_seconds: int | None = None,
+    ) -> ToolchainDeclarationView:
+        """Verify a declaration defined by an exact local Mathlib module.
+
+        This is a bounded fallback for declarations missing from LeanExplore and
+        the toolkit module outline.  The compiler must confirm the exact name,
+        the defining module must equal the requested module, and that module's
+        source must exist in the current repository's Mathlib dependency.
+        """
+        normalized_module = module.strip()
+        normalized_name = decl_name.strip()
+        identifier = re.compile(r"^[A-Za-z_][A-Za-z0-9_']*(?:\.[A-Za-z_][A-Za-z0-9_']*)*$")
+        if (
+            not normalized_module.startswith("Mathlib.")
+            or not identifier.fullmatch(normalized_module)
+            or not identifier.fullmatch(normalized_name)
+        ):
+            return ToolchainDeclarationView(
+                ok=False,
+                provider="lake_command",
+                name=normalized_name,
+                module=normalized_module or None,
+                summary="Local Mathlib declaration inspection rejected an invalid identifier or module.",
+                issue_code="mathlib_decl_input_invalid",
+            )
+        checked = self.run_snippet_check(
+            repo_root,
+            imports=[normalized_module],
+            code=f"#check {normalized_name}\n#print {normalized_name}",
+            timeout_seconds=timeout_seconds,
+        )
+        if not checked.ok:
+            return ToolchainDeclarationView(
+                ok=False,
+                provider=checked.provider,
+                name=normalized_name,
+                module=normalized_module,
+                summary=checked.summary,
+                raw_excerpt=checked.diagnostics_excerpt,
+                issue_code=checked.issue_code or "mathlib_decl_access_check_failed",
+            )
+        signature, kind = self._parse_compiler_decl_output(
+            checked.diagnostics_excerpt,
+            normalized_name,
+        )
+        if signature is None or kind is None:
+            return ToolchainDeclarationView(
+                ok=False,
+                provider=checked.provider,
+                name=normalized_name,
+                module=normalized_module,
+                summary=f"Compiler output did not confirm exact declaration identity for {normalized_name}.",
+                raw_excerpt=checked.diagnostics_excerpt,
+                issue_code="mathlib_decl_identity_mismatch",
+            )
+        defining_module = self._compiler_defining_module(
+            repo_root,
+            module=normalized_module,
+            decl_name=normalized_name,
+            timeout_seconds=timeout_seconds,
+        )
+        if defining_module is None or not defining_module.startswith("Mathlib."):
+            return ToolchainDeclarationView(
+                ok=False,
+                provider=checked.provider,
+                name=normalized_name,
+                module=normalized_module,
+                summary=f"Compiler did not identify {normalized_name} as a Mathlib-defined declaration.",
+                raw_excerpt=checked.diagnostics_excerpt,
+                issue_code="declaration_not_found",
+            )
+        if defining_module != normalized_module:
+            return ToolchainDeclarationView(
+                ok=False,
+                provider=checked.provider,
+                name=normalized_name,
+                module=normalized_module,
+                summary="Compiler defining module does not match the requested Mathlib module.",
+                raw_excerpt=checked.diagnostics_excerpt,
+                issue_code="mathlib_decl_defining_module_mismatch",
+            )
+        source_path = (
+            Path(repo_root).resolve()
+            / ".lake"
+            / "packages"
+            / "mathlib"
+            / (defining_module.replace(".", "/") + ".lean")
+        )
+        if not source_path.is_file():
+            return ToolchainDeclarationView(
+                ok=False,
+                provider=checked.provider,
+                name=normalized_name,
+                module=normalized_module,
+                summary="Compiler-confirmed Mathlib defining source is absent from the local dependency.",
+                raw_excerpt=checked.diagnostics_excerpt,
+                issue_code="mathlib_decl_source_missing",
+            )
+        source_ref = f"Mathlib defining module {defining_module} ({source_path})"
+        return ToolchainDeclarationView(
+            ok=True,
+            provider=checked.provider,
+            name=normalized_name,
+            module=normalized_module,
+            kind=kind,
+            signature=signature,
+            code=f"{kind} {signature}",
+            summary=f"Compiler verified {normalized_name}; {source_ref}.",
+            raw_excerpt=source_ref,
+        )
+
     @staticmethod
     def _parse_compiler_decl_output(
         excerpt: str | None,
@@ -929,12 +1046,13 @@ class LeanToolchainClient:
     ) -> tuple[str | None, str | None]:
         if not excerpt:
             return None, None
-        prefix = expected_name + " "
         signature: str | None = None
         kind: str | None = None
+        exact_name = rf"{re.escape(expected_name)}(?:\.\{{[^}}\r\n]*\}})?"
+        signature_prefix = re.compile(rf"^{exact_name}(?:\s|:|$)")
         declaration_prefix = re.compile(
             rf"^(theorem|lemma|def|abbrev|opaque|axiom|instance|class|structure|inductive)\s+"
-            rf"{re.escape(expected_name)}(?:\s|:|$)"
+            rf"{exact_name}(?:\s|:|$)"
         )
         for line in excerpt.splitlines():
             try:
@@ -942,7 +1060,7 @@ class LeanToolchainClient:
             except (TypeError, json.JSONDecodeError):
                 continue
             data = str(item.get("data") or "").strip()
-            if (data.startswith(prefix) or data == expected_name) and signature is None:
+            if signature_prefix.match(data) and signature is None:
                 signature = data
             declaration_match = declaration_prefix.match(data)
             if declaration_match:
@@ -957,6 +1075,35 @@ class LeanToolchainClient:
         decl_name: str,
         timeout_seconds: int | None,
     ) -> tuple[str, str, str] | None:
+        defining_module = self._compiler_defining_module(
+            repo_root,
+            module=module,
+            decl_name=decl_name,
+            timeout_seconds=timeout_seconds,
+        )
+        if not defining_module or not (defining_module.startswith("Init.") or defining_module.startswith("Lean.")):
+            return None
+        prefix_result = self.lake.run_command(
+            Path(repo_root),
+            [self.lake.config.lake_bin, "env", self.lake.config.lean_bin, "--print-prefix"],
+            timeout=timeout_seconds,
+        )
+        if not prefix_result.ok or not prefix_result.stdout_excerpt:
+            return None
+        toolchain_prefix = prefix_result.stdout_excerpt.strip().splitlines()[0]
+        source_path = Path(toolchain_prefix) / "src" / "lean" / (defining_module.replace(".", "/") + ".lean")
+        if not source_path.is_file():
+            return None
+        return defining_module, str(source_path), toolchain_prefix
+
+    def _compiler_defining_module(
+        self,
+        repo_root: Path,
+        *,
+        module: str,
+        decl_name: str,
+        timeout_seconds: int | None,
+    ) -> str | None:
         # The extra `Lean` import is used only for environment introspection. The
         # preceding #check was compiled with exactly the requested import context.
         code = (
@@ -988,20 +1135,7 @@ class LeanToolchainClient:
             if data.startswith(marker):
                 defining_module = data[len(marker) :].strip()
                 break
-        if not defining_module or not (defining_module.startswith("Init.") or defining_module.startswith("Lean.")):
-            return None
-        prefix_result = self.lake.run_command(
-            Path(repo_root),
-            [self.lake.config.lake_bin, "env", self.lake.config.lean_bin, "--print-prefix"],
-            timeout=timeout_seconds,
-        )
-        if not prefix_result.ok or not prefix_result.stdout_excerpt:
-            return None
-        toolchain_prefix = prefix_result.stdout_excerpt.strip().splitlines()[0]
-        source_path = Path(toolchain_prefix) / "src" / "lean" / (defining_module.replace(".", "/") + ".lean")
-        if not source_path.is_file():
-            return None
-        return defining_module, str(source_path), toolchain_prefix
+        return defining_module
 
     def inspect_mathlib_module(self, repo_root: Path, module: str) -> ToolchainModuleView:
         normalized_module = module.strip()

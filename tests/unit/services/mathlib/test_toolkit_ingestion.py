@@ -337,6 +337,23 @@ def test_record_checked_decl_rejects_missing_exact_source_metadata_without_overw
         raise KeyError(tool_name)
 
     service = _service(dispatch)
+    toolchain = service.runtime.external.lean_toolchain
+    toolchain.inspect_core_declaration = lambda *_args, **_kwargs: ToolchainDeclarationView(
+        ok=False,
+        provider="lake_command",
+        name="Int.natAbs_mul",
+        module="Mathlib.Analysis.Normed.Group.Basic",
+        summary="not a Lean core declaration",
+        issue_code="declaration_not_found",
+    )
+    toolchain.inspect_local_mathlib_declaration = lambda *_args, **_kwargs: ToolchainDeclarationView(
+        ok=False,
+        provider="lake_command",
+        name="Int.natAbs_mul",
+        module="Mathlib.Analysis.Normed.Group.Basic",
+        summary="exact local source metadata is unavailable",
+        issue_code="declaration_not_found",
+    )
     assert service.upsert_mathlib_decl_entry(
         tmp_path,
         name="Int.natAbs_mul",

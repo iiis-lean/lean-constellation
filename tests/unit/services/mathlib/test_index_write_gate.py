@@ -1,4 +1,5 @@
 from pathlib import Path
+from unittest.mock import Mock
 
 from tests.unit_services_helpers import make_runtime
 
@@ -480,6 +481,64 @@ def test_core_declaration_navigation_requires_compiler_identity_and_persists_pro
     assert "Lean core" in recorded.value.note
 
 
+def test_local_mathlib_compiler_navigation_persists_exact_source_provenance(
+    tmp_path: Path,
+) -> None:
+    name = "MvPolynomial.coeff_mul"
+    module = "Mathlib.Algebra.MvPolynomial.Basic"
+
+    def dispatch(tool_name: str, payload: dict):
+        if tool_name == "lean_explore.find":
+            return {"results": []}
+        if tool_name == "mathlib_nav.file_outline":
+            return {"declarations": []}
+        if tool_name == "lsp.run_snippet":
+            assert f"#check {name}" in payload["code"]
+            return {"diagnostics": []}
+        raise AssertionError(f"unexpected toolkit call: {tool_name}")
+
+    service = _service(dispatch)
+    toolchain = service.runtime.external.lean_toolchain
+    toolchain.inspect_local_mathlib_declaration = (
+        lambda _root, *, module, decl_name: ToolchainDeclarationView(
+            ok=True,
+            provider="lake_command",
+            name=decl_name,
+            module=module,
+            kind="theorem",
+            signature="MvPolynomial.coeff_mul.{u, v} : ...",
+            code="theorem MvPolynomial.coeff_mul.{u, v} : ...",
+            summary="Compiler verified exact local Mathlib declaration.",
+            raw_excerpt=(
+                "Mathlib defining module Mathlib.Algebra.MvPolynomial.Basic "
+                "(/repo/.lake/packages/mathlib/Mathlib/Algebra/MvPolynomial/Basic.lean)"
+            ),
+        )
+    )
+    toolchain.inspect_core_declaration = Mock(
+        return_value=ToolchainDeclarationView(
+            ok=False,
+            provider="lake_command",
+            name=name,
+            module=module,
+            summary="not a Lean core declaration",
+            issue_code="declaration_not_found",
+        )
+    )
+
+    recorded = service.record_mathlib_decl_checked(
+        tmp_path,
+        decl_name=name,
+        module_name=module,
+    )
+
+    assert recorded.ok, recorded.issues
+    assert recorded.value is not None
+    assert recorded.value.module == module
+    assert recorded.value.note is not None
+    assert "Mathlib defining module" in recorded.value.note
+
+
 def test_core_navigation_does_not_accept_unverified_repository_name(tmp_path: Path) -> None:
     name = "Foo.target"
     module = "Mathlib.Test"
@@ -499,6 +558,14 @@ def test_core_navigation_does_not_accept_unverified_repository_name(tmp_path: Pa
         name=name,
         module=module,
         summary="no core provenance",
+        issue_code="declaration_not_found",
+    )
+    toolchain.inspect_local_mathlib_declaration = lambda *_args, **_kwargs: ToolchainDeclarationView(
+        ok=False,
+        provider="lake_command",
+        name=name,
+        module=module,
+        summary="no local Mathlib provenance",
         issue_code="declaration_not_found",
     )
 
