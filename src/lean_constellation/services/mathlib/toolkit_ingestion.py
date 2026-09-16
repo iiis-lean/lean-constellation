@@ -356,49 +356,6 @@ class ToolkitIngestionComponent:
                             object_ref=normalized_name,
                         )],
                     )
-                inspect_core = getattr(self.runtime.external.lean_toolchain, "inspect_core_declaration", None)
-                if callable(inspect_core):
-                    core_result = inspect_core(
-                        repo_root,
-                        module=local_module,
-                        decl_name=normalized_name,
-                    )
-                    if core_result.ok:
-                        if core_result.name != normalized_name or core_result.module != local_module:
-                            return self.runtime.foundation.fail(self.runtime.foundation.issue(
-                                "mathlib_decl_identity_mismatch",
-                                "Compiler declaration identity or import context does not match the request.",
-                                object_ref=normalized_name,
-                            ))
-                        return self.runtime.foundation.ok(
-                            MathlibNavigationView(
-                                decl_name=normalized_name,
-                                module=local_module,
-                                kind=core_result.kind,
-                                signature=core_result.signature,
-                                code_excerpt=core_result.code,
-                                context=" ".join(
-                                    value
-                                    for value in (core_result.summary, core_result.code)
-                                    if value
-                                ),
-                                summary=f"Compiler-verified core declaration {normalized_name}.",
-                            ),
-                            warnings=[self.runtime.foundation.issue(
-                                "mathlib_decl_core_navigation",
-                                "Compiler verified the exact declaration; requested Mathlib module is import context and the defining source is Lean core.",
-                                severity=IssueSeverity.WARNING,
-                                object_ref=normalized_name,
-                            )],
-                        )
-                    if core_result.issue_code not in {None, "declaration_not_found"}:
-                        return self.runtime.foundation.fail(
-                            self.runtime.foundation.issue(
-                                core_result.issue_code,
-                                core_result.summary,
-                                object_ref=normalized_name,
-                            )
-                        )
                 inspect_local_mathlib = getattr(
                     self.runtime.external.lean_toolchain,
                     "inspect_local_mathlib_declaration",
@@ -443,6 +400,49 @@ class ToolkitIngestionComponent:
                             self.runtime.foundation.issue(
                                 local_result.issue_code,
                                 local_result.summary,
+                                object_ref=normalized_name,
+                            )
+                        )
+                inspect_core = getattr(self.runtime.external.lean_toolchain, "inspect_core_declaration", None)
+                if callable(inspect_core):
+                    core_result = inspect_core(
+                        repo_root,
+                        module=local_module,
+                        decl_name=normalized_name,
+                    )
+                    if core_result.ok:
+                        if core_result.name != normalized_name or core_result.module != local_module:
+                            return self.runtime.foundation.fail(self.runtime.foundation.issue(
+                                "mathlib_decl_identity_mismatch",
+                                "Compiler declaration identity or import context does not match the request.",
+                                object_ref=normalized_name,
+                            ))
+                        return self.runtime.foundation.ok(
+                            MathlibNavigationView(
+                                decl_name=normalized_name,
+                                module=local_module,
+                                kind=core_result.kind,
+                                signature=core_result.signature,
+                                code_excerpt=core_result.code,
+                                context=" ".join(
+                                    value
+                                    for value in (core_result.summary, core_result.code)
+                                    if value
+                                ),
+                                summary=f"Compiler-verified core declaration {normalized_name}.",
+                            ),
+                            warnings=[self.runtime.foundation.issue(
+                                "mathlib_decl_core_navigation",
+                                "Compiler verified the exact declaration; requested Mathlib module is import context and the defining source is Lean core.",
+                                severity=IssueSeverity.WARNING,
+                                object_ref=normalized_name,
+                            )],
+                        )
+                    if core_result.issue_code not in {None, "declaration_not_found"}:
+                        return self.runtime.foundation.fail(
+                            self.runtime.foundation.issue(
+                                core_result.issue_code,
+                                core_result.summary,
                                 object_ref=normalized_name,
                             )
                         )

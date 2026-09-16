@@ -461,6 +461,14 @@ def test_core_declaration_navigation_requires_compiler_identity_and_persists_pro
         summary="not indexed",
         issue_code="declaration_not_found",
     )
+    toolchain.inspect_local_mathlib_declaration = lambda *_args, **_kwargs: ToolchainDeclarationView(
+        ok=False,
+        provider="lake_command",
+        name=name,
+        module=module,
+        summary="compiler identified a Lean core defining module",
+        issue_code="declaration_not_found",
+    )
     toolchain.inspect_core_declaration = lambda _root, *, module, decl_name: ToolchainDeclarationView(
         ok=True,
         provider="lake_command",
@@ -516,14 +524,7 @@ def test_local_mathlib_compiler_navigation_persists_exact_source_provenance(
         )
     )
     toolchain.inspect_core_declaration = Mock(
-        return_value=ToolchainDeclarationView(
-            ok=False,
-            provider="lake_command",
-            name=name,
-            module=module,
-            summary="not a Lean core declaration",
-            issue_code="declaration_not_found",
-        )
+        side_effect=AssertionError("core fallback must not run after exact local Mathlib verification")
     )
 
     recorded = service.record_mathlib_decl_checked(
@@ -537,6 +538,7 @@ def test_local_mathlib_compiler_navigation_persists_exact_source_provenance(
     assert recorded.value.module == module
     assert recorded.value.note is not None
     assert "Mathlib defining module" in recorded.value.note
+    toolchain.inspect_core_declaration.assert_not_called()
 
 
 def test_core_navigation_does_not_accept_unverified_repository_name(tmp_path: Path) -> None:
@@ -594,6 +596,14 @@ def test_core_compiler_access_failure_does_not_write_index(tmp_path: Path) -> No
         provider="lean_mcp_toolkit",
         name=name,
         summary="not indexed",
+        issue_code="declaration_not_found",
+    )
+    toolchain.inspect_local_mathlib_declaration = lambda *_args, **_kwargs: ToolchainDeclarationView(
+        ok=False,
+        provider="lake_command",
+        name=name,
+        module=module,
+        summary="compiler identified a Lean core defining module",
         issue_code="declaration_not_found",
     )
     toolchain.inspect_core_declaration = lambda *_args, **_kwargs: ToolchainDeclarationView(
