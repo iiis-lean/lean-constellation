@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 
 
 DeclStageName = Literal["statement_nl", "statement_formal", "proof_nl", "proof_formal"]
+StageReviewMode = Literal["agent", "deterministic_only"]
 RoundFlowOutcome = Literal["completed", "blocked", "failed"]
 
 
@@ -47,6 +48,7 @@ class RoundStageReview(StrictModel):
 class RoundStageGateView(StrictModel):
     outcome: Literal["stage_passed", "retry_worker", "blocked", "failed"]
     stage: DeclStageName
+    review_mode: StageReviewMode = "agent"
     advanced_decl_names: list[str] = Field(default_factory=list)
     rejected_decl_names: list[str] = Field(default_factory=list)
     retry_count: int = 0
@@ -213,32 +215,50 @@ class DeclRoundExecutionComponent:
         round_id: str,
         stage: DeclStageName,
         target_decl_names: list[str],
-        review: RoundStageReview,
+        review: RoundStageReview | None,
+        review_mode: StageReviewMode = "agent",
         retry_count: int = 0,
         max_retries: int = 2,
     ) -> ServiceResult[RoundStageGateView]:
         timings_ms: dict[str, float] = {}
 
         def with_timings(view: RoundStageGateView) -> RoundStageGateView:
-            return view.model_copy(update={"timings_ms": dict(timings_ms)})
+            return view.model_copy(
+                update={"review_mode": review_mode, "timings_ms": dict(timings_ms)}
+            )
 
         review_started = perf_counter()
-        context_issue = self._review_context_issue(
-            review,
-            node_path=node_path,
-            round_id=round_id,
-            stage=stage,
-            targets=target_decl_names,
-        )
+        if review_mode == "agent":
+            if review is None:
+                return self.runtime.foundation.ok(
+                    with_timings(self._failed(stage, "Agent review mode requires a reviewer result.", target_decl_names))
+                )
+            context_issue = self._review_context_issue(
+                review,
+                node_path=node_path,
+                round_id=round_id,
+                stage=stage,
+                targets=target_decl_names,
+            )
+        elif review_mode == "deterministic_only":
+            if review is not None:
+                return self.runtime.foundation.ok(
+                    with_timings(self._failed(stage, "Deterministic-only review mode must not carry a reviewer result.", target_decl_names))
+                )
+            context_issue = None
+        else:
+            return self.runtime.foundation.ok(
+                with_timings(self._failed(stage, f"Unsupported review mode: {review_mode}.", target_decl_names))
+            )
         timings_ms["review_context"] = round((perf_counter() - review_started) * 1000, 3)
 
         if context_issue is not None:
             return self.runtime.foundation.ok(with_timings(self._failed(stage, context_issue, target_decl_names)))
-        if review.outcome == "incomplete":
+        if review_mode == "agent" and review is not None and review.outcome == "incomplete":
             return self.runtime.foundation.ok(
                 with_timings(self._failed(stage, review.incomplete_reason or "Reviewer did not submit a result.", target_decl_names))
             )
-        if review.outcome == "rejected":
+        if review_mode == "agent" and review is not None and review.outcome == "rejected":
             rejected = sorted(set(review.failed_decl_names) | set(review.missing_decl_names)) or list(target_decl_names)
             next_retry = retry_count + 1
             if retry_count < max_retries:
@@ -336,7 +356,14 @@ class DeclRoundExecutionComponent:
                 retry_count=retry_count,
                 retry_remaining=max(max_retries - retry_count, 0),
                 audit_summary=audit.value.summary,
-                summary=f"{stage} passed for {len(target_decl_names)} declarations.",
+                summary=(
+                    f"{stage} passed for {len(target_decl_names)} declarations."
+                    if review_mode == "agent"
+                    else (
+                        f"{stage} passed deterministic validation and audit for "
+                        f"{len(target_decl_names)} declarations; no Agent Reviewer ran."
+                    )
+                ),
             ))
         )
 
@@ -846,5 +873,6 @@ __all__ = [
     "RoundReadinessFailure",
     "RoundStageGateView",
     "RoundStageReview",
+    "StageReviewMode",
     "RoundTargetStateFailure",
 ]

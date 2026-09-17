@@ -6,6 +6,7 @@ from lean_constellation.services.decl_graph import (
     DeclDraftSpec,
     DeclRoundResultKind,
     DeclState,
+    RoundStageReview,
 )
 from tests.unit.flows.decl_round._helpers import (
     NODE_PATH,
@@ -61,6 +62,48 @@ def _record_and_close_round(
         reason=reason,
         acknowledged_by="test-content-plan",
     )
+
+
+def test_stage_gate_review_mode_rejects_missing_and_spurious_reviews(tmp_path: Path) -> None:
+    _flow_runtime, runtime, repo_root = make_decl_round_runtime(tmp_path)
+    _strategy_id, round_id, _round_index = create_round_with_decl(
+        runtime,
+        repo_root,
+        target_state=DeclState.PROVED,
+    )
+    review = RoundStageReview(
+        outcome="passed",
+        round_id=round_id,
+        node_path=NODE_PATH,
+        stage="statement_nl",
+        reviewed_decl_names=["main_result"],
+        summary="Reviewed.",
+    )
+
+    missing = runtime.decl_graph.gate_and_advance_round_stage(
+        repo_root,
+        node_path=NODE_PATH,
+        round_id=round_id,
+        stage="statement_nl",
+        target_decl_names=["main_result"],
+        review=None,
+    )
+    spurious = runtime.decl_graph.gate_and_advance_round_stage(
+        repo_root,
+        node_path=NODE_PATH,
+        round_id=round_id,
+        stage="statement_nl",
+        target_decl_names=["main_result"],
+        review=review,
+        review_mode="deterministic_only",
+    )
+
+    assert missing.ok and missing.value is not None
+    assert missing.value.outcome == "failed"
+    assert missing.value.review_mode == "agent"
+    assert spurious.ok and spurious.value is not None
+    assert spurious.value.outcome == "failed"
+    assert spurious.value.review_mode == "deterministic_only"
 
 
 def test_round_with_decl_drafts_rolls_back_complete_graph_on_mid_batch_failure(tmp_path: Path, monkeypatch) -> None:

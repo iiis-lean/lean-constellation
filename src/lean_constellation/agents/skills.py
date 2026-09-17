@@ -222,14 +222,14 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
             "Use this skill on the callback from the Flow-owned initial exploration batch, or when later progress exposes a genuinely new repository-wide external question.",
             (
                 "Read the repository goal, completion policy, SourceCorpus and SourceIndex overview, existing Resources, workspace providers, requirements, Lake dependencies, and MathlibIndex before deciding whether exploration is useful.",
-                "For the initial callback, consume all resource, Lean-provider, and Mathlib outcomes in the fixed batch. Classify useful findings, no useful findings, and incomplete exploration separately; retain useful findings even when another category was incomplete.",
+                "For the initial callback, consume every outcome in the exact Flow-owned batch selected by the current repo run workflow controls. Disabled exploration kinds are intentionally absent; do not request or emulate them merely to recreate the historical three-kind batch. Classify useful findings, no useful findings, and incomplete exploration separately; retain useful findings even when another enabled category was incomplete.",
                 "Do not submit another exploration batch merely to reconcile that initial callback. Enter the Coordinator next-action loop after classification.",
                 "During later work, explore only after a new topic, major unresolved external dependency, failed candidate, repeated repo-wide Mathlib representation issue, or materially changed source direction.",
                 "For a later batch, fill one to three of resource_objective, lean_provider_objective, and mathlib_objective with focused, non-overlapping, verifiable goals; add one short shared context_summary only when needed, call `submit_repo_exploration` once, and stop.",
                 "On every callback, preflight resource candidates before requesting them, use a direct adapter requirement only for exact immutable verified Lean evidence, and do not duplicate MathlibIndex writes already performed by recon.",
             ),
             (
-                "The initial batch is Flow-owned and fixed; later exploration is optional and selective.",
+                "The initial batch is Flow-owned and fixed for the enabled kinds in this repo run; later exploration is optional and selective.",
                 "A local tactic failure, ordinary worker retry, or a single missing Mathlib lemma does not justify broad repository exploration.",
                 "Each Coordinator AgentStep still submits exactly one terminal action.",
             ),
@@ -1419,6 +1419,8 @@ Use this skill when the current content node task may need preparation before en
 
 You may perform targeted searches, inspections, and small verified index corrections to answer a concrete planning question. Delegate systematic, multi-candidate, or persistence-worthy dependency, Mathlib, or resource recon to the dedicated child flow so that its findings are recorded and reviewed separately. Your job is to decide when that child is needed, give it a focused objective, and interpret its callback result.
 
+The current task prompt lists the repo-run workflow controls for dependency, Mathlib, and resource recon. Those controls are execution truth for this task. Do not submit, retry, or emulate a disabled recon kind. Continue planning from the available Source Corpus, SourceIndex, graph, workspace, and existing index truth when a kind is disabled.
+
 The callback turn already contains the current child input/result once, followed by short routing and current-state guidance. Do not rebuild or paste a second summary. Use `list_content_preparation_results` only when an older attempt matters, then use `get_content_preparation_result` for the one selected attempt.
 
 ## Recommended Order
@@ -1699,7 +1701,7 @@ Use `plan_update_decl` when an existing declaration needs a targeted repair or s
 
 `planned --Statement NL--> specified --Statement Formal--> declared --Proof NL--> proof_planned --Proof Formal--> proved`.
 
-statement_nl retains only the planned shell; statement_formal retains accepted Statement NL; proof_nl retains the accepted formal statement; proof_formal retains the accepted proof route. The selected stage must be available from the latest committed state and must precede target_state, so every update runs at least one Worker/Reviewer stage. For a release-protected declaration, start_stage cannot cross beneath the accepted formal statement. Include the intended target_state and require_target_state_satisfied.
+statement_nl retains only the planned shell; statement_formal retains accepted Statement NL; proof_nl retains the accepted formal statement; proof_formal retains the accepted proof route. The selected stage must be available from the latest committed state and must precede target_state, so every update runs at least one Worker stage and either the enabled Reviewer or the deterministic validation/audit gate. For a release-protected declaration, start_stage cannot cross beneath the accepted formal statement. Include the intended target_state and require_target_state_satisfied.
 
 After opening an update, inspect the copied typed dependency lists and use the same dependency tools to add, remove, or correct the known frontier before validation. Preserve an actual edge whose provider is another planned change; never omit it to bypass round topology validation.
 
@@ -1729,7 +1731,7 @@ Call `submit_current_decl_round` only when the draft is valid and ready for Decl
 
 - Do not choose ready as a planned declaration state.
 - Do not write statement text, formal statements, proof text, or Lean proof code yourself.
-- Do not bypass reviewer stages by encoding accepted artifacts in the round plan.
+- Do not bypass an enabled reviewer or the deterministic validation/audit gate by encoding accepted artifacts in the round plan.
 - Do not submit a broad unfocused batch when a smaller independent batch is available.
 """,
     ),
@@ -2035,7 +2037,7 @@ The revision/reason remains structured truth and is not copied into the docstrin
     ),
     SkillKey.LEAN_PROOF_FORMALIZATION.value: LeanSkillDefinition(
         name="lean-proof-formalization",
-        description="Formalize a reviewed natural-language proof route into a Lean proof while preserving the accepted formal statement.",
+        description="Formalize an accepted natural-language proof route into a Lean proof while preserving the accepted formal statement.",
         group="lean",
         required_tool_groups=_groups(
             AppGroup.DECL_STAGE_FORMAL_READ,
@@ -2056,9 +2058,9 @@ The revision/reason remains structured truth and is not copied into the docstrin
         source_design_doc="dev_docs/design/agents/skill_bundles",
         body=_body(
             "lean-proof-formalization",
-            "Use this skill for Proof Formal workers after proof NL has been accepted.",
+            "Use this skill for Proof Formal workers after proof NL has passed its configured gate.",
             (
-                "Start from the accepted formal statement, reviewed proof route, proof origins/deps, current decl history, and prior feedback.",
+                "Start from the accepted formal statement, gated proof route, proof origins/deps, current decl history, and any prior feedback. The route may have passed an enabled Reviewer or the deterministic validation/audit gate selected by the repo run.",
                 "Inspect the prepared proof formal file first. For a local repair, `prepare_proof_formal_file` may reuse the exact committed Proof capture named by the source revision argument only while the current file is pristine; then re-read and edit the prepared current file. Without a source revision it restores from the accepted current Statement capture. Neither mode inherits acceptance, and both discard uncaptured proof edits.",
                 "Preserve the registered Lean full name and theorem header. Put small proof-local helpers before the target docstring; block for planning when a helper is major, reusable, or mathematically meaningful enough to be tracked as a declaration.",
                 "Reuse exact canonical project dependencies for shared types, indices, instances, equivalences, dependent families, and constructed objects. A proof-local `letI` may install a named canonical instance definition, but must not rebuild a competing construction when later declarations need the same term.",

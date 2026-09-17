@@ -7,7 +7,7 @@ from lean_constellation.domain.repo import ProofAvailability, RepoCompletionMode
 from lean_constellation.domain.repo import RepoPublicationState, RepoPublicationStatus
 from lean_constellation.domain.repo_release import RepoRelease
 from lean_constellation.services.foundation import FoundationContext
-from lean_constellation.domain.repo_run import SourceScope
+from lean_constellation.domain.repo_run import RepoRunWorkflowControls, SourceScope
 
 
 def _repo(tmp_path):
@@ -41,6 +41,29 @@ def test_initial_and_continuation_resolvers_have_distinct_scope_defaults(tmp_pat
     assert initial.value.max_parallel_content_node_tasks == 3
     assert continuation.value.max_parallel_content_node_tasks == 5
     assert not runtime.repo_workspace.run.resolve_continuation_repo_run_spec(root).ok
+
+
+def test_resolvers_preserve_explicit_workflow_controls(tmp_path) -> None:
+    runtime, root = _repo(tmp_path)
+    controls = RepoRunWorkflowControls(
+        initial_repo_resource_discovery=False,
+        content_resource_recon=False,
+        proof_nl_review=False,
+    )
+    initial = runtime.repo_workspace.run.resolve_initial_repo_run_spec(
+        root,
+        workflow_controls=controls,
+    )
+    continuation = runtime.repo_workspace.run.resolve_continuation_repo_run_spec(
+        root,
+        run_objective="Continue with the selected workflow.",
+        workflow_controls=controls,
+    )
+
+    assert initial.ok and initial.value is not None
+    assert continuation.ok and continuation.value is not None
+    assert initial.value.workflow_controls == controls
+    assert continuation.value.workflow_controls == controls
 
 
 def test_apply_run_config_preserves_unrelated_fields_and_checks_base(tmp_path) -> None:

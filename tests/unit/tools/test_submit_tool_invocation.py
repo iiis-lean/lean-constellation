@@ -15,7 +15,7 @@ from lean_constellation.domain.preparation import (
     SourceCorpusMode,
 )
 from lean_constellation.domain.repo import ProofAvailability, RepoCompletionMode
-from lean_constellation.domain.repo_run import SourceScope
+from lean_constellation.domain.repo_run import RepoRunWorkflowControls, SourceScope
 from lean_constellation.services import LeanProviderOverrides, create_test_runtime_services
 from lean_constellation.services.external_clients import (
     ExternalResourceCandidate,
@@ -1755,6 +1755,54 @@ def test_submit_content_node_tasks_passes_open_contract_version(tmp_path: Path) 
     assert submission.submission_type == "coordinator_content_tasks"
     assert submission.summary == "Dispatched content node tasks: Main.Core."
     assert submission.requests[0].params["contract_version"] == 1
+
+
+def test_submit_content_node_tasks_propagates_coordinator_workflow_controls(tmp_path: Path) -> None:
+    gateway = FakeSubmissionGateway()
+    runtime = _runtime(gateway)
+    assert register_submit_tooling(runtime).ok
+    assert runtime.node.node_tree.ensure_root_scope_node(tmp_path).ok
+    assert runtime.node.create_content_node(
+        tmp_path,
+        path="Main.Core",
+        goal="Core goal.",
+        boundary="Core boundary.",
+        objective="Run core task.",
+        success_criteria="Core task completes.",
+    ).ok
+    controls = RepoRunWorkflowControls(
+        content_resource_recon=False,
+        proof_nl_review=False,
+    )
+    owner_flow = SimpleNamespace(
+        input=SimpleNamespace(
+            run_context=SimpleNamespace(
+                run_spec=SimpleNamespace(
+                    max_parallel_content_node_tasks=1,
+                    workflow_controls=controls,
+                )
+            )
+        )
+    )
+    runtime.ark.flow_service = SimpleNamespace(get_flow=lambda _flow_id: owner_flow)
+    raw = RawToolCallContext(
+        endpoint_view_key="native_repo_coordinator_submit",
+        runtime_context=_runtime_ctx(
+            tmp_path,
+            view="native_repo_coordinator_submit",
+            role="coordinator",
+            agent_type="CoordinatorAgent",
+        ),
+    )
+
+    result = runtime.tool_facade.invoke_agent_tool(
+        raw,
+        tool_name="submit_content_node_tasks",
+        flat_args={"node_paths": ["Main.Core"]},
+    )
+
+    assert result.ok and result.value is not None and result.value.ok is True
+    assert gateway.accepted[0].requests[0].params["workflow_controls"] == controls.model_dump(mode="json")
 
 
 def test_submit_content_node_tasks_rejects_a_material_ref_that_no_longer_previews(tmp_path: Path) -> None:

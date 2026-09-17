@@ -24,6 +24,7 @@ from lean_constellation.domain.preparation import (
     NativeProviderRoute,
     ProviderRoute,
 )
+from lean_constellation.domain.repo_run import RepoRunWorkflowControls
 from lean_constellation.flows.content_node_task.decl_round.steps import DeclStageReviewerStepState
 from lean_constellation.flows.content_node_task.decl_round.submissions import (
     DeclRoundDispatchSubmission,
@@ -1114,6 +1115,7 @@ def submit_content_node_tasks(runtime: Any, ctx: ToolExecutionContext, args: Sub
             repo_path=str(ctx.repo_root),
             contract_version=contract.value.version,
             max_parallel_content_node_tasks=max_parallel,
+            workflow_controls=_current_coordinator_workflow_controls(runtime, ctx),
         ))
     return _prepared(
         runtime,
@@ -1144,6 +1146,23 @@ def _current_coordinator_content_parallelism(runtime: Any, ctx: ToolExecutionCon
     run_context = getattr(getattr(flow, "input", None), "run_context", None)
     run_spec = getattr(run_context, "run_spec", None)
     return int(getattr(run_spec, "max_parallel_content_node_tasks", 1))
+
+
+def _current_coordinator_workflow_controls(
+    runtime: Any,
+    ctx: ToolExecutionContext,
+) -> RepoRunWorkflowControls:
+    flow_id = ctx.runtime.flow_id
+    if not flow_id:
+        return RepoRunWorkflowControls()
+    try:
+        flow = runtime.get_flow(flow_id)
+    except RuntimeError:
+        return RepoRunWorkflowControls()
+    run_context = getattr(getattr(flow, "input", None), "run_context", None)
+    run_spec = getattr(run_context, "run_spec", None)
+    controls = getattr(run_spec, "workflow_controls", None)
+    return controls if isinstance(controls, RepoRunWorkflowControls) else RepoRunWorkflowControls()
 
 
 def _submit_repo_requirement(
@@ -1374,6 +1393,21 @@ def submit_repo_ready(runtime: Any, ctx: ToolExecutionContext, args: SubmitRepoR
 
 
 def submit_content_preparation_recon(runtime: Any, ctx: ToolExecutionContext, args: SubmitContentPreparationReconArgs) -> ServiceResult[PreparedSubmissionView]:
+    controls_result = _current_content_task_workflow_controls(runtime, ctx)
+    if not controls_result.ok or controls_result.value is None:
+        return runtime.foundation.fail(controls_result.issues)
+    enabled_by_kind = {
+        "node_dir_dependency": controls_result.value.content_node_dir_dependency_recon,
+        "mathlib": controls_result.value.content_mathlib_recon,
+        "resource": controls_result.value.content_resource_recon,
+    }
+    if not enabled_by_kind[args.recon_kind]:
+        return _fail(
+            runtime,
+            "content_preparation_recon_disabled",
+            f"The current repo run disables {args.recon_kind} content preparation recon.",
+            field="recon_kind",
+        )
     node = _require_node(runtime, ctx)
     if not node.ok or node.value is None:
         return runtime.foundation.fail(node.issues)
@@ -1407,6 +1441,9 @@ def submit_content_preparation_recon(runtime: Any, ctx: ToolExecutionContext, ar
 
 
 def submit_current_decl_round(runtime: Any, ctx: ToolExecutionContext, args: SubmitCurrentDeclRoundArgs) -> ServiceResult[PreparedSubmissionView]:
+    controls_result = _current_content_task_workflow_controls(runtime, ctx)
+    if not controls_result.ok or controls_result.value is None:
+        return runtime.foundation.fail(controls_result.issues)
     node = _require_node(runtime, ctx)
     if not node.ok or node.value is None:
         return runtime.foundation.fail(node.issues)
@@ -1435,6 +1472,7 @@ def submit_current_decl_round(runtime: Any, ctx: ToolExecutionContext, args: Sub
         contract_version=ctx.node.contract_version if ctx.node else None,
         round_index=current_round.value.round_index,
         summary=args.summary,
+        workflow_controls=controls_result.value,
     )
     return _prepared(
         runtime,
@@ -1446,6 +1484,43 @@ def submit_current_decl_round(runtime: Any, ctx: ToolExecutionContext, args: Sub
         ),
         agent_view=gate.value.model_dump(mode="json") if hasattr(gate.value, "model_dump") else {},
     )
+
+
+def _current_content_task_workflow_controls(
+    runtime: Any,
+    ctx: ToolExecutionContext,
+) -> ServiceResult[RepoRunWorkflowControls]:
+    from lean_constellation.flows.content_node_task.flows import ContentNodeTaskInput
+
+    flow_id = ctx.runtime.flow_id
+    if not flow_id:
+        return runtime.foundation.fail(
+            runtime.foundation.issue(
+                "content_task_workflow_controls_unavailable",
+                "Content workflow controls require the current ContentNodeTask Flow identity.",
+            )
+        )
+    try:
+        flow = runtime.get_flow(flow_id)
+    except (KeyError, RuntimeError):
+        return runtime.foundation.fail(
+            runtime.foundation.issue(
+                "content_task_workflow_controls_unavailable",
+                "The current ContentNodeTask Flow could not be loaded.",
+                object_ref=flow_id,
+            )
+        )
+    if getattr(flow, "flow_type", None) != "content_node_task" or not isinstance(
+        getattr(flow, "input", None), ContentNodeTaskInput
+    ):
+        return runtime.foundation.fail(
+            runtime.foundation.issue(
+                "content_task_workflow_controls_unavailable",
+                "Content workflow controls require a valid ContentNodeTask Flow input.",
+                object_ref=flow_id,
+            )
+        )
+    return runtime.foundation.ok(flow.input.workflow_controls)
 
 
 def submit_content_node_ready(runtime: Any, ctx: ToolExecutionContext, args: SubmitContentNodeReadyArgs) -> ServiceResult[PreparedSubmissionView]:

@@ -10,6 +10,7 @@ from agent_runtime_kit.flow.standard_steps import AgentStepIncompleteResult, Age
 from pydantic import Field
 
 from lean_constellation.domain.repo import RepoCompletionMode
+from lean_constellation.domain.repo_run import RepoRunWorkflowControls
 from lean_constellation.flows.common.business_flows import LeanBusinessFlow, LeanFlowParams
 from lean_constellation.flows.common.checkpoint_policy import content_task_progress_checkpoints_enabled
 from lean_constellation.flows.common.flow_requests import repo_scope_id
@@ -44,6 +45,7 @@ class ContentNodeTaskParams(LeanFlowParams):
     repo_path: str | None = None
     contract_version: int | None = None
     max_parallel_content_node_tasks: int = Field(default=1, ge=1)
+    workflow_controls: RepoRunWorkflowControls = Field(default_factory=RepoRunWorkflowControls)
 
 
 class ContentNodeTaskInput(LeanRenderableFlowInput):
@@ -53,6 +55,7 @@ class ContentNodeTaskInput(LeanRenderableFlowInput):
     node_path: str
     contract_version: int | None = None
     max_parallel_content_node_tasks: int = Field(default=1, ge=1)
+    workflow_controls: RepoRunWorkflowControls = Field(default_factory=RepoRunWorkflowControls)
 
     def agent_title(self) -> str:
         return f"Run content node task {self.node_path}"
@@ -63,6 +66,17 @@ class ContentNodeTaskInput(LeanRenderableFlowInput):
             "node_path": self.node_path,
             "contract_version": self.contract_version,
             "max_parallel_content_node_tasks": self.max_parallel_content_node_tasks,
+            "content_recon_controls": {
+                "node_dir_dependency": self.workflow_controls.content_node_dir_dependency_recon,
+                "mathlib": self.workflow_controls.content_mathlib_recon,
+                "resource": self.workflow_controls.content_resource_recon,
+            },
+            "decl_review_controls": {
+                "statement_nl": self.workflow_controls.statement_nl_review,
+                "statement_formal": self.workflow_controls.statement_formal_review,
+                "proof_nl": self.workflow_controls.proof_nl_review,
+                "proof_formal": self.workflow_controls.proof_formal_review,
+            },
         }
 
 
@@ -524,6 +538,7 @@ def _content_plan_agent_step(
         "contract_version": input_model.contract_version,
         "used_preparation_kinds": list(state.used_preparation_kinds),
         "decl_round_count": state.decl_round_count,
+        "workflow_controls": input_model.workflow_controls.model_dump(mode="json"),
     }
     callback_round_id = _completed_decl_round_id(ctx, flow, input_model, state) if child_callback else None
     if callback_round_id is not None:
@@ -639,6 +654,9 @@ def _content_plan_initial_prompt(ctx: FlowContext, input_model: ContentNodeTaskI
         "Do not rely on remembered Skill text from an earlier turn."
     )
     parts.append(
+        _content_workflow_control_prompt(input_model)
+    )
+    parts.append(
         "Read the current node contract and task context through tools. Submit exactly one next action: "
         "preparation recon, resource request, decl round, ready, blocked, or failed."
     )
@@ -655,6 +673,7 @@ def _content_plan_internal_wake_prompt(
     return "\n".join(
         [
             f"Resume the content node task for {input_model.node_path} in repository {input_model.repo_key}.",
+            _content_workflow_control_prompt(input_model),
             "Your ready intent was rejected by the deterministic Content completion audit.",
             "Actual completion audit report:",
             audit_report,
@@ -668,6 +687,30 @@ def _content_plan_internal_wake_prompt(
                 "or failed. The deterministic completion gate remains authoritative."
             ),
         ]
+    )
+
+
+def _content_workflow_control_prompt(input_model: ContentNodeTaskInput) -> str:
+    controls = input_model.workflow_controls
+    recon = {
+        "node_dir_dependency": controls.content_node_dir_dependency_recon,
+        "mathlib": controls.content_mathlib_recon,
+        "resource": controls.content_resource_recon,
+    }
+    reviews = {
+        "statement_nl": controls.statement_nl_review,
+        "statement_formal": controls.statement_formal_review,
+        "proof_nl": controls.proof_nl_review,
+        "proof_formal": controls.proof_formal_review,
+    }
+    enabled_recon = [kind for kind, enabled in recon.items() if enabled]
+    disabled_recon = [kind for kind, enabled in recon.items() if not enabled]
+    deterministic_stages = [stage for stage, enabled in reviews.items() if not enabled]
+    return (
+        "Current run workflow controls: enabled preparation recon="
+        f"{enabled_recon or ['none']}; disabled preparation recon={disabled_recon or ['none']}; "
+        f"deterministic-only review stages={deterministic_stages or ['none']}. "
+        "Do not call a disabled recon submit. Deterministic-only stages omit the Reviewer Agent but retain their deterministic gates."
     )
 
 

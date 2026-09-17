@@ -4,6 +4,7 @@ from pathlib import Path
 
 from agent_runtime_kit.flow.models import FlowStatus
 
+from lean_constellation.domain.repo_run import RepoRunWorkflowControls
 from lean_constellation.flows.common.submissions import new_submission_id
 from lean_constellation.flows.common.testing import FakeLeanFlowRuntime, create_fake_lean_flow_runtime
 from lean_constellation.flows.content_node_task.decl_round.submissions import (
@@ -241,6 +242,7 @@ def start_decl_round_flow(
     round_id: str,
     round_index: int = 1,
     contract_version: int = 1,
+    workflow_controls: RepoRunWorkflowControls | None = None,
 ) -> str:
     return runtime.start_flow(
         "decl_graph_round",
@@ -253,6 +255,9 @@ def start_decl_round_flow(
             "round_id": round_id,
             "round_index": round_index,
             "summary": "Run test decl round.",
+            "workflow_controls": (
+                workflow_controls or RepoRunWorkflowControls()
+            ).model_dump(mode="json"),
         },
         scope_id=f"repo:{repo_root.name}:node:{NODE_PATH}",
     )

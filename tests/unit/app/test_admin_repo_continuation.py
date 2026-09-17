@@ -45,6 +45,26 @@ def test_registry_lock_plus_semantic_start_allows_only_one_concurrent_continuati
     assert status.value.run_spec is not None
     assert status.value.run_spec.run_objective == "Continue the proof."
 
+    owner_flow_id = next(result.value.flow_id for result in results if result.ok)
+    runtime.ark.flow_service.start_flow(
+        FlowRequest(
+            flow_type="content_node_task",
+            scope_id="repo:Provider",
+            params={
+                "repo_key": "Provider",
+                "repo_path": str(root),
+                "node_path": "Main.Core",
+            },
+        ),
+        parent_flow_id=owner_flow_id,
+        enqueue=False,
+    )
+    child_status = admin.get_repo_run_status(root)
+    assert child_status.ok and child_status.value is not None
+    assert child_status.value.active_flow_type == "content_node_task"
+    assert child_status.value.run_spec is not None
+    assert child_status.value.run_spec.run_objective == "Continue the proof."
+
 
 def test_continuation_rejects_any_active_repo_scoped_flow(tmp_path) -> None:
     runtime = create_app_runtime_services(runtime_root=tmp_path / ".runtime")

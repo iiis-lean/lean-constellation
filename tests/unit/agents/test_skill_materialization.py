@@ -179,14 +179,28 @@ def test_coordinator_exploration_skill_describes_only_current_workflow() -> None
     body = build_skill_specs()["coordinator-repo-exploration"].body
 
     assert "Flow-owned initial exploration batch" in body
-    assert "consume all resource, Lean-provider, and Mathlib outcomes" in body
-    assert "retain useful findings even when another category was incomplete" in body
+    assert "exact Flow-owned batch selected by the current repo run workflow controls" in body
+    assert "Disabled exploration kinds are intentionally absent" in body
+    assert "retain useful findings even when another enabled category was incomplete" in body
     assert "Do not submit another exploration batch" in body
     assert "During later work" in body
     assert "resource_objective, lean_provider_objective, and mathlib_objective" in body
     assert "one short shared context_summary" in body
     for migration_term in ("retroactive", "restored mature", "capability became available"):
         assert migration_term not in body
+
+
+def test_content_planning_skills_describe_disabled_recon_and_deterministic_gates() -> None:
+    specs = build_skill_specs()
+    preparation = specs["content-preparation-orchestration"].body
+    planning = specs["decl-round-change-planning"].body
+    proof_formal = specs["lean-proof-formalization"].body
+
+    assert "Do not submit, retry, or emulate a disabled recon kind" in preparation
+    assert "enabled Reviewer or the deterministic validation/audit gate" in planning
+    assert "Do not bypass an enabled reviewer or the deterministic validation/audit gate" in planning
+    assert "passed its configured gate" in proof_formal
+    assert "gated proof route" in proof_formal
 
 
 def test_repo_mathlib_recon_skill_uses_index_truth_and_backend_derived_metadata() -> None:

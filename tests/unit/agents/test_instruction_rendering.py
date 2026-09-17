@@ -250,6 +250,13 @@ def test_content_plan_instruction_spells_out_operational_flow_and_tools() -> Non
     assert "round_index" not in text
 
 
+def test_coordinator_instruction_exposes_run_workflow_control_semantics() -> None:
+    text = render_agent_instruction("CoordinatorAgent")
+
+    assert "Honor controls for first batch and children" in text
+    assert "never claim disabled Agents ran" in text
+
+
 def test_bottom_up_policy_instruction_is_navigation_not_a_duplicate_decision_tree() -> None:
     coordinator = render_agent_instruction("CoordinatorAgent")
     content = render_agent_instruction("ContentPlanAgent")

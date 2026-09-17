@@ -22,7 +22,12 @@ from lean_constellation.domain.preparation import (
 from lean_constellation.domain.repo import ProofAvailability, RepoCompletionMode, RepoFormat, RepoPublicationStatus
 from lean_constellation.domain.repo_release import DeclAvailabilityIndex
 from lean_constellation.domain.publication import ReleasePolicy, RepoPublicationOverride
-from lean_constellation.domain.repo_run import RepoRunContext, RepoRunSpec, SourceScope
+from lean_constellation.domain.repo_run import (
+    RepoRunContext,
+    RepoRunSpec,
+    RepoRunWorkflowControls,
+    SourceScope,
+)
 from lean_constellation.flows.common.flow_requests import build_content_node_task_request, build_resource_curation_request
 from lean_constellation.flows.common.submissions import new_submission_id
 from lean_constellation.flows.common.testing import FakeLeanFlowRuntime, create_fake_lean_flow_runtime
@@ -168,10 +173,11 @@ def _start_coordinator(
     repo_root: Path,
     *,
     max_parallel_content_node_tasks: int | None = None,
+    workflow_controls: RepoRunWorkflowControls | None = None,
 ) -> str:
     repo_root.mkdir(parents=True, exist_ok=True)
     run_context = None
-    if max_parallel_content_node_tasks is not None:
+    if max_parallel_content_node_tasks is not None or workflow_controls is not None:
         run_context = RepoRunContext(
             start_kind="initial",
             run_spec=RepoRunSpec(
@@ -180,7 +186,8 @@ def _start_coordinator(
                 source_scope=SourceScope(mode="none"),
                 index_policy="reuse",
                 root_interface_policy="reuse",
-                max_parallel_content_node_tasks=max_parallel_content_node_tasks,
+                max_parallel_content_node_tasks=max_parallel_content_node_tasks or 1,
+                workflow_controls=workflow_controls or RepoRunWorkflowControls(),
             ),
         )
     return runtime.start_flow(
@@ -943,7 +950,7 @@ def test_fresh_native_repo_runs_fixed_initial_exploration_before_coordinator_tur
     )
     _advance_and_run(runtime, flow_id)
     assert runtime.flow_service.get_flow(flow_id).state.position.phase == "waiting_requirement"
-    assert "fixed initial resource, Lean-provider, and Mathlib exploration batch" in (
+    assert "fixed initial exploration batch for the enabled kinds (resource, Lean-provider, Mathlib)" in (
         runtime.agent_service.start_records[-1].prompt or ""
     )
     assert runtime_stability.calls[-2:] == [
@@ -951,6 +958,52 @@ def test_fresh_native_repo_runs_fixed_initial_exploration_before_coordinator_tur
         (RepoCheckpointKind.COORDINATOR_REQUIREMENT_WAITING, []),
     ]
     assert len(ark_snapshot.created) == 4
+
+
+@pytest.mark.parametrize(
+    ("controls", "expected_kinds", "expected_phase"),
+    [
+        (
+            RepoRunWorkflowControls(
+                initial_repo_resource_discovery=False,
+                initial_repo_lean_provider_discovery=False,
+                initial_repo_mathlib_recon=False,
+            ),
+            [],
+            "coordinator_agent",
+        ),
+        (
+            RepoRunWorkflowControls(
+                initial_repo_resource_discovery=False,
+                initial_repo_lean_provider_discovery=False,
+            ),
+            ["mathlib"],
+            "ensure_repo_exploration_agents",
+        ),
+    ],
+)
+def test_initial_exploration_respects_enabled_kind_set(
+    tmp_path: Path,
+    controls: RepoRunWorkflowControls,
+    expected_kinds: list[str],
+    expected_phase: str,
+) -> None:
+    runtime, lean_runtime, _, _ = _runtime(tmp_path)
+    repo_root = tmp_path / "workspace" / "Repo"
+    initialize_native_test_repo(repo_root, project_name="Repo")
+    assert lean_runtime.node.node_tree.ensure_root_scope_node(repo_root).ok
+    flow_id = _start_coordinator(runtime, repo_root, workflow_controls=controls)
+
+    plan_step_id = _advance_and_run(runtime, flow_id)
+    plan = runtime.flow_service.get_step(plan_step_id).result
+
+    assert [item.kind.value for item in plan.explorations] == expected_kinds
+    assert runtime.flow_service.get_flow(flow_id).state.position.phase == expected_phase
+    if expected_kinds:
+        ensure_step_id = _advance_and_run(runtime, flow_id)
+        ensure = runtime.flow_service.get_step(ensure_step_id).result
+        expected_roles = {"mathlib": "repo_mathlib_recon"}
+        assert ensure.created_roles == [expected_roles[kind] for kind in expected_kinds]
 
 
 def test_initial_exploration_callback_can_checkpoint_before_content_dispatch(

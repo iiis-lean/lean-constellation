@@ -10,6 +10,7 @@ from agent_runtime_kit.flow.models import BaseFlow, BaseFlowError, BaseFlowInput
 from agent_runtime_kit.flow.standard_steps import AgentStepIncompleteResult
 from pydantic import Field
 
+from lean_constellation.domain.repo_run import RepoRunWorkflowControls
 from lean_constellation.flows.common.business_flows import LeanBusinessFlow, LeanFlowParams
 from lean_constellation.flows.common.rendering import LeanRenderableFlowInput, LeanRenderableFlowResult
 from lean_constellation.flows.content_node_task.preparation.common import content_node_workdir
@@ -38,6 +39,7 @@ from lean_constellation.flows.content_node_task.decl_round.steps import (
     StageGateAndAuditStepState,
     new_decl_round_step_id,
 )
+from lean_constellation.services.decl_graph.round_execution import StageReviewMode
 
 if TYPE_CHECKING:
     from agent_runtime_kit.flow.services import FlowService
@@ -95,6 +97,7 @@ class DeclGraphRoundParams(LeanFlowParams):
     contract_version: int | None = None
     round_index: int | None = None
     summary: str | None = None
+    workflow_controls: RepoRunWorkflowControls = Field(default_factory=RepoRunWorkflowControls)
 
 
 class DeclGraphRoundInput(LeanRenderableFlowInput):
@@ -106,6 +109,7 @@ class DeclGraphRoundInput(LeanRenderableFlowInput):
     strategy_id: str
     round_id: str
     round_index: int | None = None
+    workflow_controls: RepoRunWorkflowControls = Field(default_factory=RepoRunWorkflowControls)
 
     def agent_title(self) -> str:
         if self.round_index is not None:
@@ -118,6 +122,12 @@ class DeclGraphRoundInput(LeanRenderableFlowInput):
             "node_path": self.node_path,
             "contract_version": self.contract_version,
             "round_sequence": self.round_index,
+            "review_controls": {
+                "statement_nl": self.workflow_controls.statement_nl_review,
+                "statement_formal": self.workflow_controls.statement_formal_review,
+                "proof_nl": self.workflow_controls.proof_nl_review,
+                "proof_formal": self.workflow_controls.proof_formal_review,
+            },
         }
 
 
@@ -230,6 +240,10 @@ class DeclGraphRoundFlow(LeanBusinessFlow):
                     scope_id=self.scope_id,
                     state=StageGateAndAuditStepState(
                         stage=state.current_stage,
+                        review_mode=_review_mode_for_stage(
+                            input_model.workflow_controls,
+                            state.current_stage,
+                        ),
                         target_decl_names=list(state.current_target_decl_names),
                         retry_count=state.current_retry_count,
                         max_retries=state.max_retries_per_stage,
@@ -296,7 +310,7 @@ class DeclGraphRoundFlow(LeanBusinessFlow):
         elif isinstance(result, PrepareStageTargetsStepResult):
             self._consume_stage_targets(state, result)
         elif ctx.step.step_type == "decl_stage_worker_agent_step":
-            self._consume_worker_result(state, result)
+            self._consume_worker_result(state, input_model, result)
         elif ctx.step.step_type == "decl_stage_reviewer_agent_step":
             self._consume_reviewer_result(state, result)
         elif isinstance(result, StageGateAndAuditStepResult):
@@ -348,7 +362,12 @@ class DeclGraphRoundFlow(LeanBusinessFlow):
         state.pending_flow_outcome = "blocked" if result.outcome == "blocked" else "failed"
         state.position = FlowPosition(phase="build_result")
 
-    def _consume_worker_result(self, state: DeclGraphRoundState, result: object | None) -> None:
+    def _consume_worker_result(
+        self,
+        state: DeclGraphRoundState,
+        input_model: DeclGraphRoundInput,
+        result: object | None,
+    ) -> None:
         if isinstance(result, AgentStepIncompleteResult) or result is None:
             state.terminal_reason = RoundTerminalReason(code="internal_service_error", message="Decl stage worker did not submit a valid result.", stage=state.current_stage)
             state.pending_flow_outcome = "failed"
@@ -361,7 +380,17 @@ class DeclGraphRoundFlow(LeanBusinessFlow):
             return
         state.latest_worker_result = result
         if result.outcome == "completed":
-            state.position = FlowPosition(phase="stage_reviewer")
+            state.position = FlowPosition(
+                phase=(
+                    "stage_reviewer"
+                    if _review_mode_for_stage(
+                        input_model.workflow_controls,
+                        state.current_stage or result.stage or "statement_nl",
+                    )
+                    == "agent"
+                    else "stage_gate_audit"
+                )
+            )
             return
         reason = result.reason or result.incomplete_reason or result.summary or "Decl stage worker blocked."
         state.terminal_reason = RoundTerminalReason(
@@ -406,6 +435,7 @@ class DeclGraphRoundFlow(LeanBusinessFlow):
                     outcome="passed",
                     target_decl_names=list(result.advanced_decl_names),
                     retry_count=result.retry_count,
+                    review_mode=result.review_mode,
                     summary=result.summary or f"{result.stage} passed.",
                 )
             )
@@ -419,6 +449,7 @@ class DeclGraphRoundFlow(LeanBusinessFlow):
                     outcome="retry_worker",
                     target_decl_names=list(state.current_target_decl_names),
                     retry_count=result.retry_count,
+                    review_mode=result.review_mode,
                     summary=result.summary or f"Retry {result.stage} worker.",
                 )
             )
@@ -432,6 +463,7 @@ class DeclGraphRoundFlow(LeanBusinessFlow):
                 outcome="blocked" if result.outcome == "blocked" else "failed",
                 target_decl_names=list(state.current_target_decl_names),
                 retry_count=result.retry_count,
+                review_mode=result.review_mode,
                 summary=result.summary or (result.error.message if result.error else f"{result.stage} stopped."),
             )
         )
@@ -656,25 +688,50 @@ def _round_agent_context(input_model: DeclGraphRoundInput) -> str:
 
 def _stage_worker_prompt(ctx: FlowContext, input_model: DeclGraphRoundInput, state: DeclGraphRoundState) -> str:
     stage = _require_stage(state)
+    review_mode = _review_mode_for_stage(input_model.workflow_controls, stage)
     mode = "retry_after_review" if state.current_retry_count else "initial"
     metadata = _format_stage_target_metadata(ctx, input_model, state.current_target_decl_names)
     required_skills = _stage_required_skills(stage, role="worker")
     feedback = ""
     if state.latest_reviewer_result is not None:
         feedback = "\nPrevious review feedback:\n" + _format_reviewer_feedback(state.latest_reviewer_result)
+    review_guidance = (
+        "An independent Reviewer Agent will check the complete current batch after this Worker.\n"
+        if review_mode == "agent"
+        else "No Reviewer Agent will run for this stage; complete the full role-allowed self-check before submission. Deterministic structural, dependency, Lean/policy, and round-local gates remain authoritative, but they are not an equivalent independent semantic review.\n"
+    )
+    retry_guidance = (
+        "the next reviewer must re-check the full current batch"
+        if review_mode == "agent"
+        else "the deterministic gate will re-check the full current batch"
+    )
     return (
         f"Run decl stage worker for {stage}.\n"
         f"Mode: {mode}.\n"
         f"Repo: {input_model.repo_key}. Node: {input_model.node_path}. {_round_agent_context(input_model)}\n"
         f"Pipeline position: {_stage_pipeline_position(stage)}\n"
+        f"Stage review mode: {review_mode}. {review_guidance}"
         f"Required Skill re-entry: read and apply {', '.join(f'${skill}' for skill in required_skills)} from the current Home before acting.\n"
         "The Flow owns later stages; global target_state does not expand this stage's authority. Missing later-stage artifacts are expected here.\n"
         f"Assigned declarations:\n{metadata}\n"
         f"Retry attempt: {state.current_retry_count} of {state.max_retries_per_stage}. "
         f"Retry remaining: {max(state.max_retries_per_stage - state.current_retry_count, 0)}."
         f"{feedback}\n"
-        "Use only the stage-specific tools. Normal stage-local reading, editing, capture, dependency mutation, or reviewer repair is not a blocker. If Planner action is required, identify affected declarations, the missing interface, and the recommended planning change. On retry, re-read the current candidate and repair failed or missing declarations without regressing accepted work; the next reviewer must re-check the full current batch. Submit completed or blocked when the stage is ready."
+        f"Use only the stage-specific tools. Normal stage-local reading, editing, capture, dependency mutation, or reviewer repair is not a blocker. If Planner action is required, identify affected declarations, the missing interface, and the recommended planning change. On retry, re-read the current candidate and repair failed or missing declarations without regressing accepted work; {retry_guidance}. Submit completed or blocked when the stage is ready."
     )
+
+
+def _review_mode_for_stage(
+    controls: RepoRunWorkflowControls,
+    stage: DeclStageName,
+) -> StageReviewMode:
+    enabled = {
+        "statement_nl": controls.statement_nl_review,
+        "statement_formal": controls.statement_formal_review,
+        "proof_nl": controls.proof_nl_review,
+        "proof_formal": controls.proof_formal_review,
+    }[stage]
+    return "agent" if enabled else "deterministic_only"
 
 
 def _stage_reviewer_prompt(ctx: FlowContext, input_model: DeclGraphRoundInput, state: DeclGraphRoundState) -> str:

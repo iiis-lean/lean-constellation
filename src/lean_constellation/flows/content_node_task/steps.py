@@ -411,10 +411,12 @@ class EnsureDeclStageAgentsStep(BaseStep):
         if agent_service is None:
             raise FlowStepValidationError("ark.agent_service is not registered")
         flow = flow_service.get_flow(ctx.flow_id)
-        existing = [role for role in self.STAGE_ROLES if flow.agent_bindings.get(role)]
+        input_model = _require_content_node_task_input(flow.input)
+        desired_roles = self._desired_roles(input_model)
+        existing = [role for role in desired_roles if flow.agent_bindings.get(role)]
         initialized: list[str] = []
         bindings: dict[str, str] = {}
-        for role in self.STAGE_ROLES:
+        for role in desired_roles:
             if flow.agent_bindings.get(role):
                 continue
             agent_type = self.STAGE_AGENT_TYPES[role]
@@ -434,6 +436,21 @@ class EnsureDeclStageAgentsStep(BaseStep):
                 reused_roles=existing,
                 summary="Decl stage agent roles are ready for this content task.",
             )
+        )
+
+    @classmethod
+    def _desired_roles(cls, input_model) -> tuple[str, ...]:  # noqa: ANN001
+        controls = input_model.workflow_controls
+        reviewer_enabled = {
+            "statement_nl_reviewer": controls.statement_nl_review,
+            "statement_formal_reviewer": controls.statement_formal_review,
+            "proof_nl_reviewer": controls.proof_nl_review,
+            "proof_formal_reviewer": controls.proof_formal_review,
+        }
+        return tuple(
+            role
+            for role in cls.STAGE_ROLES
+            if not role.endswith("_reviewer") or reviewer_enabled[role]
         )
 
 

@@ -12,6 +12,7 @@ from agent_runtime_kit.flow.standard_steps.agent_step import AgentStepState
 from pydantic import Field
 
 from lean_constellation.domain.common import StrictModel
+from lean_constellation.domain.repo_run import RepoRunWorkflowControls
 from lean_constellation.flows.common.rendering import LeanRenderableStepResult
 from lean_constellation.services.decl_graph.models import (
     DeclChangeKind,
@@ -20,7 +21,7 @@ from lean_constellation.services.decl_graph.models import (
     DeclState,
     DeclStrategyStatus,
 )
-from lean_constellation.services.decl_graph.round_execution import RoundStageReview
+from lean_constellation.services.decl_graph.round_execution import RoundStageReview, StageReviewMode
 
 
 DeclStageName = Literal["statement_nl", "statement_formal", "proof_nl", "proof_formal"]
@@ -49,6 +50,7 @@ class RoundStageRuntimeSummary(StrictModel):
     outcome: Literal["passed", "skipped", "blocked", "failed", "retry_worker"]
     target_decl_names: list[str] = Field(default_factory=list)
     retry_count: int = 0
+    review_mode: StageReviewMode | None = None
     summary: str
 
 
@@ -193,6 +195,7 @@ class StageGateAndAuditStepResult(LeanRenderableStepResult):
     result_type: Literal["decl_round_stage_gate_audit"] = "decl_round_stage_gate_audit"
     outcome: Literal["stage_passed", "retry_worker", "blocked", "failed"]
     stage: DeclStageName
+    review_mode: StageReviewMode = "agent"
     advanced_decl_names: list[str] = Field(default_factory=list)
     rejected_decl_names: list[str] = Field(default_factory=list)
     retry_count: int = 0
@@ -206,6 +209,7 @@ class StageGateAndAuditStepResult(LeanRenderableStepResult):
         return {
             "outcome": self.outcome,
             "stage": self.stage,
+            "review_mode": self.review_mode,
             "advanced_decl_names": list(self.advanced_decl_names),
             "rejected_decl_names": list(self.rejected_decl_names),
             "retry_count": self.retry_count,
@@ -463,6 +467,7 @@ class PrepareStageTargetsStep(BaseStep):
 class StageGateAndAuditStepState(BaseStepState):
     state_type: Literal["decl_round_stage_gate_audit"] = "decl_round_stage_gate_audit"
     stage: DeclStageName
+    review_mode: StageReviewMode = "agent"
     target_decl_names: list[str] = Field(default_factory=list)
     retry_count: int = 0
     max_retries: int = 2
@@ -482,17 +487,28 @@ class StageGateAndAuditStep(BaseStep):
         state = _stage_gate_state(self.state)
         repo_root = _repo_root(input_model)
         if repo_root is None:
-            return ctx.complete_step(_stage_gate_failed(state.stage, "DeclGraphRoundFlow requires repo_path in Flow input."))
-        reviewer_result = getattr(flow.state, "latest_reviewer_result", None)
-        if not isinstance(reviewer_result, DeclStageReviewerStepResult):
-            return ctx.complete_step(_stage_gate_failed(state.stage, "Stage gate requires the latest reviewer result."))
-        gated = _decl_graph(ctx).gate_and_advance_round_stage(
-            repo_root,
-            node_path=input_model.node_path,
-            round_id=input_model.round_id,
-            stage=state.stage,
-            target_decl_names=list(state.target_decl_names),
-            review=RoundStageReview(
+            return ctx.complete_step(_stage_gate_failed(state.stage, "DeclGraphRoundFlow requires repo_path in Flow input.", review_mode=state.review_mode))
+        expected_mode = _stage_review_mode(input_model.workflow_controls, state.stage)
+        if state.review_mode != expected_mode:
+            return ctx.complete_step(_stage_gate_failed(state.stage, "Stage gate review mode does not match the round input policy.", state.target_decl_names, review_mode=state.review_mode))
+        flow_targets = list(getattr(flow.state, "current_target_decl_names", []))
+        if list(state.target_decl_names) != flow_targets:
+            return ctx.complete_step(_stage_gate_failed(state.stage, "Stage gate target batch does not match current Flow state.", state.target_decl_names, review_mode=state.review_mode))
+        worker_result = getattr(flow.state, "latest_worker_result", None)
+        if not isinstance(worker_result, DeclStageWorkerStepResult) or worker_result.outcome != "completed":
+            return ctx.complete_step(_stage_gate_failed(state.stage, "Stage gate requires the latest completed worker result.", state.target_decl_names, review_mode=state.review_mode))
+        if (
+            worker_result.stage != state.stage
+            or worker_result.round_id != input_model.round_id
+            or list(worker_result.completed_decl_names) != list(state.target_decl_names)
+        ):
+            return ctx.complete_step(_stage_gate_failed(state.stage, "Stage gate worker result does not match the current stage, round, and target batch.", state.target_decl_names, review_mode=state.review_mode))
+        review: RoundStageReview | None = None
+        if state.review_mode == "agent":
+            reviewer_result = getattr(flow.state, "latest_reviewer_result", None)
+            if not isinstance(reviewer_result, DeclStageReviewerStepResult):
+                return ctx.complete_step(_stage_gate_failed(state.stage, "Agent review mode requires the latest reviewer result.", state.target_decl_names, review_mode=state.review_mode))
+            review = RoundStageReview(
                 outcome=reviewer_result.outcome,
                 round_id=reviewer_result.round_id,
                 node_path=reviewer_result.node_path,
@@ -502,12 +518,20 @@ class StageGateAndAuditStep(BaseStep):
                 missing_decl_names=list(reviewer_result.missing_decl_names),
                 summary=reviewer_result.summary,
                 incomplete_reason=reviewer_result.incomplete_reason,
-            ),
+            )
+        gated = _decl_graph(ctx).gate_and_advance_round_stage(
+            repo_root,
+            node_path=input_model.node_path,
+            round_id=input_model.round_id,
+            stage=state.stage,
+            target_decl_names=list(state.target_decl_names),
+            review=review,
+            review_mode=state.review_mode,
             retry_count=state.retry_count,
             max_retries=state.max_retries,
         )
         if not gated.ok or gated.value is None:
-            return ctx.complete_step(_stage_gate_failed(state.stage, _first_issue_message(gated.issues, "Stage gate failed."), state.target_decl_names))
+            return ctx.complete_step(_stage_gate_failed(state.stage, _first_issue_message(gated.issues, "Stage gate failed."), state.target_decl_names, review_mode=state.review_mode))
         view = gated.value
         error = None
         if view.issue_message is not None:
@@ -522,6 +546,7 @@ class StageGateAndAuditStep(BaseStep):
             StageGateAndAuditStepResult(
                 outcome=view.outcome,
                 stage=state.stage,
+                review_mode=state.review_mode,
                 advanced_decl_names=list(view.advanced_decl_names),
                 rejected_decl_names=list(view.rejected_decl_names),
                 retry_count=view.retry_count,
@@ -731,10 +756,17 @@ def _prepare_failed(stage: DeclStageName, message: str, targets: list[str] | Non
     )
 
 
-def _stage_gate_failed(stage: DeclStageName, message: str, targets: list[str] | None = None) -> StageGateAndAuditStepResult:
+def _stage_gate_failed(
+    stage: DeclStageName,
+    message: str,
+    targets: list[str] | None = None,
+    *,
+    review_mode: StageReviewMode = "agent",
+) -> StageGateAndAuditStepResult:
     return StageGateAndAuditStepResult(
         outcome="failed",
         stage=stage,
+        review_mode=review_mode,
         rejected_decl_names=list(targets or []),
         error=RoundTerminalReason(code="stage_gate_failed", message=message, stage=stage, affected_decl_names=list(targets or [])),
         summary=message,
@@ -805,6 +837,19 @@ def _stage_required(stage: DeclStageName, kind: str, revision, target_state: Dec
     if stage == "proof_formal":
         return target_state == DeclState.PROVED and _is_theorem_like(kind) and not _state_reaches(revision.state, DeclState.PROVED)
     return False
+
+
+def _stage_review_mode(
+    controls: RepoRunWorkflowControls,
+    stage: DeclStageName,
+) -> StageReviewMode:
+    enabled = {
+        "statement_nl": controls.statement_nl_review,
+        "statement_formal": controls.statement_formal_review,
+        "proof_nl": controls.proof_nl_review,
+        "proof_formal": controls.proof_formal_review,
+    }[stage]
+    return "agent" if enabled else "deterministic_only"
 
 
 def _is_theorem_like(kind: str) -> bool:

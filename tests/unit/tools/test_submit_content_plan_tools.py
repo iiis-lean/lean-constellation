@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from agent_runtime_kit.flow.models import BaseSubmission
 from pydantic import ValidationError
 
 from lean_constellation.services import LeanProviderOverrides, create_test_runtime_services
+from lean_constellation.domain.repo_run import RepoRunWorkflowControls
+from lean_constellation.flows.content_node_task.flows import ContentNodeTaskInput
 from lean_constellation.services.decl_graph import DeclGraphRound, DeclState
 from lean_constellation.services.foundation import WriteMode
 from lean_constellation.services.tool_facade import RawToolCallContext, RuntimeToolContext, SubmitBehavior
@@ -26,10 +29,28 @@ class _RecordingSubmissionGateway:
         return {"accepted": True}
 
 
-def _prepare_round(tmp_path: Path):
+def _prepare_round(
+    tmp_path: Path,
+    *,
+    workflow_controls: RepoRunWorkflowControls | None = None,
+):
     initialize_native_test_repo(tmp_path)
     gateway = _RecordingSubmissionGateway()
     runtime = create_test_runtime_services(providers=LeanProviderOverrides(submission_gateway=gateway))
+    content_input = ContentNodeTaskInput(
+        repo_key="Repo",
+        repo_path=str(tmp_path),
+        node_path="Main.Topic.Core",
+        contract_version=1,
+        workflow_controls=workflow_controls or RepoRunWorkflowControls(),
+    )
+    runtime.ark.flow_service = SimpleNamespace(
+        get_flow=lambda flow_id: SimpleNamespace(
+            flow_id=flow_id,
+            flow_type="content_node_task",
+            input=content_input,
+        )
+    )
     assert runtime.node.node_tree.ensure_root_scope_node(tmp_path).ok
     assert runtime.node.create_scope_node(
         tmp_path,
@@ -131,6 +152,63 @@ def test_submit_current_decl_round_derives_exact_relation_from_current_draft(tmp
     assert request.params["strategy_id"] == strategy.strategy_id
     assert request.params["round_id"] == round_record.round_id
     assert request.params["round_index"] == round_record.round_index
+
+
+def test_content_plan_tools_preserve_controls_and_reject_disabled_recon(tmp_path: Path) -> None:
+    controls = RepoRunWorkflowControls(
+        content_mathlib_recon=False,
+        statement_formal_review=False,
+    )
+    runtime, gateway, raw, _strategy, _round_record = _prepare_round(
+        tmp_path,
+        workflow_controls=controls,
+    )
+
+    disabled = runtime.tool_facade.invoke_agent_tool(
+        raw,
+        tool_name="submit_content_preparation_recon",
+        flat_args={
+            "recon_kind": "mathlib",
+            "objective": "Check one missing declaration.",
+            "summary": "Run Mathlib recon.",
+        },
+    )
+    dispatched = runtime.tool_facade.invoke_agent_tool(
+        raw,
+        tool_name="submit_current_decl_round",
+        flat_args={"summary": "Dispatch the current draft."},
+    )
+
+    assert disabled.ok and disabled.value is not None and disabled.value.ok is False
+    assert disabled.value.issues[0].kind == "content_preparation_recon_disabled"
+    assert dispatched.ok and dispatched.value is not None and dispatched.value.ok is True
+    assert len(gateway.accepted) == 1
+    assert gateway.accepted[0].requests[0].params["workflow_controls"] == controls.model_dump(mode="json")
+
+
+def test_content_plan_workflow_controls_fail_closed_for_wrong_flow_type(tmp_path: Path) -> None:
+    runtime, gateway, raw, _strategy, _round_record = _prepare_round(tmp_path)
+    runtime.ark.flow_service = SimpleNamespace(
+        get_flow=lambda flow_id: SimpleNamespace(
+            flow_id=flow_id,
+            flow_type="native_repo_coordinator",
+            input=SimpleNamespace(),
+        )
+    )
+
+    result = runtime.tool_facade.invoke_agent_tool(
+        raw,
+        tool_name="submit_content_preparation_recon",
+        flat_args={
+            "recon_kind": "mathlib",
+            "objective": "Check one declaration.",
+            "summary": "Run Mathlib recon.",
+        },
+    )
+
+    assert result.ok and result.value is not None and result.value.ok is False
+    assert result.value.issues[0].kind == "content_task_workflow_controls_unavailable"
+    assert gateway.accepted == []
 
 
 def test_submit_current_decl_round_fails_closed_for_missing_or_ambiguous_draft(tmp_path: Path) -> None:

@@ -327,7 +327,12 @@ class NativeRepoCoordinatorFlow(LeanBusinessFlow):
 
         result = ctx.step.result
         if isinstance(result, InitialRepoExplorationPlanStepResult):
-            self._consume_initial_repo_exploration_plan(state, result, ctx.step.step_id)
+            self._consume_initial_repo_exploration_plan(
+                state,
+                input_model,
+                result,
+                ctx.step.step_id,
+            )
         elif ctx.step.step_type == "coordinator_agent_step":
             self._consume_coordinator_agent_result(ctx, state, result, ctx.step.submission, ctx.step.step_id)
         elif isinstance(result, CoordinatorRequirementResumeGateStepResult):
@@ -591,13 +596,21 @@ class NativeRepoCoordinatorFlow(LeanBusinessFlow):
     def _consume_initial_repo_exploration_plan(
         self,
         state: NativeRepoCoordinatorState,
+        input_model: NativeRepoCoordinatorInput,
         result: InitialRepoExplorationPlanStepResult,
         step_id: str,
     ) -> None:
         if result.outcome == "not_required":
             state.position = FlowPosition(phase="coordinator_agent")
             return
-        if result.outcome != "planned" or not result.plan_id or len(result.explorations) != 3:
+        expected_kinds = _enabled_initial_exploration_kinds(input_model)
+        actual_kinds = [item.kind.value for item in result.explorations]
+        if (
+            result.outcome != "planned"
+            or not result.plan_id
+            or len(actual_kinds) != len(set(actual_kinds))
+            or set(actual_kinds) != expected_kinds
+        ):
             self._fail_coordinator(
                 result.issue_code or "initial_repo_exploration_plan_invalid",
                 result.reason or result.summary or "Initial repository exploration planning failed.",
@@ -1078,6 +1091,22 @@ def _dispatch_step_from_pending(
             continuation=submission.continuation,
         ),
     )
+
+
+def _enabled_initial_exploration_kinds(
+    input_model: NativeRepoCoordinatorInput,
+) -> set[str]:
+    controls = (
+        input_model.run_context.run_spec.workflow_controls
+        if input_model.run_context is not None
+        else None
+    )
+    candidates = {
+        "resource": controls is None or controls.initial_repo_resource_discovery,
+        "lean_provider": controls is None or controls.initial_repo_lean_provider_discovery,
+        "mathlib": controls is None or controls.initial_repo_mathlib_recon,
+    }
+    return {kind for kind, enabled in candidates.items() if enabled}
 
 
 def _repo_exploration_dispatch_step(

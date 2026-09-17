@@ -5,7 +5,12 @@ from pydantic import ValidationError
 
 from lean_constellation.domain.interface import DeclInterface, DeclKind
 from lean_constellation.domain.repo import RepoCompletionMode
-from lean_constellation.domain.repo_run import RepoRunContext, RepoRunSpec, SourceScope
+from lean_constellation.domain.repo_run import (
+    RepoRunContext,
+    RepoRunSpec,
+    RepoRunWorkflowControls,
+    SourceScope,
+)
 
 
 def _interface(name: str) -> DeclInterface:
@@ -81,6 +86,34 @@ def test_repo_run_context_roundtrips_without_becoming_repo_truth() -> None:
 
     assert RepoRunContext.model_validate(context.model_dump(mode="json")) == context
     assert context.run_spec.max_parallel_content_node_tasks == 4
+
+
+def test_repo_run_workflow_controls_default_on_roundtrip_and_reject_coercion() -> None:
+    legacy = RepoRunSpec.model_validate(
+        {
+            "run_objective": "Continue the existing proof graph.",
+            "completion_mode": "graph_proved",
+            "source_scope": {"mode": "none"},
+            "index_policy": "reuse",
+            "root_interface_policy": "reuse",
+        }
+    )
+    assert all(legacy.workflow_controls.model_dump().values())
+
+    controls = RepoRunWorkflowControls(
+        initial_repo_resource_discovery=False,
+        content_mathlib_recon=False,
+        statement_nl_review=False,
+        proof_formal_review=False,
+    )
+    updated = legacy.model_copy(update={"workflow_controls": controls})
+    assert RepoRunSpec.model_validate(updated.model_dump(mode="json")) == updated
+
+    for invalid in ("false", 0, 1):
+        with pytest.raises(ValidationError):
+            RepoRunWorkflowControls(statement_nl_review=invalid)
+    with pytest.raises(ValidationError):
+        RepoRunWorkflowControls.model_validate({"statement_nl_review": True, "unknown": True})
 
 
 def test_source_none_with_explicit_update_is_a_valid_flow_level_no_op_request() -> None:

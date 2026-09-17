@@ -13,7 +13,7 @@ from lean_constellation.domain.repo import (
     RepoPublicationStatus,
     completion_mode_satisfies,
 )
-from lean_constellation.domain.repo_run import RepoRunSpec, SourceScope
+from lean_constellation.domain.repo_run import RepoRunSpec, RepoRunWorkflowControls, SourceScope
 from lean_constellation.services.foundation import GateReport, ServiceResult
 
 if TYPE_CHECKING:
@@ -41,6 +41,7 @@ class RepoRunComponent:
         index_policy: Literal["auto", "update", "reuse"] | None = None,
         root_interface_policy: Literal["auto", "prepare", "reuse"] | None = None,
         max_parallel_content_node_tasks: int = 1,
+        workflow_controls: RepoRunWorkflowControls | None = None,
         additional_required_interfaces: Sequence[DeclInterface] = (),
     ) -> ServiceResult[RepoRunSpec]:
         prepared = self.preparation.get_preparation_input(repo_root)
@@ -57,6 +58,7 @@ class RepoRunComponent:
                 index_policy=index_policy or "auto",
                 root_interface_policy=root_interface_policy or "auto",
                 max_parallel_content_node_tasks=max_parallel_content_node_tasks,
+                workflow_controls=workflow_controls or RepoRunWorkflowControls(),
                 additional_required_interfaces=list(additional_required_interfaces),
             )
         except ValueError as exc:
@@ -77,6 +79,7 @@ class RepoRunComponent:
         index_policy: Literal["auto", "update", "reuse"] | None = None,
         root_interface_policy: Literal["auto", "prepare", "reuse"] | None = None,
         max_parallel_content_node_tasks: int = 1,
+        workflow_controls: RepoRunWorkflowControls | None = None,
         additional_required_interfaces: Sequence[DeclInterface] = (),
     ) -> ServiceResult[RepoRunSpec]:
         if run_objective is None or not run_objective.strip():
@@ -94,6 +97,7 @@ class RepoRunComponent:
                 index_policy=index_policy or "auto",
                 root_interface_policy=root_interface_policy or "auto",
                 max_parallel_content_node_tasks=max_parallel_content_node_tasks,
+                workflow_controls=workflow_controls or RepoRunWorkflowControls(),
                 additional_required_interfaces=list(additional_required_interfaces),
             )
         except ValueError as exc:

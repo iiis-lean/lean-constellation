@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, StrictBool, field_validator, model_validator
 
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.domain.interface import DeclInterface
@@ -33,6 +33,21 @@ class SourceScope(StrictModel):
         return self
 
 
+class RepoRunWorkflowControls(StrictModel):
+    """Explicit per-run switches for optional workflow work."""
+
+    initial_repo_resource_discovery: StrictBool = True
+    initial_repo_lean_provider_discovery: StrictBool = True
+    initial_repo_mathlib_recon: StrictBool = True
+    content_node_dir_dependency_recon: StrictBool = True
+    content_mathlib_recon: StrictBool = True
+    content_resource_recon: StrictBool = True
+    statement_nl_review: StrictBool = True
+    statement_formal_review: StrictBool = True
+    proof_nl_review: StrictBool = True
+    proof_formal_review: StrictBool = True
+
+
 class RepoRunSpec(StrictModel):
     run_objective: str = Field(
         description=(
@@ -44,6 +59,7 @@ class RepoRunSpec(StrictModel):
     index_policy: Literal["auto", "update", "reuse"]
     root_interface_policy: Literal["auto", "prepare", "reuse"]
     max_parallel_content_node_tasks: int = 1
+    workflow_controls: RepoRunWorkflowControls = Field(default_factory=RepoRunWorkflowControls)
     additional_required_interfaces: list[DeclInterface] = Field(default_factory=list)
 
     @field_validator("run_objective")
@@ -79,4 +95,4 @@ class RepoRunContext(StrictModel):
     base_release_id: str | None = None
 
 
-__all__ = ["RepoRunContext", "RepoRunSpec", "SourceScope"]
+__all__ = ["RepoRunContext", "RepoRunSpec", "RepoRunWorkflowControls", "SourceScope"]

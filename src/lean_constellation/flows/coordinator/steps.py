@@ -473,39 +473,67 @@ class InitialRepoExplorationPlanStep(BaseStep):
         )
         objective = _bounded_text(context.run_objective, limit=240)
         context_summary = context.summary
-        explorations = [
-            RepoExplorationSpec(
+        controls = (
+            input_model.run_context.run_spec.workflow_controls
+            if input_model.run_context is not None
+            else None
+        )
+        exploration_candidates = [
+            (
+                controls is None or controls.initial_repo_resource_discovery,
+                RepoExplorationSpec(
                 kind=RepoExplorationKind.RESOURCE,
                 objective=(
                     "Find authoritative external material not already covered by current Source/Resources that can support "
                     f"the main definitions, results, or proof route for: {objective}"
                 ),
                 context_summary=context_summary,
+                ),
             ),
-            RepoExplorationSpec(
+            (
+                controls is None or controls.initial_repo_lean_provider_discovery,
+                RepoExplorationSpec(
                 kind=RepoExplorationKind.LEAN_PROVIDER,
                 objective=(
                     "Find and verify Lean 4/Lake repositories that may directly provide relevant definitions, theorems, "
                     f"or an adapter/provider route for: {objective}"
                 ),
                 context_summary=context_summary,
+                ),
             ),
-            RepoExplorationSpec(
+            (
+                controls is None or controls.initial_repo_mathlib_recon,
+                RepoExplorationSpec(
                 kind=RepoExplorationKind.MATHLIB,
                 objective=(
                     "Verify repository-level Mathlib modules and declarations needed by the project theme, including "
                     f"the main representation constraints for: {objective}"
                 ),
                 context_summary=context_summary,
+                ),
             ),
         ]
+        explorations = [spec for enabled, spec in exploration_candidates if enabled]
+        if not explorations:
+            return ctx.complete_step(
+                InitialRepoExplorationPlanStepResult(
+                    outcome="not_required",
+                    context=context,
+                    reason="The current repo run disables every fixed initial exploration kind.",
+                    summary="Initial repository exploration is disabled for this run.",
+                )
+            )
         return ctx.complete_step(
             InitialRepoExplorationPlanStepResult(
                 outcome="planned",
                 plan_id=f"initial_repo_exploration_plan_{uuid.uuid4().hex}",
                 explorations=explorations,
                 context=context,
-                summary="Planned the fixed resource, Lean-provider, and Mathlib initial exploration batch.",
+                summary=(
+                    "Planned the enabled fixed initial exploration batch: "
+                    + ", ".join(spec.kind.value for spec in explorations)
+                    + "."
+                ),
             )
         )
 

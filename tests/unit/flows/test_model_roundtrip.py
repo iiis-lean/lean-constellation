@@ -195,6 +195,35 @@ def test_business_flow_models_roundtrip_through_registry() -> None:
         assert type(parsed_input) is type(flow.input)
         assert type(parsed_state) is type(flow.state)
         assert type(parsed_result) is type(FLOW_RESULTS[flow_type])
+        if flow_type in {"content_node_task", "decl_graph_round"}:
+            assert all(parsed_input.workflow_controls.model_dump().values())
+
+
+def test_legacy_decl_stage_gate_state_and_result_default_to_agent_review() -> None:
+    registry = StepTypeRegistry()
+    register_lean_flow_step_types(step_registry=registry)
+
+    state = registry.parse_state(
+        "decl_round_stage_gate_audit_step",
+        {
+            "state_type": "decl_round_stage_gate_audit",
+            "stage": "statement_nl",
+            "target_decl_names": ["main_result"],
+        },
+    )
+    result = registry.parse_result(
+        "decl_round_stage_gate_audit_step",
+        {
+            "result_type": "decl_round_stage_gate_audit",
+            "outcome": "stage_passed",
+            "stage": "statement_nl",
+            "advanced_decl_names": ["main_result"],
+            "summary": "Legacy gate passed.",
+        },
+    )
+
+    assert state.review_mode == "agent"
+    assert result.review_mode == "agent"
 
 
 def test_business_agent_step_state_and_result_roundtrip_through_registry() -> None:

@@ -4,6 +4,9 @@ from pathlib import Path
 
 from agent_runtime_kit.flow.models import FlowStatus
 
+from lean_constellation.domain.repo_run import RepoRunWorkflowControls
+from lean_constellation.flows.common.testing import create_fake_lean_flow_runtime
+from lean_constellation.flows.content_node_task.decl_round.flow import _review_mode_for_stage
 from lean_constellation.flows.content_node_task.decl_round.steps import DeclStageReviewerStepResult
 from lean_constellation.services.decl_graph import DeclReviewMarkRecord, DeclRoundStatus, DeclStage, DeclState
 from tests.unit.flows.decl_round._helpers import (
@@ -60,6 +63,20 @@ def test_decl_stage_reviewer_agent_fields_hide_nested_round_identity() -> None:
     assert "round_id" not in agent_fields["feedback"][0]
     assert round_id not in result.render_for_agent(None)
     assert "Statement requires repair." in result.render_for_agent(None)
+
+
+def test_each_decl_stage_has_an_independent_review_control() -> None:
+    controls = RepoRunWorkflowControls(
+        statement_nl_review=False,
+        statement_formal_review=True,
+        proof_nl_review=False,
+        proof_formal_review=True,
+    )
+
+    assert _review_mode_for_stage(controls, "statement_nl") == "deterministic_only"
+    assert _review_mode_for_stage(controls, "statement_formal") == "agent"
+    assert _review_mode_for_stage(controls, "proof_nl") == "deterministic_only"
+    assert _review_mode_for_stage(controls, "proof_formal") == "agent"
 
 
 def test_decl_round_runs_full_theorem_stage_sequence(tmp_path: Path) -> None:
@@ -238,6 +255,101 @@ def test_statement_nl_stage_gate_rejects_missing_statement_dependency(tmp_path: 
     revision = lean_runtime.decl_graph.get_decl_revision(repo_root, node_path=NODE_PATH, name="main_result", revision=1)
     assert revision.ok and revision.value is not None
     assert revision.value.state is DeclState.PLANNED
+
+
+def test_statement_nl_can_use_deterministic_gate_without_reviewer(tmp_path: Path) -> None:
+    runtime, lean_runtime, repo_root = make_decl_round_runtime(tmp_path)
+    strategy_id, round_id, round_index = create_round_with_decl(
+        lean_runtime,
+        repo_root,
+        target_state=DeclState.PROVED,
+    )
+    controls = RepoRunWorkflowControls(statement_nl_review=False)
+    flow_id = start_decl_round_flow(
+        runtime,
+        repo_root,
+        strategy_id=strategy_id,
+        round_id=round_id,
+        round_index=round_index,
+        workflow_controls=controls,
+    )
+
+    advance_and_run(runtime, flow_id)
+    advance_and_run(runtime, flow_id)
+    advance_and_run(runtime, flow_id)
+    mutation = lean_runtime.decl_graph.write_statement_nl(
+        repo_root,
+        node_path=NODE_PATH,
+        round_id=round_id,
+        decl_name="main_result",
+        nl="The main result states True.",
+    )
+    assert mutation.ok, mutation.issues
+    queue_worker_completed(runtime, repo_root, stage="statement_nl", round_id=round_id)
+    worker_step_id = advance_and_run(runtime, flow_id)
+
+    assert runtime.flow_service.get_step(worker_step_id).result.outcome == "completed"
+    assert runtime.flow_service.get_flow(flow_id).state.position.phase == "stage_gate_audit"
+    restarted = create_fake_lean_flow_runtime(
+        runtime.root,
+        ark_services=lean_runtime.ark,
+        app_services=lean_runtime.app,
+    )
+    reloaded = restarted.flow_service.get_flow(flow_id)
+    assert reloaded.input.workflow_controls.statement_nl_review is False
+    assert reloaded.state.position.phase == "stage_gate_audit"
+
+    gate_step_id = advance_and_run(restarted, flow_id)
+    gate = restarted.flow_service.get_step(gate_step_id).result
+    assert gate.outcome == "stage_passed"
+    assert gate.review_mode == "deterministic_only"
+    assert "no Agent Reviewer ran" in gate.summary
+    assert restarted.flow_service.get_flow(flow_id).state.stage_summaries[-1].review_mode == "deterministic_only"
+    assert not any(
+        record.variables.get("agent_role") == "reviewer"
+        for record in restarted.agent_service.start_records
+    )
+
+
+def test_deterministic_gate_rejects_worker_batch_mismatch(tmp_path: Path) -> None:
+    runtime, lean_runtime, repo_root = make_decl_round_runtime(tmp_path)
+    strategy_id, round_id, round_index = create_round_with_decl(
+        lean_runtime,
+        repo_root,
+        target_state=DeclState.PROVED,
+    )
+    flow_id = start_decl_round_flow(
+        runtime,
+        repo_root,
+        strategy_id=strategy_id,
+        round_id=round_id,
+        round_index=round_index,
+        workflow_controls=RepoRunWorkflowControls(statement_nl_review=False),
+    )
+    for _ in range(3):
+        advance_and_run(runtime, flow_id)
+    assert lean_runtime.decl_graph.write_statement_nl(
+        repo_root,
+        node_path=NODE_PATH,
+        round_id=round_id,
+        decl_name="main_result",
+        nl="The main result states True.",
+    ).ok
+    queue_worker_completed(runtime, repo_root, stage="statement_nl", round_id=round_id)
+    advance_and_run(runtime, flow_id)
+    runtime.flow_service.store.update_flow_record(
+        flow_id,
+        lambda flow: setattr(
+            flow.state.latest_worker_result,
+            "completed_decl_names",
+            ["different_decl"],
+        ),
+    )
+
+    gate_step_id = advance_and_run(runtime, flow_id)
+    gate = runtime.flow_service.get_step(gate_step_id).result
+    assert gate.outcome == "failed"
+    assert "worker result does not match" in gate.error.message
 
 
 def test_stage_gate_rejects_reviewer_result_context_mismatch(tmp_path: Path) -> None:

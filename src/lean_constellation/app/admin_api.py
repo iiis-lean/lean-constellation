@@ -57,7 +57,12 @@ from lean_constellation.domain.publication import (
     RepoPublicationOverride,
     RepoPublicationPresentation,
 )
-from lean_constellation.domain.repo_run import RepoRunContext, RepoRunSpec, SourceScope
+from lean_constellation.domain.repo_run import (
+    RepoRunContext,
+    RepoRunSpec,
+    RepoRunWorkflowControls,
+    SourceScope,
+)
 from lean_constellation.domain.repo_recovery import NativeSourceIndexRecoveryContract
 from lean_constellation.domain.repo_release import RepoReleaseListView
 from lean_constellation.domain.repo_release import RepoReleaseValidationProfile
@@ -804,6 +809,7 @@ class RepoRunOptions(StrictModel):
     index_policy: Literal["auto", "update", "reuse"] | None = None
     root_interface_policy: Literal["auto", "prepare", "reuse"] | None = None
     max_parallel_content_node_tasks: int = Field(default=1, ge=1)
+    workflow_controls: RepoRunWorkflowControls = Field(default_factory=RepoRunWorkflowControls)
     additional_required_interfaces: list[DeclInterface] = Field(default_factory=list)
 
 
@@ -1995,6 +2001,7 @@ class LeanAdminApi:
             source_scope=request.source_scope,
             index_policy=request.index_policy, root_interface_policy=request.root_interface_policy,
             max_parallel_content_node_tasks=request.max_parallel_content_node_tasks,
+            workflow_controls=request.workflow_controls,
             additional_required_interfaces=request.additional_required_interfaces,
         )
         if not resolved.ok or resolved.value is None:
@@ -2032,6 +2039,7 @@ class LeanAdminApi:
             source_scope=input_model.source_scope,
             index_policy=input_model.index_policy, root_interface_policy=input_model.root_interface_policy,
             max_parallel_content_node_tasks=input_model.max_parallel_content_node_tasks,
+            workflow_controls=input_model.workflow_controls,
             additional_required_interfaces=input_model.additional_required_interfaces,
         )
         if not resolved.ok or resolved.value is None:
@@ -2058,13 +2066,37 @@ class LeanAdminApi:
         active = [flow for flow in self.runtime.ark.flow_service.list_flows(scope_id=f"repo:{key}")
                   if flow.status not in {FlowStatus.COMPLETED, FlowStatus.FAILED}]
         flow = sorted(active, key=lambda item: item.created_at or "")[-1] if active else None
-        run_spec = getattr(getattr(flow, "input", None), "run_spec", None)
+        run_spec = self._run_spec_from_flow_lineage(flow, scope_id=f"repo:{key}")
         return self.runtime.foundation.ok(RepoRunStatusView(
             repo_root=str(repo_root), publication_status=publication.value.publication.status.value,
             latest_release_id=publication.value.publication.latest_release_id,
             active_flow_id=flow.flow_id if flow else None, active_flow_type=flow.flow_type if flow else None,
             run_spec=run_spec, summary="Derived current repo run status.",
         ))
+
+    def _run_spec_from_flow_lineage(self, flow: Any | None, *, scope_id: str) -> RepoRunSpec | None:
+        seen: set[str] = set()
+        current = flow
+        while current is not None:
+            flow_id = str(getattr(current, "flow_id", ""))
+            if not flow_id or flow_id in seen or getattr(current, "scope_id", None) != scope_id:
+                return None
+            seen.add(flow_id)
+            input_model = getattr(current, "input", None)
+            direct = getattr(input_model, "run_spec", None)
+            if isinstance(direct, RepoRunSpec):
+                return direct
+            nested = getattr(getattr(input_model, "run_context", None), "run_spec", None)
+            if isinstance(nested, RepoRunSpec):
+                return nested
+            parent_flow_id = getattr(current, "parent_flow_id", None)
+            if not parent_flow_id:
+                return None
+            try:
+                current = self.runtime.ark.flow_service.get_flow(parent_flow_id)
+            except (KeyError, RuntimeError):
+                return None
+        return None
 
     @_reject_during_paired_restore
     def start_standalone_source_index(self, input_model: StandaloneSourceIndexRunInput) -> ServiceResult[AdminFlowStartView]:

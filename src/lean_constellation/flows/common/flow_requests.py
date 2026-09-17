@@ -6,6 +6,8 @@ from typing import Literal
 
 from agent_runtime_kit.flow.models import FlowRequest
 
+from lean_constellation.domain.repo_run import RepoRunWorkflowControls
+
 
 def repo_scope_id(repo_key: str, fallback_scope_id: str | None = None) -> str:
     return fallback_scope_id or f"repo:{repo_key}"
@@ -59,12 +61,14 @@ def build_content_node_task_request(
     repo_path: str | None = None,
     contract_version: int | None = None,
     max_parallel_content_node_tasks: int = 1,
+    workflow_controls: RepoRunWorkflowControls | None = None,
 ) -> FlowRequest:
     params = {
         "repo_key": repo_key,
         "node_path": node_path,
         "contract_version": contract_version,
         "max_parallel_content_node_tasks": max_parallel_content_node_tasks,
+        "workflow_controls": (workflow_controls or RepoRunWorkflowControls()).model_dump(mode="json"),
     }
     if repo_path is not None:
         params["repo_path"] = repo_path
@@ -153,6 +157,7 @@ def build_decl_round_request(
     contract_version: int | None = None,
     round_index: int | None = None,
     summary: str | None = None,
+    workflow_controls: RepoRunWorkflowControls | None = None,
 ) -> FlowRequest:
     params = {
         "repo_key": repo_key,
@@ -161,6 +166,7 @@ def build_decl_round_request(
         "round_id": round_id,
         "round_index": round_index,
         "summary": summary,
+        "workflow_controls": (workflow_controls or RepoRunWorkflowControls()).model_dump(mode="json"),
     }
     if repo_path is not None:
         params["repo_path"] = repo_path

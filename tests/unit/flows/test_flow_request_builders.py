@@ -4,6 +4,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from lean_constellation.domain.repo_run import RepoRunWorkflowControls
 from lean_constellation.flows.common.flow_requests import (
     build_content_node_task_request,
     build_decl_round_request,
@@ -31,6 +32,7 @@ class ContentNodeTaskParams(_StrictParams):
     node_path: str
     contract_version: int | None = None
     max_parallel_content_node_tasks: int
+    workflow_controls: RepoRunWorkflowControls
 
 
 class PreparationReconParams(_StrictParams):
@@ -47,6 +49,7 @@ class DeclRoundParams(_StrictParams):
     round_id: str
     round_index: int | None = None
     summary: str | None = None
+    workflow_controls: RepoRunWorkflowControls
 
 
 def test_flow_request_builders_preserve_business_params() -> None:
@@ -69,6 +72,7 @@ def test_flow_request_builders_preserve_business_params() -> None:
     assert content.params["node_path"] == "Main.Core"
     assert content.params["contract_version"] == 2
     assert content.params["max_parallel_content_node_tasks"] == 1
+    assert content.params["workflow_controls"]["statement_nl_review"] is True
 
     recon = build_preparation_recon_request(recon_kind="mathlib", repo_key="Repo", node_path="Main.Core", scope_id="scope_node")
     assert recon.flow_type == "mathlib_recon"
@@ -76,6 +80,7 @@ def test_flow_request_builders_preserve_business_params() -> None:
     decl = build_decl_round_request(repo_key="Repo", node_path="Main.Core", scope_id="scope_node", strategy_id="s1", round_id="r1")
     assert decl.flow_type == "decl_graph_round"
     assert decl.params["strategy_id"] == "s1"
+    assert decl.params["workflow_controls"]["proof_formal_review"] is True
 
 
 def test_flow_request_builder_params_validate_against_child_flow_input_models() -> None:
@@ -119,3 +124,28 @@ def test_flow_request_builder_params_validate_against_child_flow_input_models() 
         summary="Start round.",
     )
     assert DeclRoundParams.model_validate(decl.params).round_index == 3
+
+
+def test_flow_request_builders_preserve_disabled_workflow_controls() -> None:
+    controls = RepoRunWorkflowControls(
+        content_mathlib_recon=False,
+        statement_formal_review=False,
+        proof_formal_review=False,
+    )
+    content = build_content_node_task_request(
+        repo_key="Repo",
+        node_path="Main.Core",
+        scope_id="scope_node",
+        workflow_controls=controls,
+    )
+    decl = build_decl_round_request(
+        repo_key="Repo",
+        node_path="Main.Core",
+        scope_id="scope_node",
+        strategy_id="s1",
+        round_id="r1",
+        workflow_controls=controls,
+    )
+
+    assert ContentNodeTaskParams.model_validate(content.params).workflow_controls == controls
+    assert DeclRoundParams.model_validate(decl.params).workflow_controls == controls

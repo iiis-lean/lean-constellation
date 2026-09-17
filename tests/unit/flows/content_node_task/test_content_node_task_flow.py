@@ -9,6 +9,7 @@ from pydantic import ValidationError
 
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
 from lean_constellation.domain.repo import ProofAvailability, RepoCompletionMode
+from lean_constellation.domain.repo_run import RepoRunWorkflowControls
 from lean_constellation.app.config import AutomaticCheckpointAppConfig
 from lean_constellation.flows.common.flow_requests import build_decl_round_request, build_preparation_recon_request, build_resource_curation_request
 from lean_constellation.flows.common.submissions import new_submission_id
@@ -86,11 +87,27 @@ def _prepare_content_repo(lean_runtime, repo_root: Path, *, native_project_name:
     assert content.ok
 
 
-def _start_content_task(runtime: FakeLeanFlowRuntime, repo_root: Path) -> str:
-    return _start_content_task_for_node(runtime, repo_root, "Main.Core")
+def _start_content_task(
+    runtime: FakeLeanFlowRuntime,
+    repo_root: Path,
+    *,
+    workflow_controls: RepoRunWorkflowControls | None = None,
+) -> str:
+    return _start_content_task_for_node(
+        runtime,
+        repo_root,
+        "Main.Core",
+        workflow_controls=workflow_controls,
+    )
 
 
-def _start_content_task_for_node(runtime: FakeLeanFlowRuntime, repo_root: Path, node_path: str) -> str:
+def _start_content_task_for_node(
+    runtime: FakeLeanFlowRuntime,
+    repo_root: Path,
+    node_path: str,
+    *,
+    workflow_controls: RepoRunWorkflowControls | None = None,
+) -> str:
     return runtime.start_flow(
         "content_node_task",
         {
@@ -98,6 +115,9 @@ def _start_content_task_for_node(runtime: FakeLeanFlowRuntime, repo_root: Path, 
             "repo_path": str(repo_root),
             "node_path": node_path,
             "contract_version": 1,
+            "workflow_controls": (
+                workflow_controls or RepoRunWorkflowControls()
+            ).model_dump(mode="json"),
         },
         scope_id=f"repo:{repo_root.name}:node:{node_path}",
     )
@@ -606,6 +626,60 @@ def test_content_node_task_existing_content_plan_binding_is_not_overwritten(tmp_
 
     current_flow = runtime.flow_service.get_flow(current_flow_id)
     assert current_flow.agent_bindings.get("content_plan") == "agent_explicit"
+
+
+def test_ensure_stage_agents_skips_disabled_reviewer_roles(tmp_path: Path) -> None:
+    runtime, lean_runtime = _runtime(tmp_path)
+    repo_root = tmp_path / "workspace" / "Repo"
+    _prepare_content_repo(lean_runtime, repo_root)
+    controls = RepoRunWorkflowControls(
+        statement_nl_review=False,
+        proof_nl_review=False,
+    )
+    flow_id = _start_content_task(runtime, repo_root, workflow_controls=controls)
+    _advance_and_run(runtime, flow_id)
+    runtime.agent_service.queue_submission(
+        DeclRoundDispatchSubmission(
+            submission_id=new_submission_id("sub"),
+            submission_type="decl_round_dispatch",
+            tool_name="submit_current_decl_round",
+            repo_key=repo_root.name,
+            node_path="Main.Core",
+            strategy_id="strategy_1",
+            round_id="round_1",
+            round_index=1,
+            requests=[
+                build_decl_round_request(
+                    repo_key=repo_root.name,
+                    node_path="Main.Core",
+                    scope_id=f"repo:{repo_root.name}:node:Main.Core",
+                    strategy_id="strategy_1",
+                    round_id="round_1",
+                    round_index=1,
+                    workflow_controls=controls,
+                )
+            ],
+            summary="Dispatch decl round.",
+        )
+    )
+    _advance_and_run(runtime, flow_id)
+    assert "deterministic-only review stages=['statement_nl', 'proof_nl']" in (
+        runtime.agent_service.start_records[-1].prompt or ""
+    )
+    ensure_step_id = _advance_and_run(runtime, flow_id)
+    result = runtime.flow_service.get_step(ensure_step_id).result
+
+    assert set(result.initialized_roles) == {
+        "statement_nl_worker",
+        "statement_formal_worker",
+        "statement_formal_reviewer",
+        "proof_nl_worker",
+        "proof_formal_worker",
+        "proof_formal_reviewer",
+    }
+    bindings = runtime.flow_service.get_flow(flow_id).agent_bindings.by_role
+    assert "statement_nl_reviewer" not in bindings
+    assert "proof_nl_reviewer" not in bindings
 
 
 def test_completion_audit_rejection_uses_internal_wake_after_decl_round(tmp_path: Path) -> None:

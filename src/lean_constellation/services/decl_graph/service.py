@@ -68,6 +68,7 @@ from lean_constellation.services.decl_graph.round_execution import (
     RoundFinalAuditResult,
     RoundStageGateView,
     RoundStageReview,
+    StageReviewMode,
     DeclDraftSpec,
     RoundDraftCreatedResult,
 )
@@ -200,7 +201,8 @@ class DeclGraphService:
         round_id: str,
         stage: DeclStageName,
         target_decl_names: list[str],
-        review: RoundStageReview,
+        review: RoundStageReview | None,
+        review_mode: StageReviewMode = "agent",
         retry_count: int = 0,
         max_retries: int = 2,
     ) -> ServiceResult[RoundStageGateView]:
@@ -211,6 +213,7 @@ class DeclGraphService:
             stage=stage,
             target_decl_names=target_decl_names,
             review=review,
+            review_mode=review_mode,
             retry_count=retry_count,
             max_retries=max_retries,
         )

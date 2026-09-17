@@ -476,8 +476,19 @@ class CoordinatorAgentStep(AgentStep):
             for child in children
         ):
             if _is_initial_repo_exploration_callback(self, ctx):
+                kind_labels = {
+                    "repo_resource_discovery": "resource",
+                    "repo_lean_provider_discovery": "Lean-provider",
+                    "repo_mathlib_recon": "Mathlib",
+                }
+                enabled_kinds = [
+                    kind_labels[child.flow_type]
+                    for child in children
+                    if child.flow_type in kind_labels
+                ]
                 guidance = (
-                    "This is the fixed initial resource, Lean-provider, and Mathlib exploration batch completed before the first Coordinator business decision. "
+                    "This is the fixed initial exploration batch for the enabled kinds "
+                    f"({', '.join(enabled_kinds)}) completed before the first Coordinator business decision. "
                     "Required Skill re-entry for this turn: read and apply $coordinator-repo-exploration and "
                     "$material-boundary-classification first, then re-read the current Coordinator mode Skill. "
                     "Classify every child outcome, including no-useful-findings or incomplete results, and handle or explicitly decline each useful recommendation before choosing one normal next move. "
