@@ -164,6 +164,7 @@ def test_home_bootstrap_spec_embeds_provider_home_spec() -> None:
         "http://127.0.0.1:8765/mcp/views/decl_stage_worker_submit/",
     }
     assert all(not server.env for server in ark_spec.provider_options.mcp_servers)
+    assert all(server.startup_timeout_sec == 120 for server in ark_spec.provider_options.mcp_servers)
     assert all(server.result_profile == "content_only" for server in ark_spec.provider_options.mcp_servers)
     assert all(
         server.http_headers["x-ark-mcp-result-profile"] == "content_only"

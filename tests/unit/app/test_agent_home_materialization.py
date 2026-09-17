@@ -43,6 +43,8 @@ def test_agent_home_materialization_writes_instruction_skills_and_mcp_config(tmp
     assert "LEAN_CONSTELLATION_MCP_VIEW_KEY" not in config_text
     config = tomllib.loads(config_text)
     assert config["features"] == {"apps": False, "plugins": False, "tool_suggest": False}
+    assert config["mcp_servers"]["lc_app"]["startup_timeout_sec"] == 120
+    assert config["mcp_servers"]["lc_submit"]["startup_timeout_sec"] == 120
     manifest = json.loads((home_root / ".agents" / "lean_constellation_home.json").read_text(encoding="utf-8"))
     assert manifest["tool_view_config"]["application_view_key"] == "source_corpus_builder"
     assert manifest["tool_view_config"]["submit_view_key"] == "source_corpus_builder_submit"

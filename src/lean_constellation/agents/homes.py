@@ -56,6 +56,8 @@ _RUNTIME_HTTP_HEADER_ENV = {
     "x-ark-successful-submission-kind": RUNTIME_ENV_KEYS["successful_submission_kind"],
 }
 
+_LOCAL_HTTP_MCP_STARTUP_TIMEOUT_SEC = 120
+
 
 def build_agent_home_bootstrap_spec(
     agent_type: str,
@@ -120,6 +122,7 @@ def build_agent_home_bootstrap_spec(
                     transport="http",
                     url=_mcp_view_url(mcp_http_base_url, endpoint_spec.view_key),
                     required=True,
+                    startup_timeout_sec=_LOCAL_HTTP_MCP_STARTUP_TIMEOUT_SEC,
                     env_http_headers=_RUNTIME_HTTP_HEADER_ENV,
                     result_profile="content_only",
                 )
