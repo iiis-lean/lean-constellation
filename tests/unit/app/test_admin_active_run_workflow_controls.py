@@ -97,6 +97,11 @@ def test_active_run_controls_update_only_future_content_tasks(tmp_path) -> None:
         parent_flow_id=coordinator_id,
         enqueue=False,
     )
+    runtime.repo_activity.reserve_content_batch(
+        repo_root,
+        batch_id="existing-batch",
+        node_paths=["Main.Existing"],
+    )
 
     target = _reconstruction_controls()
     result = LeanAdminApi(runtime).update_active_run_workflow_controls(

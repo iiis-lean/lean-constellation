@@ -2109,7 +2109,7 @@ class LeanAdminApi:
             run_spec=run_spec, summary="Derived current repo run status.",
         ))
 
-    @_repo_exclusive_admin_mutation
+    @_reject_during_paired_restore
     def update_active_run_workflow_controls(
         self,
         input_model: UpdateActiveRunWorkflowControlsInput,
@@ -2200,7 +2200,11 @@ class LeanAdminApi:
                     update={"run_context": updated_context}
                 )
 
-            with pause_controller.hold_paused(flow.scope_id), flow_service.lock:
+            with (
+                self.runtime.repo_workspace.lifecycle_lock.locked(input_model.repo_root),
+                pause_controller.hold_paused(flow.scope_id),
+                flow_service.lock,
+            ):
                 updated = flow_service.store.update_flow_record(flow.flow_id, apply_controls)
             updated_context = getattr(updated.input, "run_context", None)
             if not isinstance(updated_context, RepoRunContext):
