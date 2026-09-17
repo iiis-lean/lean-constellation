@@ -1051,7 +1051,8 @@ class LeanToolchainClient:
         exact_name = rf"{re.escape(expected_name)}(?:\.\{{[^}}\r\n]*\}})?"
         signature_prefix = re.compile(rf"^{exact_name}(?:\s|:|$)")
         declaration_prefix = re.compile(
-            rf"^(theorem|lemma|def|abbrev|opaque|axiom|instance|class|structure|inductive)\s+"
+            rf"^(?:@\[[^\]\r\n]+\]\s+)*"
+            rf"(theorem|lemma|def|abbrev|opaque|axiom|instance|class|structure|inductive)\s+"
             rf"{exact_name}(?:\s|:|$)"
         )
         for line in excerpt.splitlines():

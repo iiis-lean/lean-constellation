@@ -40,6 +40,32 @@ def test_exact_printed_header_with_universe_parameters_is_accepted():
     )
 
 
+def test_exact_printed_header_with_declaration_attribute_is_accepted():
+    output = messages(
+        'MvPolynomial.aeval_def.{u, v, u_1} {R : Type u} : True',
+        '@[defeq] theorem MvPolynomial.aeval_def.{u, v, u_1} : True := trivial',
+    )
+    assert LeanToolchainClient._parse_compiler_decl_output(
+        output,
+        'MvPolynomial.aeval_def',
+    ) == (
+        'MvPolynomial.aeval_def.{u, v, u_1} {R : Type u} : True',
+        'theorem',
+    )
+
+
+def test_declaration_attribute_does_not_relax_exact_name_check():
+    output = messages(
+        'MvPolynomial.aeval_def : True',
+        '@[defeq] theorem MvPolynomial.other : True := trivial',
+    )
+    signature, kind = LeanToolchainClient._parse_compiler_decl_output(
+        output,
+        'MvPolynomial.aeval_def',
+    )
+    assert signature is None or kind is None
+
+
 @pytest.mark.parametrize('module,name', [('Mathlib.X\n#check True', 'Int.x'), ('Mathlib.X', 'Int.x\naxiom bad : False')])
 def test_unsafe_identifiers_never_reach_compiler(tmp_path, module, name):
     client = LeanToolchainClient.__new__(LeanToolchainClient)
