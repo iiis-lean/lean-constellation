@@ -999,16 +999,6 @@ class LeanToolchainClient:
                 raw_excerpt=checked.diagnostics_excerpt,
                 issue_code="declaration_not_found",
             )
-        if defining_module != normalized_module:
-            return ToolchainDeclarationView(
-                ok=False,
-                provider=checked.provider,
-                name=normalized_name,
-                module=normalized_module,
-                summary="Compiler defining module does not match the requested Mathlib module.",
-                raw_excerpt=checked.diagnostics_excerpt,
-                issue_code="mathlib_decl_defining_module_mismatch",
-            )
         source_path = (
             Path(repo_root).resolve()
             / ".lake"
@@ -1031,11 +1021,18 @@ class LeanToolchainClient:
             ok=True,
             provider=checked.provider,
             name=normalized_name,
-            module=normalized_module,
+            module=defining_module,
             kind=kind,
             signature=signature,
             code=f"{kind} {signature}",
-            summary=f"Compiler verified {normalized_name}; {source_ref}.",
+            summary=(
+                f"Compiler verified {normalized_name}; {source_ref}."
+                if defining_module == normalized_module
+                else (
+                    f"Compiler verified {normalized_name}; {normalized_module} is import context and "
+                    f"the exact defining source is {source_ref}."
+                )
+            ),
             raw_excerpt=source_ref,
         )
 
@@ -1052,7 +1049,7 @@ class LeanToolchainClient:
         signature_prefix = re.compile(rf"^{exact_name}(?:\s|:|$)")
         declaration_prefix = re.compile(
             rf"^(?:@\[[^\]\r\n]+\]\s+)*"
-            rf"(theorem|lemma|def|abbrev|opaque|axiom|instance|class|structure|inductive)\s+"
+            rf"(theorem|lemma|def|abbrev|opaque|axiom|instance|class|structure|inductive|constructor)\s+"
             rf"{exact_name}(?:\s|:|$)"
         )
         for line in excerpt.splitlines():

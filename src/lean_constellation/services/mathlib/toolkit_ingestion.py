@@ -368,7 +368,11 @@ class ToolkitIngestionComponent:
                         decl_name=normalized_name,
                     )
                     if local_result.ok:
-                        if local_result.name != normalized_name or local_result.module != local_module:
+                        if (
+                            local_result.name != normalized_name
+                            or local_result.module is None
+                            or not local_result.module.startswith("Mathlib.")
+                        ):
                             return self.runtime.foundation.fail(self.runtime.foundation.issue(
                                 "mathlib_decl_identity_mismatch",
                                 "Compiler declaration identity or defining module does not match the request.",
@@ -377,7 +381,7 @@ class ToolkitIngestionComponent:
                         return self.runtime.foundation.ok(
                             MathlibNavigationView(
                                 decl_name=normalized_name,
-                                module=local_module,
+                                module=local_result.module,
                                 kind=local_result.kind,
                                 signature=local_result.signature,
                                 code_excerpt=local_result.code,
@@ -1025,7 +1029,11 @@ class ToolkitIngestionComponent:
                 )
             )
 
-        if module is not None and module != canonical_module:
+        compiler_local_navigation = any(
+            issue.kind == "mathlib_decl_compiler_navigation"
+            for issue in navigation.issues
+        )
+        if module is not None and module != canonical_module and not compiler_local_navigation:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
                     "mathlib_decl_module_conflict",
@@ -1036,6 +1044,17 @@ class ToolkitIngestionComponent:
                 )
             )
         warnings: list[ServiceIssue] = list(navigation.issues)
+        if module is not None and module != canonical_module:
+            warnings.append(
+                self.runtime.foundation.issue(
+                    "mathlib_decl_requested_module_normalized",
+                    "Normalized an import-context module to the compiler-confirmed Mathlib defining module.",
+                    severity=IssueSeverity.WARNING,
+                    object_ref=decl_name,
+                    current=module,
+                    expected=canonical_module,
+                )
+            )
         if existing_module is not None and existing_module != canonical_module:
             warnings.append(
                 self.runtime.foundation.issue(

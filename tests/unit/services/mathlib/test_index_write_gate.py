@@ -541,6 +541,55 @@ def test_local_mathlib_compiler_navigation_persists_exact_source_provenance(
     toolchain.inspect_core_declaration.assert_not_called()
 
 
+def test_local_mathlib_compiler_navigation_normalizes_import_context_to_defining_module(
+    tmp_path: Path,
+) -> None:
+    name = "Module.Finite.of_fg_top"
+    import_module = "Mathlib.RingTheory.Finiteness.Basic"
+    defining_module = "Mathlib.RingTheory.Finiteness.Defs"
+
+    def dispatch(tool_name: str, payload: dict):
+        if tool_name == "lean_explore.find":
+            return {"results": []}
+        if tool_name == "mathlib_nav.file_outline":
+            return {"declarations": []}
+        if tool_name == "lsp.run_snippet":
+            assert f"#check {name}" in payload["code"]
+            return {"diagnostics": []}
+        raise AssertionError(f"unexpected toolkit call: {tool_name}")
+
+    service = _service(dispatch)
+    toolchain = service.runtime.external.lean_toolchain
+    toolchain.inspect_local_mathlib_declaration = (
+        lambda _root, *, module, decl_name: ToolchainDeclarationView(
+            ok=True,
+            provider="lake_command",
+            name=decl_name,
+            module=defining_module,
+            kind="constructor",
+            signature=f"{name}.{{u_1, u_4}} : ...",
+            code=f"constructor {name}.{{u_1, u_4}} : ...",
+            summary=f"Compiler verified {module} as import context.",
+            raw_excerpt=f"Mathlib defining module {defining_module}",
+        )
+    )
+    toolchain.inspect_core_declaration = Mock(
+        side_effect=AssertionError("core fallback must not run after exact local Mathlib verification")
+    )
+
+    recorded = service.record_mathlib_decl_checked(
+        tmp_path,
+        decl_name=name,
+        module_name=import_module,
+    )
+
+    assert recorded.ok, recorded.issues
+    assert recorded.value is not None
+    assert recorded.value.module == defining_module
+    assert any(issue.kind == "mathlib_decl_requested_module_normalized" for issue in recorded.issues)
+    toolchain.inspect_core_declaration.assert_not_called()
+
+
 def test_core_navigation_does_not_accept_unverified_repository_name(tmp_path: Path) -> None:
     name = "Foo.target"
     module = "Mathlib.Test"

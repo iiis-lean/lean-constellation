@@ -54,6 +54,20 @@ def test_exact_printed_header_with_declaration_attribute_is_accepted():
     )
 
 
+def test_exact_printed_constructor_header_is_accepted():
+    output = messages(
+        'Module.Finite.of_fg_top.{u_1, u_4} {R : Type u_1} : Module.Finite R M',
+        'constructor Module.Finite.of_fg_top.{u_1, u_4} : ∀ {R : Type u_1}, True',
+    )
+    assert LeanToolchainClient._parse_compiler_decl_output(
+        output,
+        'Module.Finite.of_fg_top',
+    ) == (
+        'Module.Finite.of_fg_top.{u_1, u_4} {R : Type u_1} : Module.Finite R M',
+        'constructor',
+    )
+
+
 def test_declaration_attribute_does_not_relax_exact_name_check():
     output = messages(
         'MvPolynomial.aeval_def : True',
@@ -157,4 +171,35 @@ def test_local_mathlib_declaration_rejects_different_defining_module(tmp_path):
     )
 
     assert not result.ok
-    assert result.issue_code == 'mathlib_decl_defining_module_mismatch'
+    assert result.issue_code == 'mathlib_decl_source_missing'
+
+
+def test_local_mathlib_declaration_returns_compiler_defining_module_for_import_context(tmp_path):
+    import_module = 'Mathlib.RingTheory.Finiteness.Basic'
+    defining_module = 'Mathlib.RingTheory.Finiteness.Defs'
+    name = 'Module.Finite.of_fg_top'
+    source = tmp_path / '.lake/packages/mathlib/Mathlib/RingTheory/Finiteness/Defs.lean'
+    source.parent.mkdir(parents=True)
+    source.write_text('constructor of_fg_top : True := trivial')
+    client = LeanToolchainClient.__new__(LeanToolchainClient)
+    client.run_snippet_check = Mock(return_value=ToolchainLeanCheckView(
+        ok=True,
+        provider='lake_command',
+        summary='checked',
+        diagnostics_excerpt=messages(
+            f'{name}.{{u_1, u_4}} {{R : Type u_1}} : True',
+            f'constructor {name}.{{u_1, u_4}} : True',
+        ),
+    ))
+    client._compiler_defining_module = Mock(return_value=defining_module)
+
+    result = client.inspect_local_mathlib_declaration(
+        tmp_path,
+        module=import_module,
+        decl_name=name,
+    )
+
+    assert result.ok
+    assert result.module == defining_module
+    assert import_module in result.summary
+    assert str(source) in (result.raw_excerpt or '')
