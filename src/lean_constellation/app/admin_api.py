@@ -134,6 +134,41 @@ class RepoRunStatusView(StrictModel):
     summary: str
 
 
+class UpdateActiveRunWorkflowControlsInput(StrictModel):
+    repo_root: Path
+    repo_key: str | None = None
+    coordinator_flow_id: str
+    expected_flow_updated_at: str
+    expected_workflow_controls: RepoRunWorkflowControls
+    workflow_controls: RepoRunWorkflowControls
+    reason: str = Field(min_length=1)
+
+    @field_validator("repo_root", mode="before")
+    @classmethod
+    def _coerce_repo(cls, value: Any) -> Path:
+        return Path(value).expanduser()
+
+    @field_validator("reason")
+    @classmethod
+    def _normalize_reason(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("reason must be non-empty")
+        return normalized
+
+
+class ActiveRunWorkflowControlsUpdateView(StrictModel):
+    repo_root: str
+    repo_key: str
+    coordinator_flow_id: str
+    flow_updated_at_before: str
+    flow_updated_at_after: str
+    workflow_controls_before: RepoRunWorkflowControls
+    workflow_controls_after: RepoRunWorkflowControls
+    applies_to: Literal["future_content_tasks"] = "future_content_tasks"
+    summary: str
+
+
 class RuntimePauseView(StrictModel):
     paused: bool
     scope_id: str | None = None
@@ -2073,6 +2108,126 @@ class LeanAdminApi:
             active_flow_id=flow.flow_id if flow else None, active_flow_type=flow.flow_type if flow else None,
             run_spec=run_spec, summary="Derived current repo run status.",
         ))
+
+    @_repo_exclusive_admin_mutation
+    def update_active_run_workflow_controls(
+        self,
+        input_model: UpdateActiveRunWorkflowControlsInput,
+    ) -> ServiceResult[ActiveRunWorkflowControlsUpdateView]:
+        """Change only the controls inherited by future Content tasks of one active Coordinator."""
+
+        flow_service = self.runtime.ark.flow_service
+        step_service = self.runtime.ark.step_service
+        agent_service = self.runtime.ark.agent_service
+        schedule_service = self.runtime.ark.schedule_service
+        pause_controller = self.runtime.ark.pause_controller
+        if (
+            flow_service is None
+            or step_service is None
+            or agent_service is None
+            or schedule_service is None
+            or pause_controller is None
+        ):
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "active_run_workflow_control_service_missing",
+                    "Active-run workflow control update requires Flow, Step, Agent, Schedule, and Pause services.",
+                    object_ref=input_model.coordinator_flow_id,
+                )
+            )
+        try:
+            flow = flow_service.get_flow(input_model.coordinator_flow_id)
+            expected_scope = f"repo:{input_model.repo_key or input_model.repo_root.name}"
+            if flow.flow_type != "native_repo_coordinator":
+                raise ValueError("workflow controls can only be updated on a native_repo_coordinator Flow")
+            if flow.scope_id != expected_scope:
+                raise ValueError(
+                    f"Coordinator scope changed: expected {expected_scope}, found {flow.scope_id}"
+                )
+            if flow.status in {FlowStatus.COMPLETED, FlowStatus.FAILED}:
+                raise ValueError("workflow controls require an active Coordinator Flow")
+            flow_repo_root = getattr(flow.input, "repo_root", None)
+            if flow_repo_root is None or Path(flow_repo_root).resolve(strict=False) != input_model.repo_root.resolve(
+                strict=False
+            ):
+                raise ValueError("Coordinator repo root does not match the requested repository")
+            if not pause_controller.is_paused(None):
+                raise ValueError("workflow controls require the runtime to be globally paused")
+            queues = self._candidate_queue_view()
+            if queues.active_flow_advances or queues.running_step_ids or queues.created_step_ids:
+                raise ValueError(
+                    "workflow controls require zero active Flow advances and zero running/created Steps"
+                )
+            if agent_service.has_running_agents(flow.scope_id):
+                raise ValueError("workflow controls require no running Agent in the repository scope")
+
+            before_updated_at = flow.updated_at
+            if before_updated_at != input_model.expected_flow_updated_at:
+                raise ValueError(
+                    "Coordinator updated_at changed: "
+                    f"expected {input_model.expected_flow_updated_at}, found {before_updated_at}"
+                )
+            run_context = getattr(flow.input, "run_context", None)
+            if not isinstance(run_context, RepoRunContext):
+                raise ValueError("Coordinator does not retain a typed RepoRunContext")
+            controls_before = run_context.run_spec.workflow_controls
+            if controls_before != input_model.expected_workflow_controls:
+                raise ValueError("Coordinator workflow controls changed before update")
+
+            def apply_controls(target_flow) -> None:  # noqa: ANN001
+                if (
+                    target_flow.flow_type != "native_repo_coordinator"
+                    or target_flow.scope_id != expected_scope
+                    or target_flow.status in {FlowStatus.COMPLETED, FlowStatus.FAILED}
+                    or target_flow.updated_at != before_updated_at
+                ):
+                    raise ValueError("Coordinator Flow changed during workflow control update")
+                target_context = getattr(target_flow.input, "run_context", None)
+                if not isinstance(target_context, RepoRunContext):
+                    raise ValueError("Coordinator does not retain a typed RepoRunContext")
+                if target_context.run_spec.workflow_controls != input_model.expected_workflow_controls:
+                    raise ValueError("Coordinator workflow controls changed during update")
+                updated_spec = target_context.run_spec.model_copy(
+                    update={"workflow_controls": input_model.workflow_controls}
+                )
+                updated_context = target_context.model_copy(
+                    update={
+                        "run_spec": updated_spec,
+                        "config_change_summary": input_model.reason,
+                    }
+                )
+                target_flow.input = target_flow.input.model_copy(
+                    update={"run_context": updated_context}
+                )
+
+            with pause_controller.hold_paused(flow.scope_id), flow_service.lock:
+                updated = flow_service.store.update_flow_record(flow.flow_id, apply_controls)
+            updated_context = getattr(updated.input, "run_context", None)
+            if not isinstance(updated_context, RepoRunContext):
+                raise ValueError("updated Coordinator lost its typed RepoRunContext")
+            return self.runtime.foundation.ok(
+                ActiveRunWorkflowControlsUpdateView(
+                    repo_root=str(input_model.repo_root.resolve(strict=False)),
+                    repo_key=input_model.repo_key or input_model.repo_root.name,
+                    coordinator_flow_id=updated.flow_id,
+                    flow_updated_at_before=before_updated_at,
+                    flow_updated_at_after=updated.updated_at,
+                    workflow_controls_before=controls_before,
+                    workflow_controls_after=updated_context.run_spec.workflow_controls,
+                    summary=(
+                        "Updated the active Coordinator workflow controls for future Content tasks; "
+                        "existing Content tasks and Decl rounds retain their persisted controls."
+                    ),
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - operator mutation boundary.
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "active_run_workflow_control_update_failed",
+                    f"Failed to update active-run workflow controls: {exc}",
+                    object_ref=input_model.coordinator_flow_id,
+                )
+            )
 
     def _run_spec_from_flow_lineage(self, flow: Any | None, *, scope_id: str) -> RepoRunSpec | None:
         seen: set[str] = set()

@@ -34,6 +34,7 @@ from lean_constellation.app.admin_api import (
     RepoRemotePublicationInput,
     RepoRunRequestInput,
     RepoRunStartInput,
+    UpdateActiveRunWorkflowControlsInput,
     ReconcileAgentStepContextMaintenanceInput,
     ResetContentPlanForCurrentTruthInput,
     ResetCoordinatorForCurrentTruthInput,
@@ -836,6 +837,14 @@ def create_workspace_admin_http_routes(
             admin_result.value.get_repo_run_status(record.value.repo_root, repo_key=record.value.repo_key)
         )
 
+    async def repo_update_active_run_workflow_controls(request: Request) -> JSONResponse:
+        return await _repo_semantic_model_route(
+            request,
+            registry,
+            UpdateActiveRunWorkflowControlsInput,
+            LeanAdminApi.update_active_run_workflow_controls,
+        )
+
     async def repo_start_source_index(request: Request) -> JSONResponse:
         return await _repo_lifecycle_model_route(
             request, registry, StandaloneSourceIndexRunInput, LeanAdminApi.start_standalone_source_index
@@ -1302,6 +1311,11 @@ def create_workspace_admin_http_routes(
         Route("/admin/repos/{repo_key:str}/runs/root-interfaces", repo_run_root_interfaces, methods=["POST"]),
         Route("/admin/repos/{repo_key:str}/continue", repo_continue_native, methods=["POST"]),
         Route("/admin/repos/{repo_key:str}/run/status", repo_run_status, methods=["GET"]),
+        Route(
+            "/admin/repos/{repo_key:str}/run/workflow-controls",
+            repo_update_active_run_workflow_controls,
+            methods=["PATCH"],
+        ),
         Route("/admin/repos/{repo_key:str}/source-index/update", repo_start_source_index, methods=["POST"]),
         Route("/admin/repos/{repo_key:str}/root-interfaces/prepare", repo_start_root_interfaces, methods=["POST"]),
         Route("/admin/repos/{repo_key:str}/releases", repo_releases, methods=["GET"]),
