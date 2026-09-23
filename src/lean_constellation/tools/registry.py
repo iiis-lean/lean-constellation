@@ -19,6 +19,7 @@ from lean_constellation.tools.internal import (
     resource,
     source_material,
 )
+from lean_constellation.tools import restructure
 from lean_constellation.tools.toolkit import formal_diagnostics
 from lean_constellation.tools.views import build_application_tool_views as _build_views
 
@@ -38,6 +39,7 @@ def build_application_tool_specs() -> list[ToolSpec]:
         decl_graph,
         decl_stage,
         formal_diagnostics,
+        restructure,
     ):
         specs.extend(module.build_tool_specs())
     _validate_tool_specs(specs)

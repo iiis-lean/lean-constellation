@@ -80,6 +80,7 @@ def create_app_runtime_services(
     test_control_enabled: bool = False,
     automatic_checkpoints: AutomaticCheckpointAppConfig | None = None,
     agent_trace_reports: AgentTraceReportAppConfig | None = None,
+    restructure_workspace_root: Path | str | None = None,
 ) -> LeanRuntimeServices:
     """Create a runtime with ARK Flow/Step/Agent services and Lean app services."""
 
@@ -130,6 +131,7 @@ def create_app_runtime_services(
         workspace_config=workspace_config,  # type: ignore[arg-type]
         register_application_tools=register_application_tools,
         test_control_enabled=test_control_enabled,
+        restructure_workspace_root=restructure_workspace_root,
     )
     runtime_gateway.delegate.app = runtime.app
     runtime.app.automatic_checkpoints = automatic_checkpoints or AutomaticCheckpointAppConfig()
@@ -238,6 +240,7 @@ def create_app_runtime_from_config(
             workspace_config=config.workspace_config,
             automatic_checkpoints=config.automatic_checkpoints,
             agent_trace_reports=config.agent_trace_reports,
+            restructure_workspace_root=config.workspace_root,
         )
     return create_app_runtime_services(
         runtime_root=runtime_root,
@@ -255,6 +258,7 @@ def create_app_runtime_from_config(
         test_control_enabled=test_control_enabled,
         automatic_checkpoints=config.automatic_checkpoints,
         agent_trace_reports=config.agent_trace_reports,
+        restructure_workspace_root=config.workspace_root,
     )
 
 
@@ -300,6 +304,7 @@ def create_test_control_runtime_services(
     start_paused: bool = True,
     automatic_checkpoints: AutomaticCheckpointAppConfig | None = None,
     agent_trace_reports: AgentTraceReportAppConfig | None = None,
+    restructure_workspace_root: Path | str | None = None,
 ) -> LeanRuntimeServices:
     """Create a runtime profile for paused, externally controlled scheduler tests."""
 
@@ -335,6 +340,7 @@ def create_test_control_runtime_services(
         test_control_enabled=True,
         automatic_checkpoints=automatic_checkpoints,
         agent_trace_reports=agent_trace_reports,
+        restructure_workspace_root=restructure_workspace_root,
     )
 
 

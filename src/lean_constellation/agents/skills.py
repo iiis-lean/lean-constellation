@@ -179,6 +179,71 @@ to proof completion merely because a stronger state is possible.
 
 
 SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
+    SkillKey.RESTRUCTURE_REPO_PLANNING.value: LeanSkillDefinition(
+        name="restructure-repo-planning",
+        description="Design and validate a Restructure repository node tree and interface boundary.",
+        group="restructure",
+        required_tool_groups=_groups(AppGroup.RESTRUCTURE_COORDINATOR_READ, AppGroup.RESTRUCTURE_COORDINATOR_WRITE, SubmitGroup.RESTRUCTURE_COORDINATOR_SUBMIT),
+        source_design_doc="dev_docs/task_packages/2026-09-21_lc_restructure/DESIGN.md",
+        body=_body(
+            "restructure-repo-planning",
+            "Prepare a direct workspace repository with one Main root, Scope organizers, and balanced Content leaves.",
+            (
+                "Read the current workspace and source corpus before planning.",
+                "Assign each coherent mathematical responsibility to one Content leaf and record dependencies between leaves.",
+                "Register interface seeds and material assignments through the planning tools; let the service create standard directories.",
+                "Validate the complete plan and submit it only after Main, parent links, leaf ownership, and dependency acyclicity pass.",
+            ),
+            (
+                "Do not hand-edit generated Prelude or Interfaces files.",
+                "Do not put declarations directly in Scope nodes.",
+                "Do not submit a plan that relies on inferred or guessed source ownership.",
+            ),
+        ),
+    ),
+    SkillKey.RESTRUCTURE_DECL_CAPTURE.value: LeanSkillDefinition(
+        name="restructure-decl-capture",
+        description="Register, edit, and batch-check Restructure declarations.",
+        group="restructure",
+        required_tool_groups=_groups(AppGroup.RESTRUCTURE_CONTENT_READ, AppGroup.RESTRUCTURE_CONTENT_WRITE, SubmitGroup.RESTRUCTURE_CONTENT_SUBMIT),
+        source_design_doc="dev_docs/task_packages/2026-09-21_lc_restructure/DESIGN.md",
+        body=_body(
+            "restructure-decl-capture",
+            "Keep declaration metadata and owned Lean files synchronized without parser-based inference.",
+            (
+                "Create every owned declaration with its kind, summary, and generated file template.",
+                "After editing source, set statement/proof sections independently as {nl:{text,origins},deps}. Never submit formal text; the system captures each accepted complete file.",
+                "Edit only owned files. Use check_restructure_files for selected modules or check_restructure_content for the Content batch; no capture or file digest is required.",
+                "Run the current stage gate. If source edits require metadata review, verify the indicated section NL, origins and deps, then resubmit that section (unchanged accurate metadata is allowed) and check again before submission.",
+            ),
+            (
+                "The source corpus is the primary origin; a Lean migration file may be an additional origin.",
+                "Definitions, structures, classes, instances, notation, macros, and computation cannot remain placeholders at declared stage.",
+                "Registration is automatic after compilation; mathematical metadata is supplied explicitly, not inferred from a parser.",
+            ),
+        ),
+    ),
+    SkillKey.RESTRUCTURE_PROOF_COMPLETION.value: LeanSkillDefinition(
+        name="restructure-proof-completion",
+        description="Complete theorem-like proof bodies after the declared frontier is accepted.",
+        group="restructure",
+        required_tool_groups=_groups(AppGroup.RESTRUCTURE_CONTENT_READ, AppGroup.RESTRUCTURE_CONTENT_WRITE, SubmitGroup.RESTRUCTURE_CONTENT_SUBMIT),
+        source_design_doc="dev_docs/task_packages/2026-09-21_lc_restructure/DESIGN.md",
+        body=_body(
+            "restructure-proof-completion",
+            "Fill proofs while preserving the declared statement and explicit dependency catalogue.",
+            (
+                "Read the accepted declared state and visible dependencies.",
+                "Replace theorem-like placeholders with real proofs and record proof NL/text.",
+                "Run check_restructure_content on changed files before submitting; compilation and registration are automatic.",
+            ),
+            (
+                "Do not change accepted theorem statements in the prove stage.",
+                "Do not leave sorry, admit, or sorryAx in proved output.",
+                "Escalate a boundary or missing declaration to the Coordinator instead of inventing it locally.",
+            ),
+        ),
+    ),
     SkillKey.REPO_FORMAT_DISCOVERY.value: LeanSkillDefinition(
         name="repo-format-discovery",
         description="Choose a verified Adapter route or a searched Native route for one requirement repository.",

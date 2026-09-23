@@ -6,6 +6,9 @@ from enum import StrEnum
 
 
 class SkillKey(StrEnum):
+    RESTRUCTURE_REPO_PLANNING = "restructure-repo-planning"
+    RESTRUCTURE_DECL_CAPTURE = "restructure-decl-capture"
+    RESTRUCTURE_PROOF_COMPLETION = "restructure-proof-completion"
     REPO_FORMAT_DISCOVERY = "repo-format-discovery"
     NODE_CONTRACT_DESIGN = "node-contract-design"
     LC_FIELD_SEMANTICS = "lc-field-semantics"
@@ -54,6 +57,10 @@ class SkillKey(StrEnum):
 
 
 class ProductionAgentTypeKey(StrEnum):
+    RESTRUCTURE_COORDINATOR = "RestructureCoordinatorAgent"
+    RESTRUCTURE_CONTENT_PLAN = "RestructureContentPlanAgent"
+    RESTRUCTURE_CONTENT_IMPLEMENTATION = "RestructureContentImplementationAgent"
+    RESTRUCTURE_CONTENT_REVIEW = "RestructureContentReviewAgent"
     REPO_FORMAT_DISCOVERY = "RepoFormatDiscoveryAgent"
     SOURCE_CORPUS_BUILDER = "SourceCorpusBuilderAgent"
     SOURCE_CORPUS_REVIEWER = "SourceCorpusReviewerAgent"

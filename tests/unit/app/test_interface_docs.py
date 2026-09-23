@@ -175,7 +175,10 @@ def test_interface_catalogs_follow_live_registries() -> None:
     )
     assert coordinator_reset["input_model"] == "ResetCoordinatorForCurrentTruthInput"
     assert coordinator_reset["route_owned_fields"] == ["flow_id"]
-    assert set(coordinator_reset["input_schema"]["properties"]) == {"expected_agent_id"}
+    assert set(coordinator_reset["input_schema"]["properties"]) == {
+        "expected_agent_id",
+        "expected_incomplete_step_id",
+    }
 
     content_plan_reset = next(
         item

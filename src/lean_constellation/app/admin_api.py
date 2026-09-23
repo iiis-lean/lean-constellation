@@ -66,6 +66,7 @@ from lean_constellation.domain.repo_run import (
 from lean_constellation.domain.repo_recovery import NativeSourceIndexRecoveryContract
 from lean_constellation.domain.repo_release import RepoReleaseListView
 from lean_constellation.domain.repo_release import RepoReleaseValidationProfile
+from lean_constellation.domain.restructure import RestructureStage, WorkspacePlan
 from lean_constellation.flows.repo_lifecycle.source_index import SourceIndexBuildResult
 from lean_constellation.services.validation_snapshot import RepoCheckpointKind
 from lean_constellation.flows.testing import (
@@ -122,6 +123,48 @@ class AdminFlowStartView(StrictModel):
     enqueued: bool
     repo_root: str | None = None
     summary: str
+
+
+class RestructurePrepareInput(StrictModel):
+    workspace_root: Path
+    plan: WorkspacePlan
+    overwrite: bool = False
+
+
+class RestructureStartRepoPlanInput(StrictModel):
+    workspace_root: Path | None = None
+    repo_key: str
+    agent_id: str | None = None
+    enqueue: bool = True
+
+
+class RestructureStartFrontierInput(StrictModel):
+    workspace_root: Path | None = None
+    stage: RestructureStage
+    agent_id: str | None = None
+    enqueue: bool = True
+
+
+class RestructureBuildInput(StrictModel):
+    workspace_root: Path | None = None
+    repo_key: str
+    stage: Literal["declared", "proved", "final"] = "proved"
+    agent_id: str = "admin"
+    operation_id: str | None = None
+    targets: list[str] = Field(default_factory=list)
+    provider_refs: dict[str, str] = Field(default_factory=dict)
+    enqueue: bool = True
+
+
+class RestructureRetryContentInput(StrictModel):
+    workspace_root: Path | None = None
+    repo_key: str
+    node_path: str
+    reopen_declared: bool = False
+
+
+class RestructureWorkspaceInput(StrictModel):
+    workspace_root: Path | None = None
 
 
 class RepoRunStatusView(StrictModel):
@@ -1228,6 +1271,147 @@ class LeanAdminApi:
         self.workspace_root = Path(workspace_root).expanduser() if workspace_root is not None else None
         self.toolkit_state = toolkit_state
         self.repo_runtime_registry = repo_runtime_registry
+
+    def _restructure_supervisor(self, workspace_root: Path | None = None):  # noqa: ANN202
+        from lean_constellation.app.restructure import RestructureSupervisor
+
+        root = workspace_root or self.workspace_root
+        if root is None:
+            raise ValueError("workspace_root is required for Restructure operations")
+        supervisor = RestructureSupervisor.for_workspace(str(root))
+        registry = self.repo_runtime_registry
+        if registry is not None:
+            if Path(root).resolve() != registry.workspace_root.resolve():
+                raise ValueError("workspace_root must match the serving workspace")
+            def resolve(repo_key):
+                directory = supervisor.service.directory_for_repo(repo_key)
+                result = registry.get_or_load(directory, refresh_homes=False)
+                if not result.ok or result.value is None:
+                    raise ValueError("; ".join(issue.message for issue in result.issues))
+                return result.value
+            supervisor.runtime_resolver = resolve
+        return supervisor
+
+    def prepare_restructure_workspace(
+        self,
+        input_model: RestructurePrepareInput,
+    ) -> ServiceResult[object]:
+        try:
+            supervisor = self._restructure_supervisor(input_model.workspace_root)
+            run = supervisor.service.prepare(input_model.plan, overwrite=input_model.overwrite)
+            return self.runtime.foundation.ok(run)
+        except Exception as exc:  # noqa: BLE001 - admin boundary
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("restructure_prepare_failed", str(exc))
+            )
+
+    def get_restructure_status(
+        self,
+        input_model: RestructureWorkspaceInput | None = None,
+    ) -> ServiceResult[dict[str, object]]:
+        try:
+            supervisor = self._restructure_supervisor(input_model.workspace_root if input_model else None)
+            return self.runtime.foundation.ok(supervisor.status())
+        except Exception as exc:  # noqa: BLE001 - admin boundary
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("restructure_status_failed", str(exc))
+            )
+
+    def start_restructure_repo_plan(
+        self,
+        input_model: RestructureStartRepoPlanInput,
+    ) -> ServiceResult[dict[str, object]]:
+        try:
+            supervisor = self._restructure_supervisor(input_model.workspace_root)
+            flow_id = supervisor.start_repo_plan(
+                self.runtime,
+                repo_key=input_model.repo_key,
+                agent_id=input_model.agent_id,
+                enqueue=input_model.enqueue,
+            )
+            return self.runtime.foundation.ok({"flow_id": flow_id, "repo_key": input_model.repo_key})
+        except Exception as exc:  # noqa: BLE001 - admin boundary
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("restructure_repo_plan_start_failed", str(exc))
+            )
+
+    def start_restructure_frontier(
+        self,
+        input_model: RestructureStartFrontierInput,
+    ) -> ServiceResult[dict[str, object]]:
+        try:
+            supervisor = self._restructure_supervisor(input_model.workspace_root)
+            flow_ids = supervisor.start_workspace_frontier(
+                self.runtime,
+                stage=input_model.stage,
+                agent_id=input_model.agent_id,
+                enqueue=input_model.enqueue,
+            )
+            return self.runtime.foundation.ok(
+                {"stage": input_model.stage.value, "flow_ids": flow_ids}
+            )
+        except Exception as exc:  # noqa: BLE001 - admin boundary
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("restructure_frontier_start_failed", str(exc))
+            )
+
+    def start_restructure_build(
+        self,
+        input_model: RestructureBuildInput,
+    ) -> ServiceResult[dict[str, object]]:
+        try:
+            supervisor = self._restructure_supervisor(input_model.workspace_root)
+            workspace, _ = supervisor.service.store.load_workspace_plan()
+            if workspace is None or input_model.repo_key not in workspace.repos:
+                raise ValueError(f"unknown workspace repo: {input_model.repo_key}")
+            flow_id = supervisor.start_build(
+                self.runtime,
+                repo_key=input_model.repo_key,
+                stage=RestructureStage(input_model.stage),
+                agent_id=input_model.agent_id,
+                enqueue=input_model.enqueue,
+                operation_id=input_model.operation_id,
+                provider_refs=input_model.provider_refs,
+                targets=input_model.targets,
+            )
+            return self.runtime.foundation.ok(
+                {"flow_id": flow_id, "repo_key": input_model.repo_key, "stage": input_model.stage}
+            )
+        except Exception as exc:  # noqa: BLE001 - admin boundary
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("restructure_build_start_failed", str(exc))
+            )
+
+    def retry_restructure_content(
+        self,
+        input_model: RestructureRetryContentInput,
+    ) -> ServiceResult[dict[str, object]]:
+        try:
+            supervisor = self._restructure_supervisor(input_model.workspace_root)
+            version = supervisor.retry_content(input_model.repo_key, input_model.node_path, reopen_declared=input_model.reopen_declared)
+            return self.runtime.foundation.ok(
+                {
+                    "repo_key": input_model.repo_key,
+                    "node_path": input_model.node_path,
+                    "content_version": version,
+                }
+            )
+        except Exception as exc:  # noqa: BLE001 - admin boundary
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("restructure_content_retry_failed", str(exc))
+            )
+
+    def reconcile_restructure(
+        self,
+        input_model: RestructureWorkspaceInput | None = None,
+    ) -> ServiceResult[dict[str, object]]:
+        try:
+            supervisor = self._restructure_supervisor(input_model.workspace_root if input_model else None)
+            return self.runtime.foundation.ok(supervisor.reconcile(self.runtime))
+        except Exception as exc:  # noqa: BLE001 - admin boundary
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("restructure_reconcile_failed", str(exc))
+            )
 
     def _run_paired_restore_guard(
         self,

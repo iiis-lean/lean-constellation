@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from lean_constellation.services.runtime import ARKServices, LeanConstellationServices, LeanRuntimeServices
@@ -39,6 +40,7 @@ def create_lean_runtime_services(
     workspace_config: "WorkspaceConfig | None" = None,
     register_application_tools: bool = False,
     test_control_enabled: bool = False,
+    restructure_workspace_root: Path | str | None = None,
 ) -> LeanRuntimeServices:
     """Create a fully wired Lean Constellation service graph."""
 
@@ -54,6 +56,7 @@ def create_lean_runtime_services(
     from lean_constellation.services.repo_workspace import RepoWorkspaceService
     from lean_constellation.services.tool_facade import ToolFacadeService
     from lean_constellation.services.validation_snapshot import ValidationSnapshotService
+    from lean_constellation.services.restructure import RestructureService
     from lean_constellation.agents.registry import (
         agent_skill_keys,
         agent_type_permission_names,
@@ -107,6 +110,8 @@ def create_lean_runtime_services(
         formal_stage_provider=providers.formal_stage_provider or app.decl_graph,
         decl_graph_audit_provider=providers.decl_graph_audit_provider or app.decl_graph,
     )
+    if restructure_workspace_root is not None:
+        app.restructure = RestructureService(restructure_workspace_root)
     app.tool_facade = ToolFacadeService(
         runtime,
         runtime_gateway=providers.runtime_gateway,

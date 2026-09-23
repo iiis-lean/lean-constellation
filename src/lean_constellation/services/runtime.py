@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from lean_constellation.services.tool_facade import ToolFacadeService
     from lean_constellation.services.validation_snapshot import ValidationSnapshotService
     from lean_constellation.services.validation_snapshot.source_index_checkpoint import SourceIndexCheckpointAdapter
+    from lean_constellation.services.restructure import RestructureService
 
 
 @dataclass
@@ -44,6 +45,7 @@ class LeanConstellationServices(AppServices):
     tool_facade: "ToolFacadeService | None" = None
     automatic_checkpoints: "AutomaticCheckpointAppConfig | None" = None
     repo_activity: "RepoActivityComponent | None" = None
+    restructure: "RestructureService | None" = None
 
     def validate(self) -> None:
         missing = [
@@ -123,6 +125,10 @@ class LeanRuntimeServices:
     @property
     def repo_activity(self) -> "RepoActivityComponent":
         return self.require_app_service("repo_activity")
+
+    @property
+    def restructure(self) -> "RestructureService":
+        return self.require_app_service("restructure")
 
     def require_app_service(self, name: str) -> Any:
         if not hasattr(self.app, name):

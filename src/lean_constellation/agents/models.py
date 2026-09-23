@@ -20,6 +20,7 @@ AgentLifecycleGroup = Literal[
     "content_node_task",
     "decl_stage",
     "resource_request",
+    "restructure",
 ]
 AgentContextScope = Literal["repo", "content_node", "decl_stage", "resource_request"]
 

@@ -30,6 +30,35 @@ def _view(
 def build_submit_tool_views(group_specs: Iterable[ToolGroupSpec] | None = None) -> list[ToolViewSpec]:
     del group_specs
     return [
+        _view(
+            SubmitView.RESTRUCTURE_COORDINATOR_SUBMIT,
+            [SubmitGroup.RESTRUCTURE_COORDINATOR_SUBMIT],
+            _aliases("restructure_coordinator", "RestructureCoordinatorAgent"),
+            flow_kind="restructure_repo_plan",
+        ),
+        _view(
+            SubmitView.RESTRUCTURE_REPO_REPAIR_SUBMIT,
+            [SubmitGroup.RESTRUCTURE_COORDINATOR_SUBMIT],
+            _aliases("restructure_repo_repair", "RestructureCoordinatorAgent"),
+            flow_kind="restructure_build",
+        ),
+        _view(
+            SubmitView.RESTRUCTURE_CONTENT_SUBMIT,
+            [SubmitGroup.RESTRUCTURE_CONTENT_SUBMIT],
+            _aliases(
+                "restructure_content_plan",
+                "RestructureContentPlanAgent",
+                "RestructureContentImplementationAgent",
+                "restructure_content",
+            ),
+            flow_kind="restructure_content",
+        ),
+        _view(
+            SubmitView.RESTRUCTURE_REVIEW_SUBMIT,
+            [SubmitGroup.RESTRUCTURE_REVIEW_SUBMIT],
+            _aliases("restructure_content_review", "RestructureContentReviewAgent"),
+            flow_kind="restructure_review",
+        ),
         _view(SubmitView.REPO_FORMAT_DISCOVERY_SUBMIT, [SubmitGroup.REPO_FORMAT_DISCOVERY_SUBMIT], _aliases("repo_format_discovery", "RepoFormatDiscoveryAgent")),
         _view(SubmitView.SOURCE_CORPUS_BUILDER_SUBMIT, [SubmitGroup.SOURCE_CORPUS_BUILDER_SUBMIT], _aliases("source_corpus_builder", "SourceCorpusBuilderAgent")),
         _view(SubmitView.SOURCE_CORPUS_REVIEWER_SUBMIT, [SubmitGroup.SOURCE_CORPUS_REVIEWER_SUBMIT], _aliases("source_corpus_reviewer", "SourceCorpusReviewerAgent")),

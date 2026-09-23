@@ -8,6 +8,7 @@ from lean_constellation.services.foundation import MutationSummaryView, ServiceR
 from lean_constellation.services.runtime import LeanRuntimeServices
 from lean_constellation.services.tool_facade import SubmitBehavior, ToolCapability, ToolGroupSpec, ToolSpec, ToolViewSpec
 from lean_constellation.tools import submit_handlers as handlers
+from lean_constellation.tools import restructure
 from lean_constellation.tools.keys import SubmitToolGroupKey as SubmitGroup
 from lean_constellation.tools.submit_args import (
     SubmitAdapterCatalogBlockedArgs,
@@ -81,6 +82,7 @@ def build_submit_tool_specs() -> list[ToolSpec]:
     """Collect every layer-3 submit ToolSpec."""
 
     specs = [
+        *restructure.build_submit_tool_specs(),
         _submit_tool(
             name="submit_adapter_repo_choice",
             description="Verify and submit an existing GitHub Lean project as the Adapter route; package, module, and exact compatible revision are derived by the backend.",

@@ -10,6 +10,20 @@ from lean_constellation.app.repo_runtime_registry import RepoRuntimeRegistry
 from lean_constellation.services.runtime import LeanRuntimeServices
 
 
+def _reconcile_restructure(runtime: LeanRuntimeServices) -> dict[str, Any] | None:
+    """Advance the optional workspace restructure workflow on every tick."""
+
+    service = getattr(runtime.app, "restructure", None)
+    if service is None:
+        return None
+    _, run_version = service.store.load_run()
+    if run_version == 0:
+        return None
+    from lean_constellation.app.restructure import RestructureSupervisor
+
+    return RestructureSupervisor(service).reconcile(runtime)
+
+
 async def run_scheduler_loop(
     runtime: LeanRuntimeServices,
     *,
@@ -32,8 +46,10 @@ async def run_scheduler_loop(
                     await anyio.sleep(error_interval_s)
                     continue
                 tick = schedule_service.schedule_ready()
+                restructure_tick = _reconcile_restructure(runtime)
                 loop_state["tick_count"] = int(loop_state.get("tick_count", 0)) + 1
                 loop_state["last_tick"] = tick.model_dump(mode="json") if hasattr(tick, "model_dump") else tick
+                loop_state["last_restructure_tick"] = restructure_tick
                 loop_state["last_error"] = None
                 made_progress = bool(getattr(tick, "advanced_flow_ids", None) or getattr(tick, "started_step_ids", None))
                 await anyio.sleep(tick_interval_s if made_progress else idle_interval_s)
@@ -61,6 +77,19 @@ async def run_registry_scheduler_loop(
     try:
         while True:
             made_progress = False
+            try:
+                root = registry.workspace_root
+                if (root / ".lean_constellation/restructure/run.json").is_file():
+                    from lean_constellation.app.admin_api import LeanAdminApi, RestructureWorkspaceInput
+                    admin = LeanAdminApi(registry.workspace_runtime(), workspace_root=root, repo_runtime_registry=registry)
+                    result = admin.reconcile_restructure(RestructureWorkspaceInput(workspace_root=root))
+                    if not result.ok:
+                        loop_state["last_restructure_error"] = "; ".join(i.message for i in result.issues)
+                    else:
+                        loop_state["last_restructure_tick"] = result.value
+                        loop_state["last_restructure_error"] = None
+            except Exception as exc:
+                loop_state["last_restructure_error"] = str(exc)
             loaded_records = registry.loaded_records()
             loop_state["loaded_repo_count"] = len(loaded_records)
             for record in loaded_records:

@@ -54,6 +54,41 @@ def build_application_tool_views(group_specs: Iterable[ToolGroupSpec] | None = N
     del group_specs
     return [
         _view(
+            AppView.RESTRUCTURE_COORDINATOR,
+            [
+                AppGroup.RESTRUCTURE_COORDINATOR_READ,
+                AppGroup.RESTRUCTURE_COORDINATOR_WRITE,
+                AppGroup.RESTRUCTURE_CONTENT_READ,
+                AppGroup.RESTRUCTURE_CONTENT_WRITE,
+                AppGroup.LEAN_FILE_DIAGNOSTICS_READ,
+            ],
+            _aliases("restructure_coordinator", "RestructureCoordinatorAgent"),
+            flow_kind="restructure_repo_plan",
+        ),
+        _view(
+            AppView.RESTRUCTURE_REPO_REPAIR,
+            [AppGroup.RESTRUCTURE_CONTENT_READ, AppGroup.RESTRUCTURE_CONTENT_WRITE, AppGroup.LEAN_FILE_DIAGNOSTICS_READ],
+            _aliases("restructure_repo_repair", "RestructureCoordinatorAgent"),
+            flow_kind="restructure_build",
+        ),
+        _view(
+            AppView.RESTRUCTURE_CONTENT,
+            [AppGroup.RESTRUCTURE_CONTENT_READ, AppGroup.RESTRUCTURE_CONTENT_WRITE],
+            _aliases(
+                "restructure_content_plan",
+                "RestructureContentPlanAgent",
+                "RestructureContentImplementationAgent",
+                "restructure_content",
+            ),
+            flow_kind="restructure_content",
+        ),
+        _view(
+            AppView.RESTRUCTURE_REVIEW,
+            [AppGroup.RESTRUCTURE_CONTENT_READ],
+            _aliases("restructure_content_review", "RestructureContentReviewAgent"),
+            flow_kind="restructure_review",
+        ),
+        _view(
             AppView.REPO_FORMAT_DISCOVERY,
             [
                 AppGroup.REPO_PREPARATION_INPUT_READ,

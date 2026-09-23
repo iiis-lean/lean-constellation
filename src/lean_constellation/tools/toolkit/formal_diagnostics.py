@@ -77,7 +77,7 @@ def build_tool_specs() -> list[ToolSpec]:
             capability=ToolCapability.READ,
             result_view="lean_diagnostics",
             groups={AppGroup.LEAN_FILE_DIAGNOSTICS_READ},
-            roles=roles,
+            roles=roles | {"coordinator"},
             handler=_run_file_diagnostics,
         ),
         handler_tool(

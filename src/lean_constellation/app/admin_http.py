@@ -34,6 +34,12 @@ from lean_constellation.app.admin_api import (
     RepoRemotePublicationInput,
     RepoRunRequestInput,
     RepoRunStartInput,
+    RestructurePrepareInput,
+    RestructureBuildInput,
+    RestructureRetryContentInput,
+    RestructureStartFrontierInput,
+    RestructureStartRepoPlanInput,
+    RestructureWorkspaceInput,
     UpdateActiveRunWorkflowControlsInput,
     ReconcileAgentStepContextMaintenanceInput,
     ResetContentPlanForCurrentTruthInput,
@@ -88,6 +94,97 @@ def create_workspace_admin_http_routes(
     async def workspace_status(request: Request) -> JSONResponse:
         del request
         return _service_result_response(registry.list_status())
+
+    async def restructure_status(request: Request) -> JSONResponse:
+        query = request.query_params
+        admin = LeanAdminApi(
+            registry.workspace_runtime(),
+            workspace_root=registry.workspace_root,
+            repo_runtime_registry=registry,
+        )
+        return _service_result_response(
+            admin.get_restructure_status(
+                RestructureWorkspaceInput(workspace_root=_query_path(query.get("workspace_root")))
+            )
+        )
+
+    async def restructure_prepare(request: Request) -> JSONResponse:
+        admin = LeanAdminApi(
+            registry.workspace_runtime(),
+            workspace_root=registry.workspace_root,
+            repo_runtime_registry=registry,
+        )
+        return await _model_route(request, RestructurePrepareInput, admin.prepare_restructure_workspace)
+
+    async def restructure_start_repo_plan(request: Request) -> JSONResponse:
+        data = await _json_or_empty(request)
+        data.setdefault("workspace_root", str(registry.workspace_root))
+        try:
+            input_model = RestructureStartRepoPlanInput.model_validate(data)
+        except ValidationError as exc:
+            return _request_validation_response(str(exc))
+        admin = LeanAdminApi(
+            registry.workspace_runtime(),
+            workspace_root=registry.workspace_root,
+            repo_runtime_registry=registry,
+        )
+        return _service_result_response(admin.start_restructure_repo_plan(input_model))
+
+    async def restructure_start_frontier(request: Request) -> JSONResponse:
+        data = await _json_or_empty(request)
+        data.setdefault("workspace_root", str(registry.workspace_root))
+        try:
+            input_model = RestructureStartFrontierInput.model_validate(data)
+        except ValidationError as exc:
+            return _request_validation_response(str(exc))
+        admin = LeanAdminApi(
+            registry.workspace_runtime(),
+            workspace_root=registry.workspace_root,
+            repo_runtime_registry=registry,
+        )
+        return _service_result_response(admin.start_restructure_frontier(input_model))
+
+    async def restructure_build(request: Request) -> JSONResponse:
+        data = await _json_or_empty(request)
+        data.setdefault("workspace_root", str(registry.workspace_root))
+        try:
+            input_model = RestructureBuildInput.model_validate(data)
+        except ValidationError as exc:
+            return _request_validation_response(str(exc))
+        admin = LeanAdminApi(
+            registry.workspace_runtime(),
+            workspace_root=registry.workspace_root,
+            repo_runtime_registry=registry,
+        )
+        return _service_result_response(admin.start_restructure_build(input_model))
+
+    async def restructure_retry(request: Request) -> JSONResponse:
+        data = await _json_or_empty(request)
+        data.setdefault("workspace_root", str(registry.workspace_root))
+        try:
+            input_model = RestructureRetryContentInput.model_validate(data)
+        except ValidationError as exc:
+            return _request_validation_response(str(exc))
+        admin = LeanAdminApi(
+            registry.workspace_runtime(),
+            workspace_root=registry.workspace_root,
+            repo_runtime_registry=registry,
+        )
+        return _service_result_response(admin.retry_restructure_content(input_model))
+
+    async def restructure_reconcile(request: Request) -> JSONResponse:
+        data = await _json_or_empty(request)
+        data.setdefault("workspace_root", str(registry.workspace_root))
+        try:
+            input_model = RestructureWorkspaceInput.model_validate(data)
+        except ValidationError as exc:
+            return _request_validation_response(str(exc))
+        admin = LeanAdminApi(
+            registry.workspace_runtime(),
+            workspace_root=registry.workspace_root,
+            repo_runtime_registry=registry,
+        )
+        return _service_result_response(admin.reconcile_restructure(input_model))
 
     async def workspace_repos(request: Request) -> JSONResponse:
         del request
@@ -1191,6 +1288,13 @@ def create_workspace_admin_http_routes(
     return [
         Route("/admin/workspace/status", workspace_status, methods=["GET"]),
         Route("/admin/workspace/repos", workspace_repos, methods=["GET"]),
+        Route("/admin/restructure/status", restructure_status, methods=["GET"]),
+        Route("/admin/restructure/prepare", restructure_prepare, methods=["POST"]),
+        Route("/admin/restructure/start-repo-plan", restructure_start_repo_plan, methods=["POST"]),
+        Route("/admin/restructure/start-frontier", restructure_start_frontier, methods=["POST"]),
+        Route("/admin/restructure/build", restructure_build, methods=["POST"]),
+        Route("/admin/restructure/retry", restructure_retry, methods=["POST"]),
+        Route("/admin/restructure/reconcile", restructure_reconcile, methods=["POST"]),
         Route("/admin/workspace/external/health", workspace_external_health, methods=["GET"]),
         Route("/admin/workspace/requirements/waiting", workspace_waiting_requirements, methods=["GET"]),
         Route("/admin/workspace/requirements/resume-candidates", workspace_requirement_resume_candidates, methods=["GET"]),

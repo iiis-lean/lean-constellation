@@ -624,10 +624,12 @@ class RepoRuntimeRegistry:
                 test_control_enabled=self.config.test_control_enabled,
                 automatic_checkpoints=self.config.automatic_checkpoints,
                 agent_trace_reports=self.config.agent_trace_reports,
+                restructure_workspace_root=self.workspace_root,
             )
             record.runtime = runtime
             self._rebuild_queues(record)
-            self._audit_release_state(record)
+            if not (record.repo_root / ".lean_constellation" / "restructure").is_dir():
+                self._audit_release_state(record)
             self._audit_content_checkpoint_parallelism(record)
             if self.config.materialize_agent_homes:
                 homes = self._materialize_homes(record)

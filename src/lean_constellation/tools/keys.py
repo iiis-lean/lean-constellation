@@ -6,6 +6,10 @@ from enum import StrEnum
 
 
 class ApplicationToolGroupKey(StrEnum):
+    RESTRUCTURE_COORDINATOR_READ = "restructure_coordinator_read"
+    RESTRUCTURE_COORDINATOR_WRITE = "restructure_coordinator_write"
+    RESTRUCTURE_CONTENT_READ = "restructure_content_read"
+    RESTRUCTURE_CONTENT_WRITE = "restructure_content_write"
     ADAPTER_DECL_CATALOG_READ = "adapter_decl_catalog_read"
     ADAPTER_DECL_CATALOG_WRITE = "adapter_decl_catalog_write"
     ADAPTER_CATALOG_READY_READ = "adapter_catalog_ready_read"
@@ -116,6 +120,9 @@ class ApplicationToolGroupKey(StrEnum):
 
 
 class SubmitToolGroupKey(StrEnum):
+    RESTRUCTURE_COORDINATOR_SUBMIT = "restructure_coordinator_submit"
+    RESTRUCTURE_CONTENT_SUBMIT = "restructure_content_submit"
+    RESTRUCTURE_REVIEW_SUBMIT = "restructure_review_submit"
     ADAPTER_READY_SUBMIT = "adapter_ready_submit"
     CONTENT_COMPLETION_SUBMIT = "content_completion_submit"
     CONTENT_PLAN_SUBMIT = "content_plan_submit"
@@ -139,6 +146,10 @@ class SubmitToolGroupKey(StrEnum):
 
 
 class ApplicationToolViewKey(StrEnum):
+    RESTRUCTURE_COORDINATOR = "restructure_coordinator"
+    RESTRUCTURE_REPO_REPAIR = "restructure_repo_repair"
+    RESTRUCTURE_CONTENT = "restructure_content"
+    RESTRUCTURE_REVIEW = "restructure_review"
     REPO_FORMAT_DISCOVERY = "repo_format_discovery"
     SOURCE_CORPUS_BUILDER = "source_corpus_builder"
     SOURCE_CORPUS_REVIEWER = "source_corpus_reviewer"
@@ -166,6 +177,10 @@ class ApplicationToolViewKey(StrEnum):
 
 
 class SubmitToolViewKey(StrEnum):
+    RESTRUCTURE_COORDINATOR_SUBMIT = "restructure_coordinator_submit"
+    RESTRUCTURE_REPO_REPAIR_SUBMIT = "restructure_repo_repair_submit"
+    RESTRUCTURE_CONTENT_SUBMIT = "restructure_content_submit"
+    RESTRUCTURE_REVIEW_SUBMIT = "restructure_review_submit"
     REPO_FORMAT_DISCOVERY_SUBMIT = "repo_format_discovery_submit"
     REPO_RESOURCE_DISCOVERY_SUBMIT = "repo_resource_discovery_submit"
     REPO_LEAN_PROVIDER_DISCOVERY_SUBMIT = "repo_lean_provider_discovery_submit"
